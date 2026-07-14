@@ -20,6 +20,12 @@ interface ProjectRecord {
   path: string;
   data: Record<string, unknown>;
   body: string;
+  snapshot: string;
+}
+
+interface ProjectEntry {
+  project: Project;
+  record: ProjectRecord;
 }
 
 export class ProjectNotFoundError extends Error {
@@ -40,11 +46,31 @@ export class InvalidProjectDataError extends Error {
   }
 }
 
+export class ProjectConflictError extends Error {
+  readonly code = 'project_conflict';
+
+  constructor() {
+    super('Project storage conflict');
+    this.name = 'ProjectConflictError';
+  }
+}
+
+export class ProjectIntegrityError extends Error {
+  readonly code = 'project_integrity_error';
+
+  constructor() {
+    super('Project storage integrity error');
+    this.name = 'ProjectIntegrityError';
+  }
+}
+
 function stringValue(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
-function projectFromRecord(record: ProjectRecord): Project {
+function projectFromRecord(
+  record: Pick<ProjectRecord, 'path' | 'data' | 'body'>,
+): Project {
   const data = record.data;
   const result = projectSchema.safeParse({
     projectId: stringValue(data.project_id) || basename(record.path, '.md'),
@@ -58,6 +84,10 @@ function projectFromRecord(record: ProjectRecord): Project {
     throw new InvalidProjectDataError();
   }
   return result.data;
+}
+
+function canonicalProjectSnapshot(project: Project): string {
+  return JSON.stringify(project);
 }
 
 function mergeProjectData(
@@ -89,61 +119,24 @@ export class MarkdownProjectRepository implements ProjectRepository {
   }
 
   async list(): Promise<Project[]> {
-    const boundary = {
-      vaultRoot: this.root,
-      tasksRoot: this.tasksRoot,
-      subtree: this.projectsRoot,
-    };
-    const paths = await listSafeRegularFiles(boundary, '*.md');
-    const projects: Project[] = [];
-    for (const path of paths) {
-      const raw = await readSafeTextFile(path, boundary);
-      if (raw === null) {
-        continue;
-      }
-      const document = parseTaskDocument(raw);
-      const record = { path, ...document };
-      const project = projectFromRecord(record);
+    const entries = await this.scanEntries();
+    this.records.clear();
+    for (const { project, record } of entries) {
       this.records.set(project.projectId, record);
-      projects.push(project);
     }
-    return projects;
+    return entries.map(({ project }) => project);
   }
 
   async get(projectId: string): Promise<Project> {
     if (!isSafePathSegment(projectId)) {
       throw new InvalidProjectDataError();
     }
-    const cached = this.records.get(projectId);
-    if (cached !== undefined) {
-      return projectFromRecord(cached);
-    }
-    let path: string;
-    try {
-      path = projectFilePath(this.root, projectId);
-    } catch {
+    const projects = await this.list();
+    const project = projects.find((candidate) => candidate.projectId === projectId);
+    if (project === undefined) {
       throw new ProjectNotFoundError(projectId);
     }
-    try {
-      const raw = await readSafeTextFile(path, {
-        vaultRoot: this.root,
-        tasksRoot: this.tasksRoot,
-        subtree: this.projectsRoot,
-      });
-      if (raw === null) {
-        throw new ProjectNotFoundError(projectId);
-      }
-      const document = parseTaskDocument(raw);
-      const record = { path, ...document };
-      const project = projectFromRecord(record);
-      this.records.set(project.projectId, record);
-      return project;
-    } catch (error) {
-      if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') {
-        throw new ProjectNotFoundError(projectId);
-      }
-      throw error;
-    }
+    return project;
   }
 
   async save(project: Project): Promise<Project> {
@@ -156,22 +149,66 @@ export class MarkdownProjectRepository implements ProjectRepository {
     if (!isSafePathSegment(validProject.projectId)) {
       throw new InvalidProjectDataError();
     }
-    let existing = this.records.get(validProject.projectId);
-    if (existing === undefined) {
-      try {
-        await this.get(validProject.projectId);
-        existing = this.records.get(validProject.projectId);
-      } catch (error) {
-        if (!(error instanceof ProjectNotFoundError)) {
-          throw error;
-        }
+    const cached = this.records.get(validProject.projectId);
+    const entries = await this.scanEntries();
+    const current = entries.find((entry) => (
+      entry.project.projectId === validProject.projectId
+    ));
+    if (cached !== undefined) {
+      if (current === undefined || current.record.snapshot !== cached.snapshot) {
+        throw new ProjectConflictError();
       }
     }
+    const existing = current?.record;
     const data = mergeProjectData(existing?.data ?? {}, validProject);
     const body = existing?.body ?? '\n';
-    const path = projectFilePath(this.root, validProject.projectId);
-    await atomicWriteTextFile(path, serializeTaskDocument(data, body));
-    this.records.set(validProject.projectId, { path, data, body });
+    const path = existing?.path ?? projectFilePath(this.root, validProject.projectId);
+    try {
+      await atomicWriteTextFile(path, serializeTaskDocument(data, body));
+    } catch (error) {
+      if (existing !== undefined) {
+        throw new ProjectConflictError();
+      }
+      throw error;
+    }
+    this.records.set(validProject.projectId, {
+      path,
+      data,
+      body,
+      snapshot: canonicalProjectSnapshot(validProject),
+    });
     return validProject;
+  }
+
+  private async scanEntries(): Promise<ProjectEntry[]> {
+    const boundary = {
+      vaultRoot: this.root,
+      tasksRoot: this.tasksRoot,
+      subtree: this.projectsRoot,
+    };
+    const paths = await listSafeRegularFiles(boundary, '*.md');
+    const entries: ProjectEntry[] = [];
+    const projectIds = new Set<string>();
+    for (const path of paths) {
+      const raw = await readSafeTextFile(path, boundary);
+      if (raw === null) {
+        continue;
+      }
+      const document = parseTaskDocument(raw);
+      const project = projectFromRecord({ path, ...document });
+      if (projectIds.has(project.projectId)) {
+        throw new ProjectIntegrityError();
+      }
+      projectIds.add(project.projectId);
+      entries.push({
+        project,
+        record: {
+          path,
+          ...document,
+          snapshot: canonicalProjectSnapshot(project),
+        },
+      });
+    }
+    return entries;
   }
 }

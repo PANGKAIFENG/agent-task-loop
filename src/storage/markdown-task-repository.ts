@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { rm } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
 import {
@@ -12,6 +11,7 @@ import type { TaskRepository } from './contracts.js';
 import {
   atomicWriteTextFile,
   listSafeRegularFiles,
+  moveSafeRegularFile,
   readSafeTextFile,
   type StorageReadBoundary,
 } from './file-io.js';
@@ -29,6 +29,12 @@ interface TaskRecord {
   path: string;
   data: Record<string, unknown>;
   body: string;
+  snapshot: string;
+}
+
+interface TaskEntry {
+  record: TaskRecord;
+  task: Task;
 }
 
 export class TaskNotFoundError extends Error {
@@ -46,6 +52,24 @@ export class InvalidTaskDataError extends Error {
   constructor() {
     super('Invalid task data');
     this.name = 'InvalidTaskDataError';
+  }
+}
+
+export class TaskConflictError extends Error {
+  readonly code = 'task_conflict';
+
+  constructor() {
+    super('Task storage conflict');
+    this.name = 'TaskConflictError';
+  }
+}
+
+export class TaskIntegrityError extends Error {
+  readonly code = 'task_integrity_error';
+
+  constructor() {
+    super('Task storage integrity error');
+    this.name = 'TaskIntegrityError';
   }
 }
 
@@ -123,7 +147,7 @@ function mapClaim(value: unknown): Task['claim'] {
   };
 }
 
-function taskFromRecord(record: TaskRecord): Task {
+function taskFromRecord(record: Pick<TaskRecord, 'path' | 'data' | 'body'>): Task {
   const data = record.data;
   const reviewState = data.review_state === 'ready_for_confirm'
     || data.review_state === 'confirmed'
@@ -171,6 +195,12 @@ function taskFromRecord(record: TaskRecord): Task {
     throw new InvalidTaskDataError();
   }
   return result.data;
+}
+
+function canonicalTaskSnapshot(task: Task): string {
+  const canonical: Partial<Task> = { ...task };
+  delete canonical.body;
+  return JSON.stringify(canonical);
 }
 
 function claimFrontmatter(claim: Task['claim']): Record<string, string> | null {
@@ -235,36 +265,16 @@ export class MarkdownTaskRepository implements TaskRepository {
   }
 
   async list(): Promise<Task[]> {
-    const candidates = (await Promise.all(
-      ['Inbox', 'Active', 'Archive'].map(async (directory) => {
-        const subtree = join(this.tasksRoot, directory);
-        const boundary = {
-          vaultRoot: this.root,
-          tasksRoot: this.tasksRoot,
-          subtree,
-        };
-        const paths = await listSafeRegularFiles(boundary, '**/*.md');
-        return paths.map((path) => ({ path, boundary }));
-      }),
-    )).flat();
-    const tasks: Task[] = [];
-    for (const { path, boundary } of candidates) {
-      const record = await this.readRecord(path, boundary);
-      if (record === null) {
-        continue;
-      }
-      const task = taskFromRecord(record);
-      this.records.set(task.taskId, record);
-      tasks.push(task);
+    const entries = await this.scanEntries();
+    const records = new Map(entries.map(({ record, task }) => [task.taskId, record]));
+    this.records.clear();
+    for (const [taskId, record] of records) {
+      this.records.set(taskId, record);
     }
-    return tasks;
+    return entries.map(({ task }) => task);
   }
 
   async get(taskId: string): Promise<Task> {
-    const cached = this.records.get(taskId);
-    if (cached !== undefined) {
-      return taskFromRecord(cached);
-    }
     const tasks = await this.list();
     const task = tasks.find((candidate) => candidate.taskId === taskId);
     if (task === undefined) {
@@ -287,29 +297,42 @@ export class MarkdownTaskRepository implements TaskRepository {
     if (!hasSafeTaskPaths(validTask)) {
       throw new InvalidTaskDataError();
     }
-    let existing = this.records.get(validTask.taskId);
-    if (existing === undefined) {
-      try {
-        await this.get(validTask.taskId);
-        existing = this.records.get(validTask.taskId);
-      } catch (error) {
-        if (!(error instanceof TaskNotFoundError)) {
-          throw error;
-        }
+    const cached = this.records.get(validTask.taskId);
+    const entries = await this.scanEntries();
+    const current = entries.find((entry) => entry.task.taskId === validTask.taskId);
+    if (cached !== undefined) {
+      if (current === undefined || current.record.snapshot !== cached.snapshot) {
+        throw new TaskConflictError();
       }
     }
 
+    const existing = current?.record;
+    // Existing-task save updates canonical metadata while preserving the latest disk body.
     const body = existing?.body ?? validTask.body;
     const persistedTask = { ...validTask, body };
     const data = mergeTaskData(existing?.data ?? {}, persistedTask);
     const targetDirectory = lifecycleDirectory(this.tasksRoot, persistedTask);
     const targetPath = join(targetDirectory, `${persistedTask.taskId}.md`);
-    await atomicWriteTextFile(targetPath, serializeTaskDocument(data, body));
-
-    if (existing !== undefined && existing.path !== targetPath) {
-      await rm(existing.path);
+    const serialized = serializeTaskDocument(data, body);
+    try {
+      if (existing !== undefined && existing.path !== targetPath) {
+        await atomicWriteTextFile(existing.path, serialized);
+        await moveSafeRegularFile(existing.path, targetPath);
+      } else {
+        await atomicWriteTextFile(targetPath, serialized);
+      }
+    } catch (error) {
+      if (existing !== undefined) {
+        throw new TaskConflictError();
+      }
+      throw error;
     }
-    this.records.set(persistedTask.taskId, { path: targetPath, data, body });
+    this.records.set(persistedTask.taskId, {
+      path: targetPath,
+      data,
+      body,
+      snapshot: canonicalTaskSnapshot(persistedTask),
+    });
 
     try {
       await rebuildTaskIndex(this.root);
@@ -319,15 +342,52 @@ export class MarkdownTaskRepository implements TaskRepository {
     return persistedTask;
   }
 
-  private async readRecord(
+  private async scanEntries(): Promise<TaskEntry[]> {
+    const candidates = (await Promise.all(
+      ['Inbox', 'Active', 'Archive'].map(async (directory) => {
+        const subtree = join(this.tasksRoot, directory);
+        const boundary = {
+          vaultRoot: this.root,
+          tasksRoot: this.tasksRoot,
+          subtree,
+        };
+        const paths = await listSafeRegularFiles(boundary, '**/*.md');
+        return paths.map((path) => ({ path, boundary }));
+      }),
+    )).flat();
+    const entries: TaskEntry[] = [];
+    const taskIds = new Set<string>();
+    for (const { path, boundary } of candidates) {
+      const entry = await this.readEntry(path, boundary);
+      if (entry === null) {
+        continue;
+      }
+      if (taskIds.has(entry.task.taskId)) {
+        throw new TaskIntegrityError();
+      }
+      taskIds.add(entry.task.taskId);
+      entries.push(entry);
+    }
+    return entries;
+  }
+
+  private async readEntry(
     path: string,
     boundary: StorageReadBoundary,
-  ): Promise<TaskRecord | null> {
+  ): Promise<TaskEntry | null> {
     const raw = await readSafeTextFile(path, boundary);
     if (raw === null) {
       return null;
     }
     const document = parseTaskDocument(raw);
-    return { path, ...document };
+    const task = taskFromRecord({ path, ...document });
+    return {
+      task,
+      record: {
+        path,
+        ...document,
+        snapshot: canonicalTaskSnapshot(task),
+      },
+    };
   }
 }

@@ -5,6 +5,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  rename,
   rm,
   stat,
   symlink,
@@ -302,6 +303,164 @@ describe('MarkdownTaskRepository', () => {
       ...task,
       sourceDate: '../../escaped',
     })).rejects.toMatchObject({ code: 'invalid_task_data' });
+  });
+
+  it('preserves external body and unknown metadata edits on an existing task save', async () => {
+    const root = await makeVault();
+    const path = join(root, fixtureRelativePath);
+    const repository = new MarkdownTaskRepository(root);
+    const task = await repository.get('task-20260713-deadbeef');
+    const external = parseTaskDocument(await readFile(path, 'utf8'));
+    const externalBody = '\nExternally edited synthetic body.\n';
+    await writeFile(path, serializeTaskDocument({
+      ...external.data,
+      external_unknown: 'preserve-me',
+    }, externalBody));
+
+    await repository.save({ ...task, title: 'Requested canonical update' });
+
+    const persistedPath = join(dirname(path), `${task.taskId}.md`);
+    const persisted = parseTaskDocument(await readFile(persistedPath, 'utf8'));
+    expect(persisted.data.title).toBe('Requested canonical update');
+    expect(persisted.data.external_unknown).toBe('preserve-me');
+    expect(persisted.body).toBe(externalBody);
+  });
+
+  it('rejects an existing task save after an external canonical edit', async () => {
+    const root = await makeVault();
+    const path = join(root, fixtureRelativePath);
+    const repository = new MarkdownTaskRepository(root);
+    const task = await repository.get('task-20260713-deadbeef');
+    const external = parseTaskDocument(await readFile(path, 'utf8'));
+    await writeFile(path, serializeTaskDocument({
+      ...external.data,
+      title: 'External canonical edit',
+    }, external.body));
+
+    await expect(repository.save({
+      ...task,
+      priority: 'urgent',
+    })).rejects.toMatchObject({ code: 'task_conflict' });
+    expect(parseTaskDocument(await readFile(path, 'utf8')).data.title).toBe(
+      'External canonical edit',
+    );
+  });
+
+  it('rejects save after external task deletion without recreating it', async () => {
+    const root = await makeVault();
+    const path = join(root, fixtureRelativePath);
+    const repository = new MarkdownTaskRepository(root);
+    const task = await repository.get('task-20260713-deadbeef');
+    await rm(path);
+
+    await expect(repository.save({ ...task, title: 'Must not recreate' }))
+      .rejects.toMatchObject({ code: 'task_conflict' });
+    await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('rescans an externally moved task by ID before saving', async () => {
+    const root = await makeVault();
+    const oldPath = join(root, fixtureRelativePath);
+    const movedPath = join(dirname(oldPath), 'externally-moved.md');
+    const repository = new MarkdownTaskRepository(root);
+    const task = await repository.get('task-20260713-deadbeef');
+    await rename(oldPath, movedPath);
+
+    await repository.save({ ...task, title: 'Saved after external move' });
+
+    const targetPath = join(dirname(oldPath), `${task.taskId}.md`);
+    expect(parseTaskDocument(await readFile(targetPath, 'utf8')).data.title).toBe(
+      'Saved after external move',
+    );
+    await expect(stat(movedPath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('does not overwrite or delete a replacement at a stale cached task path', async () => {
+    const root = await makeVault();
+    const oldPath = join(root, fixtureRelativePath);
+    const movedPath = join(dirname(oldPath), 'externally-moved.md');
+    const repository = new MarkdownTaskRepository(root);
+    const task = await repository.get('task-20260713-deadbeef');
+    const original = await readFile(oldPath, 'utf8');
+    await rename(oldPath, movedPath);
+    const replacementDocument = parseTaskDocument(original);
+    await writeFile(oldPath, serializeTaskDocument({
+      ...replacementDocument.data,
+      task_id: 'task-replacement-safe',
+      title: 'Replacement must survive',
+    }, replacementDocument.body));
+
+    await expect(repository.save({
+      ...task,
+      title: 'Save should use rescanned path',
+    })).resolves.toMatchObject({ title: 'Save should use rescanned path' });
+
+    const replacement = parseTaskDocument(await readFile(oldPath, 'utf8'));
+    const targetPath = join(dirname(oldPath), `${task.taskId}.md`);
+    const moved = parseTaskDocument(await readFile(targetPath, 'utf8'));
+    expect(replacement.data.task_id).toBe('task-replacement-safe');
+    expect(replacement.data.title).toBe('Replacement must survive');
+    expect(moved.data.task_id).toBe('task-20260713-deadbeef');
+    await expect(stat(movedPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    const tasks = await new MarkdownTaskRepository(root).list();
+    expect(tasks.filter((candidate) => candidate.taskId === task.taskId)).toHaveLength(1);
+  });
+
+  it('leaves one source task when a lifecycle move target is occupied', async () => {
+    const root = await makeVault();
+    const sourcePath = join(root, fixtureRelativePath);
+    const repository = new MarkdownTaskRepository(root);
+    const task = await repository.get('task-20260713-deadbeef');
+    const targetPath = join(
+      root,
+      '10_Tasks',
+      'Active',
+      'project-public-research',
+      `${task.taskId}.md`,
+    );
+    await mkdir(dirname(targetPath), { recursive: true });
+    await writeFile(targetPath, syntheticExternalTask('Occupied target').replace(
+      'task_id: task-external-symlink',
+      'task_id: task-occupied-target',
+    ));
+
+    await expect(repository.save({
+      ...task,
+      status: 'ready',
+      reviewState: 'confirmed',
+      projectId: 'project-public-research',
+      taskType: 'research',
+      objective: 'Synthetic occupied target move',
+      acceptanceCriteria: ['Leave one source task'],
+      autoExecutable: true,
+      permissionProfile: 'read_only_research',
+    })).rejects.toMatchObject({ code: 'task_conflict' });
+
+    expect(parseTaskDocument(await readFile(targetPath, 'utf8')).data.task_id).toBe(
+      'task-occupied-target',
+    );
+    expect(parseTaskDocument(await readFile(sourcePath, 'utf8')).data.task_id).toBe(
+      task.taskId,
+    );
+    const tasks = await new MarkdownTaskRepository(root).list();
+    expect(tasks.filter((candidate) => candidate.taskId === task.taskId)).toHaveLength(1);
+  });
+
+  it('rejects duplicate task IDs from list, get, and source-key lookup', async () => {
+    const root = await makeVault();
+    const duplicatePath = join(root, '10_Tasks', 'Active', 'synthetic', 'duplicate.md');
+    await mkdir(dirname(duplicatePath), { recursive: true });
+    await cp(join(root, fixtureRelativePath), duplicatePath);
+
+    await expect(new MarkdownTaskRepository(root).list()).rejects.toMatchObject({
+      code: 'task_integrity_error',
+    });
+    await expect(
+      new MarkdownTaskRepository(root).get('task-20260713-deadbeef'),
+    ).rejects.toMatchObject({ code: 'task_integrity_error' });
+    await expect(
+      new MarkdownTaskRepository(root).findBySourceKey('synthetic-source-key'),
+    ).rejects.toMatchObject({ code: 'task_integrity_error' });
   });
 });
 
@@ -642,6 +801,125 @@ describe('MarkdownProjectRepository', () => {
     await expect(repository.save(makeProject({
       projectId: '../../escaped',
     }))).rejects.toMatchObject({ code: 'invalid_project_data' });
+  });
+
+  it('preserves external project body and unknown metadata edits on save', async () => {
+    const root = await makeVault();
+    const path = projectFilePath(root, 'project-public-research');
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, serializeTaskDocument({
+      project_id: 'project-public-research',
+      name: 'Original project',
+      description: 'Synthetic project fixture',
+      resources: [],
+      created_at: '2026-07-14T08:00:00+08:00',
+      updated_at: '2026-07-14T08:00:00+08:00',
+    }, '\nOriginal project body.\n'));
+    const repository = new MarkdownProjectRepository(root);
+    const project = await repository.get('project-public-research');
+    const external = parseTaskDocument(await readFile(path, 'utf8'));
+    const externalBody = '\nExternally edited project body.\n';
+    await writeFile(path, serializeTaskDocument({
+      ...external.data,
+      external_unknown: 'preserve-project-metadata',
+    }, externalBody));
+
+    await repository.save({ ...project, name: 'Requested project update' });
+
+    const persisted = parseTaskDocument(await readFile(path, 'utf8'));
+    expect(persisted.data.name).toBe('Requested project update');
+    expect(persisted.data.external_unknown).toBe('preserve-project-metadata');
+    expect(persisted.body).toBe(externalBody);
+  });
+
+  it('rejects project save after an external canonical edit', async () => {
+    const root = await makeVault();
+    const path = projectFilePath(root, 'project-public-research');
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, serializeTaskDocument({
+      project_id: 'project-public-research',
+      name: 'Original project',
+      description: 'Synthetic project fixture',
+      resources: [],
+      created_at: '2026-07-14T08:00:00+08:00',
+      updated_at: '2026-07-14T08:00:00+08:00',
+    }, '\nProject body.\n'));
+    const repository = new MarkdownProjectRepository(root);
+    const project = await repository.get('project-public-research');
+    const external = parseTaskDocument(await readFile(path, 'utf8'));
+    await writeFile(path, serializeTaskDocument({
+      ...external.data,
+      description: 'External canonical project edit',
+    }, external.body));
+
+    await expect(repository.save({
+      ...project,
+      name: 'Requested project update',
+    })).rejects.toMatchObject({ code: 'project_conflict' });
+    expect(parseTaskDocument(await readFile(path, 'utf8')).data.description).toBe(
+      'External canonical project edit',
+    );
+  });
+
+  it('rejects project save after external deletion', async () => {
+    const root = await makeVault();
+    const path = projectFilePath(root, 'project-public-research');
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, serializeTaskDocument({
+      project_id: 'project-public-research',
+      name: 'Original project',
+      description: 'Synthetic project fixture',
+      resources: [],
+      created_at: '2026-07-14T08:00:00+08:00',
+      updated_at: '2026-07-14T08:00:00+08:00',
+    }, '\nProject body.\n'));
+    const repository = new MarkdownProjectRepository(root);
+    const project = await repository.get('project-public-research');
+    await rm(path);
+
+    await expect(repository.save(project)).rejects.toMatchObject({
+      code: 'project_conflict',
+    });
+    await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('rescans a moved project by ID without touching a stale replacement path', async () => {
+    const root = await makeVault();
+    const oldPath = projectFilePath(root, 'project-public-research');
+    const movedPath = join(dirname(oldPath), 'externally-moved.md');
+    await mkdir(dirname(oldPath), { recursive: true });
+    await writeFile(oldPath, serializeTaskDocument({
+      project_id: 'project-public-research',
+      name: 'Original project',
+      description: 'Synthetic project fixture',
+      resources: [],
+      created_at: '2026-07-14T08:00:00+08:00',
+      updated_at: '2026-07-14T08:00:00+08:00',
+    }, '\nOriginal body.\n'));
+    const repository = new MarkdownProjectRepository(root);
+    const project = await repository.get('project-public-research');
+    await rename(oldPath, movedPath);
+    const replacement = makeProject({
+      projectId: 'project-replacement-safe',
+      name: 'Replacement must survive',
+    });
+    await writeFile(oldPath, serializeTaskDocument({
+      project_id: replacement.projectId,
+      name: replacement.name,
+      description: replacement.description,
+      resources: replacement.resources,
+      created_at: replacement.createdAt,
+      updated_at: replacement.updatedAt,
+    }, '\nReplacement body.\n'));
+
+    await repository.save({ ...project, name: 'Saved at moved project path' });
+
+    expect(parseTaskDocument(await readFile(oldPath, 'utf8')).data.project_id).toBe(
+      'project-replacement-safe',
+    );
+    const moved = parseTaskDocument(await readFile(movedPath, 'utf8'));
+    expect(moved.data.project_id).toBe('project-public-research');
+    expect(moved.data.name).toBe('Saved at moved project path');
   });
 });
 

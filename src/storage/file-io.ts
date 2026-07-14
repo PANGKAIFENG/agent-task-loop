@@ -134,6 +134,7 @@ export async function atomicWriteTextFile(
     }
     createdIdentity = { dev: openedStat.dev, ino: openedStat.ino };
     await handle.writeFile(content, 'utf8');
+    await handle.sync();
     await handle.close();
     handle = undefined;
 
@@ -157,6 +158,49 @@ export async function atomicWriteTextFile(
       await unlinkCreatedFile(temporaryPath, createdIdentity);
     }
     throw error;
+  }
+}
+
+export async function moveSafeRegularFile(
+  sourcePath: string,
+  targetPath: string,
+): Promise<void> {
+  await mkdir(dirname(targetPath), { recursive: true });
+  let handle: FileHandle | undefined;
+  try {
+    const sourceStat = await lstat(sourcePath);
+    if (sourceStat.isSymbolicLink() || !sourceStat.isFile()) {
+      throw new InvalidStorageEntryError();
+    }
+    handle = await open(sourcePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const openedStat = await handle.stat();
+    if (!openedStat.isFile() || !sameIdentity(sourceStat, openedStat)) {
+      throw new InvalidStorageEntryError();
+    }
+    try {
+      await lstat(targetPath);
+      throw new InvalidStorageEntryError();
+    } catch (error) {
+      if (!isUnsafePathError(error)) {
+        throw error;
+      }
+    }
+    const finalSourceStat = await lstat(sourcePath);
+    if (
+      finalSourceStat.isSymbolicLink()
+      || !finalSourceStat.isFile()
+      || !sameIdentity(openedStat, finalSourceStat)
+    ) {
+      throw new InvalidStorageEntryError();
+    }
+    await handle.close();
+    handle = undefined;
+    await rename(sourcePath, targetPath);
+    // V0.1 syncs file content before rename; directory fsync remains a local limitation.
+  } catch {
+    throw new InvalidStorageEntryError();
+  } finally {
+    await handle?.close();
   }
 }
 
