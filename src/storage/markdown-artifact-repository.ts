@@ -92,25 +92,6 @@ function artifactInputDigest(
   })).digest('hex');
 }
 
-function hasMatchingArtifactMetadata(
-  data: Record<string, unknown>,
-  input: Parameters<ArtifactRepository['write']>[0],
-  inputDigest: string,
-): boolean {
-  return data.type === 'artifact'
-    && data.schema_version === 1
-    && data.task_id === input.task.taskId
-    && data.run_id === input.runId
-    && data.attempt === input.task.attempts
-    && data.agent === input.agent
-    && data.summary === input.result.summary
-    && data.evidence_count === input.result.evidence.length
-    && data.input_digest === inputDigest
-    && typeof data.created_at === 'string'
-    && Number.isFinite(Date.parse(data.created_at))
-    && data.updated_at === data.created_at;
-}
-
 function renderArtifact(
   input: Parameters<ArtifactRepository['write']>[0],
   inputDigest: string,
@@ -187,17 +168,24 @@ function renderArtifact(
   ].join('\n');
 }
 
-function artifactRefParts(ref: string): { taskId: string; filename: string } | null {
-  const match = /^Artifacts\/([^/]+)\/(attempt-\d{3,}\.md)$/.exec(ref);
+function artifactRefParts(ref: string): {
+  taskId: string;
+  filename: string;
+  attempt: number;
+} | null {
+  const match = /^Artifacts\/([^/]+)\/(attempt-(\d{3,})\.md)$/.exec(ref);
+  const attempt = Number(match?.[3]);
   if (
     match === null
     || match[1] === undefined
     || match[2] === undefined
     || !isSafePathSegment(match[1])
+    || !Number.isSafeInteger(attempt)
+    || attempt <= 0
   ) {
     return null;
   }
-  return { taskId: match[1], filename: match[2] };
+  return { taskId: match[1], filename: match[2], attempt };
 }
 
 export class MarkdownArtifactRepository implements ArtifactRepository {
@@ -244,7 +232,14 @@ export class MarkdownArtifactRepository implements ArtifactRepository {
       if (existing !== null) {
         try {
           const data = parseTaskDocument(existing).data;
-          if (hasMatchingArtifactMetadata(data, normalizedInput, inputDigest)) {
+          if (
+            typeof data.created_at === 'string'
+            && Number.isFinite(Date.parse(data.created_at))
+            && existing === renderArtifact(
+              { ...normalizedInput, createdAt: data.created_at },
+              inputDigest,
+            )
+          ) {
             return { ref, absolutePath };
           }
         } catch {
@@ -272,6 +267,9 @@ export class MarkdownArtifactRepository implements ArtifactRepository {
     const data = parseTaskDocument(raw).data;
     if (
       data.type !== 'artifact'
+      || data.schema_version !== 1
+      || data.task_id !== parts.taskId
+      || data.attempt !== parts.attempt
       || typeof data.summary !== 'string'
       || typeof data.evidence_count !== 'number'
       || !Number.isInteger(data.evidence_count)

@@ -447,7 +447,7 @@ describe('artifact review loop', () => {
     }]);
   });
 
-  it('rejects a corrupt orphan Artifact even when its input digest remains', async () => {
+  it('rejects an orphan Artifact with tampered Findings even when its input digest remains', async () => {
     const context = await makeContext();
     const task = inProgressTask({ taskId: 'task-20260714-corrupt-orphan' });
     await context.ctx.tasks.save(task);
@@ -464,9 +464,12 @@ describe('artifact review loop', () => {
     const ref = `Artifacts/${task.taskId}/attempt-001.md`;
     const artifactPath = join(context.root, '10_Tasks', ref);
     const original = await readFile(artifactPath, 'utf8');
-    const corrupt = original.replace(/^summary:.*\n/m, '');
-    expect(corrupt).not.toBe(original);
-    await writeFile(artifactPath, corrupt, 'utf8');
+    const tampered = original.replace(
+      '- Free tier exists.',
+      '- Tampered private finding.',
+    );
+    expect(tampered).not.toBe(original);
+    await writeFile(artifactPath, tampered, 'utf8');
     context.ctx.audit.append = appendAudit;
 
     await expect(submitArtifact(context.ctx, task.taskId, {
@@ -475,7 +478,7 @@ describe('artifact review loop', () => {
     })).rejects.toBeInstanceOf(ArtifactAlreadyExistsError);
     await expect(context.ctx.tasks.get(task.taskId)).resolves.toEqual(task);
     await expect(context.ctx.audit.listForTask(task.taskId)).resolves.toEqual([]);
-    expect(await readFile(artifactPath, 'utf8')).toBe(corrupt);
+    expect(await readFile(artifactPath, 'utf8')).toBe(tampered);
   });
 
   it.each([
@@ -548,6 +551,43 @@ describe('artifact review loop', () => {
       });
       await expect(context.ctx.tasks.get(task.taskId)).resolves.toEqual(task);
       await expect(context.ctx.audit.listForTask(task.taskId)).resolves.toEqual([]);
+    });
+  });
+
+  describe.each([
+    ['task_id', /^task_id:.*$/m, 'task_id: task-review-other'],
+    ['attempt', /^attempt:.*$/m, 'attempt: 2'],
+  ] as const)('rejects an Artifact with tampered %s', (
+    field,
+    pattern,
+    replacement,
+  ) => {
+    it.each(reviewInputs)('before the $decision decision', async ({
+      decision,
+      input,
+    }) => {
+      const context = await makeContext();
+      const task = inProgressTask({
+        taskId: `task-review-tampered-${field}-${decision}`,
+      });
+      await context.ctx.tasks.save(task);
+      const submitted = await submitArtifact(context.ctx, task.taskId, {
+        runId: task.claim?.runId ?? '',
+        result: artifactResult(),
+      });
+      const ref = submitted.artifactRefs.at(-1) ?? '';
+      const artifactPath = join(context.root, '10_Tasks', ref);
+      const original = await readFile(artifactPath, 'utf8');
+      const tampered = original.replace(pattern, replacement);
+      expect(tampered).not.toBe(original);
+      await writeFile(artifactPath, tampered, 'utf8');
+
+      await expect(reviewTask(context.ctx, task.taskId, input))
+        .rejects.toBeInstanceOf(ReviewTaskArtifactInvalidError);
+      await expect(context.ctx.tasks.get(task.taskId)).resolves.toEqual(submitted);
+      const reviewEvents = (await context.ctx.audit.listForTask(task.taskId))
+        .filter(({ event }) => event === 'task.reviewed');
+      expect(reviewEvents).toEqual([]);
     });
   });
 
