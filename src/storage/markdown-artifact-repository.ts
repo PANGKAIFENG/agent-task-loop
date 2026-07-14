@@ -88,6 +88,7 @@ function artifactInputDigest(
     attempt: input.task.attempts,
     runId: input.runId,
     agent: input.agent,
+    createdAt: input.createdAt,
     result: input.result,
   })).digest('hex');
 }
@@ -235,12 +236,17 @@ export class MarkdownArtifactRepository implements ArtifactRepository {
           if (
             typeof data.created_at === 'string'
             && Number.isFinite(Date.parse(data.created_at))
-            && existing === renderArtifact(
-              { ...normalizedInput, createdAt: data.created_at },
-              inputDigest,
-            )
           ) {
-            return { ref, absolutePath };
+            const expectedInput = {
+              ...normalizedInput,
+              createdAt: data.created_at,
+            };
+            if (existing === renderArtifact(
+              expectedInput,
+              artifactInputDigest(expectedInput),
+            )) {
+              return { ref, absolutePath };
+            }
           }
         } catch {
           // A malformed create-only Artifact remains a conflict.

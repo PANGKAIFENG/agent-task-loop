@@ -481,6 +481,43 @@ describe('artifact review loop', () => {
     expect(await readFile(artifactPath, 'utf8')).toBe(tampered);
   });
 
+  it('rejects an orphan Artifact with both timestamps tampered', async () => {
+    const context = await makeContext();
+    const task = inProgressTask({ taskId: 'task-20260714-timestamp-orphan' });
+    await context.ctx.tasks.save(task);
+    const appendAudit = context.ctx.audit.append.bind(context.ctx.audit);
+    context.ctx.audit.append = async () => {
+      throw new Error('synthetic private audit failure');
+    };
+
+    await expect(submitArtifact(context.ctx, task.taskId, {
+      runId: task.claim?.runId ?? '',
+      result: artifactResult(),
+    })).rejects.toBeInstanceOf(ArtifactSubmissionAuditFailedError);
+
+    const ref = `Artifacts/${task.taskId}/attempt-001.md`;
+    const artifactPath = join(context.root, '10_Tasks', ref);
+    const original = await readFile(artifactPath, 'utf8');
+    const originalDigest = /^input_digest: ([0-9a-f]{64})$/m.exec(original)?.[1];
+    const tamperedAt = '2026-07-14T02:00:00.000Z';
+    const tampered = original
+      .replace(`created_at: ${NOW}`, `created_at: ${tamperedAt}`)
+      .replace(`updated_at: ${NOW}`, `updated_at: ${tamperedAt}`);
+    expect(tampered).not.toBe(original);
+    expect(/^input_digest: ([0-9a-f]{64})$/m.exec(tampered)?.[1])
+      .toBe(originalDigest);
+    await writeFile(artifactPath, tampered, 'utf8');
+    context.ctx.audit.append = appendAudit;
+
+    await expect(submitArtifact(context.ctx, task.taskId, {
+      runId: task.claim?.runId ?? '',
+      result: artifactResult(),
+    })).rejects.toBeInstanceOf(ArtifactAlreadyExistsError);
+    await expect(context.ctx.tasks.get(task.taskId)).resolves.toEqual(task);
+    await expect(context.ctx.audit.listForTask(task.taskId)).resolves.toEqual([]);
+    expect(await readFile(artifactPath, 'utf8')).toBe(tampered);
+  });
+
   it.each([
     ['request_changes', 'ready'],
     ['block', 'blocked'],
