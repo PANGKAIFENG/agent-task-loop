@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import {
   mkdir,
   mkdtemp,
@@ -8,6 +9,8 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -20,6 +23,7 @@ import {
 
 const NOW = '2026-07-15T00:00:00.000Z';
 const roots: string[] = [];
+const execFileAsync = promisify(execFile);
 
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -178,6 +182,108 @@ describe('buildContextBundle', () => {
 
     expect(bundle.blocks.find((block) => block.label === 'task_source_note'))
       .toMatchObject({ kind: 'local_file' });
+  });
+
+  it('rejects a FIFO with a typed error without blocking on open or read', async () => {
+    const root = await temporaryRoot();
+    const fifo = join(root, 'blocking-source');
+    await execFileAsync('mkfifo', [fifo]);
+    const moduleUrl = pathToFileURL(join(
+      process.cwd(),
+      'src',
+      'runner',
+      'context-bundle.ts',
+    )).href;
+    const script = `
+      import { buildContextBundle } from ${JSON.stringify(moduleUrl)};
+      const task = ${JSON.stringify(makeTask({ sourceNote: fifo }))};
+      const project = ${JSON.stringify(makeProject())};
+      try {
+        await buildContextBundle(task, project, {
+          allowedLocalRoots: [${JSON.stringify(root)}],
+        });
+        console.log(JSON.stringify({ code: 'unexpected_success' }));
+      } catch (error) {
+        console.log(JSON.stringify({
+          name: error?.name,
+          code: error?.code,
+          message: error?.message,
+        }));
+      }
+    `;
+
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      ['--import', 'tsx', '--input-type=module', '--eval', script],
+      { timeout: 500, killSignal: 'SIGKILL' },
+    );
+
+    expect(JSON.parse(stdout)).toMatchObject({
+      name: 'ContextBundleError',
+      code: 'invalid_local_file',
+    });
+    expect(stdout).not.toContain(fifo);
+  });
+
+  it.each([
+    ['missing task project', null, 'project-context'],
+    ['blank task and project', '', ''],
+    ['different projects', 'project-context', 'project-other'],
+  ] as const)(
+    'rejects %s before including project context',
+    async (_label, taskProjectId, projectId) => {
+      await expect(buildContextBundle(
+        makeTask({ projectId: taskProjectId }),
+        makeProject({
+          projectId,
+          description: 'CROSS_PROJECT_DESCRIPTION_SENTINEL',
+          resources: [{
+            kind: 'url',
+            value: 'https://example.com/CROSS_PROJECT_RESOURCE_SENTINEL',
+            label: 'Cross-project resource',
+          }],
+        }),
+        { allowedLocalRoots: [] },
+      )).rejects.toMatchObject({
+        name: 'ContextBundleError',
+        code: 'project_context_mismatch',
+      });
+    },
+  );
+
+  it('redacts common provider tokens from every context surface before digesting', async () => {
+    const root = await temporaryRoot();
+    const localSource = join(root, 'provider-tokens.md');
+    const tokens = {
+      aws: 'AKIAABCDEFGHIJKLMNOP',
+      gitlab: 'glpat-abcdefghijklmnopqrst',
+      npm: 'npm_abcdefghijklmnopqrstuvwx',
+      stripe: 'whsec_abcdefghijklmnopqrstuvwx',
+    };
+    await writeFile(localSource, `Local token: ${tokens.npm}\n`);
+
+    const bundle = await buildContextBundle(
+      makeTask({ objective: `Task token: ${tokens.aws}` }),
+      makeProject({
+        description: `Project token: ${tokens.gitlab}`,
+        resources: [
+          { kind: 'local_path', value: localSource, label: 'Local token file' },
+          {
+            kind: 'url',
+            value: `https://example.com/docs?signature=${tokens.stripe}`,
+            label: 'Signed docs',
+          },
+        ],
+      }),
+      { allowedLocalRoots: [root] },
+    );
+
+    const serialized = JSON.stringify(bundle);
+    for (const token of Object.values(tokens)) {
+      expect(serialized).not.toContain(token);
+    }
+    expect(serialized.match(/\[REDACTED\]/g)).toHaveLength(4);
+    bundle.blocks.forEach(expectValidDigest);
   });
 
   it.each([

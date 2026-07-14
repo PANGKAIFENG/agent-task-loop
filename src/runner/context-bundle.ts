@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { open, realpath, stat, type FileHandle } from 'node:fs/promises';
+import {
+  lstat,
+  open,
+  realpath,
+  stat,
+  type FileHandle,
+} from 'node:fs/promises';
 import { isAbsolute, relative } from 'node:path';
 
 import { projectSchema, type Project } from '../domain/project.js';
@@ -27,7 +33,8 @@ export class ContextBundleError extends Error {
     | 'invalid_allowed_root'
     | 'invalid_local_file'
     | 'local_file_not_allowed'
-    | 'local_file_too_large';
+    | 'local_file_too_large'
+    | 'project_context_mismatch';
 
   constructor(code: ContextBundleError['code'], message: string) {
     super(message);
@@ -44,6 +51,10 @@ const SECRET_PATTERNS: RegExp[] = [
   /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,
   /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,
   /\bAIza[A-Za-z0-9_-]{20,}\b/g,
+  /\bAKIA[0-9A-Z]{16}\b/g,
+  /\bglpat-[A-Za-z0-9_-]{20,}\b/g,
+  /\bnpm_[A-Za-z0-9]{20,}\b/g,
+  /\bwhsec_[A-Za-z0-9]{20,}\b/g,
   /\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi,
   /\b(?:api[_-]?key|access[_-]?token|client[_-]?secret)\s*[:=]\s*[^\s,;]+/gi,
 ];
@@ -99,8 +110,25 @@ async function readAllowedLocalFile(
   let handle: FileHandle | undefined;
   let canonicalPath: string;
   try {
+    const referencedMetadata = await lstat(path);
+    if (!referencedMetadata.isFile() && !referencedMetadata.isSymbolicLink()) {
+      throw new ContextBundleError(
+        'invalid_local_file',
+        'An explicitly referenced local path is not a safe regular file',
+      );
+    }
     canonicalPath = await realpath(path);
-  } catch {
+    const canonicalMetadata = await lstat(canonicalPath);
+    if (!canonicalMetadata.isFile()) {
+      throw new ContextBundleError(
+        'invalid_local_file',
+        'An explicitly referenced local path is not a safe regular file',
+      );
+    }
+  } catch (error) {
+    if (error instanceof ContextBundleError) {
+      throw error;
+    }
     throw new ContextBundleError(
       'invalid_local_file',
       'An explicitly referenced local file is missing or unsafe',
@@ -115,7 +143,10 @@ async function readAllowedLocalFile(
   }
 
   try {
-    handle = await open(canonicalPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    handle = await open(
+      canonicalPath,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
     const [metadata, currentCanonicalPath, currentPathMetadata] = await Promise.all([
       handle.stat(),
       realpath(canonicalPath),
@@ -193,6 +224,17 @@ export async function buildContextBundle(
 ): Promise<ContextBundle> {
   const validTask = taskSchema.parse(task);
   const validProject = projectSchema.parse(project);
+  if (
+    validTask.projectId === null
+    || validTask.projectId.trim() === ''
+    || validProject.projectId.trim() === ''
+    || validTask.projectId !== validProject.projectId
+  ) {
+    throw new ContextBundleError(
+      'project_context_mismatch',
+      'Task and project context do not match',
+    );
+  }
   const allowedRoots = await canonicalAllowedRoots(options.allowedLocalRoots);
   const blocks: ContextBlock[] = [
     contextBlock('task', 'task', taskContent(validTask)),
