@@ -118,6 +118,27 @@ function makeProject(overrides: Partial<Project> = {}): Project {
   };
 }
 
+function taskLockPath(root: string, taskId: string): string {
+  const digest = createHash('sha256').update(taskId).digest('hex');
+  return join(root, '10_Tasks', '.atl', 'task-locks', `${digest}.lock`);
+}
+
+async function writeSyntheticTaskLock(
+  root: string,
+  taskId: string,
+  metadata: {
+    ownerToken: string;
+    ownerPid: number;
+    acquiredAt: string;
+    leaseExpiresAt: string;
+  },
+): Promise<string> {
+  const path = taskLockPath(root, taskId);
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  await writeFile(path, `${JSON.stringify(metadata)}\n`, { mode: 0o600 });
+  return path;
+}
+
 afterEach(async () => {
   delete process.env.ATL_VAULT_ROOT;
   delete process.env.ATL_ALLOW_REAL_WRITES;
@@ -142,6 +163,85 @@ describe('frontmatter compatibility', () => {
 });
 
 describe('MarkdownTaskRepository', () => {
+  it('uses only a taskId hash in the task lock filename', async () => {
+    const root = await makeVault();
+    const taskId = 'task-private-reference-1';
+    const path = taskLockPath(root, taskId);
+    const repository = new MarkdownTaskRepository(root);
+
+    await repository.withTaskLock(taskId, async () => {
+      expect((await stat(path)).isFile()).toBe(true);
+      expect(path).not.toContain(taskId);
+      expect(await readFile(path, 'utf8')).not.toContain(taskId);
+    });
+
+    await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('does not reclaim an expired task lock while its owner process is alive', async () => {
+    const root = await makeVault();
+    const taskId = 'task-live-expired-lock';
+    const owner = new MarkdownTaskRepository(root, {
+      taskLock: {
+        leaseMs: 1,
+        clock: () => new Date('2026-07-14T00:00:00.000Z'),
+      },
+    });
+    const contender = new MarkdownTaskRepository(root, {
+      taskLock: {
+        attempts: 2,
+        retryMs: 1,
+        clock: () => new Date('2026-07-14T00:01:00.000Z'),
+      },
+    });
+    const lockHeld = Promise.withResolvers<void>();
+    const releaseLock = Promise.withResolvers<void>();
+    const ownerOperation = owner.withTaskLock(taskId, async () => {
+      lockHeld.resolve();
+      await releaseLock.promise;
+    });
+    await lockHeld.promise;
+
+    const contenderError = await contender.withTaskLock(
+      taskId,
+      async () => 'must-not-run',
+    ).catch((caught: unknown) => caught);
+    releaseLock.resolve();
+    await ownerOperation;
+
+    expect(contenderError).toMatchObject({
+      code: 'task_lock_timeout',
+      message: 'Task lock timed out',
+    });
+  });
+
+  it('reclaims an expired task lock whose owner process is absent', async () => {
+    const root = await makeVault();
+    const taskId = 'task-expired-dead-owner-lock';
+    const absentOwnerPid = 2_147_483_647;
+    expect(() => process.kill(absentOwnerPid, 0)).toThrowError(
+      expect.objectContaining({ code: 'ESRCH' }),
+    );
+    const path = await writeSyntheticTaskLock(root, taskId, {
+      ownerToken: '00000000-0000-4000-8000-000000000003',
+      ownerPid: absentOwnerPid,
+      acquiredAt: '2026-07-13T23:58:00.000Z',
+      leaseExpiresAt: '2026-07-13T23:59:00.000Z',
+    });
+    const repository = new MarkdownTaskRepository(root, {
+      taskLock: {
+        attempts: 1,
+        clock: () => new Date('2026-07-14T00:00:00.000Z'),
+      },
+    });
+
+    await expect(repository.withTaskLock(
+      taskId,
+      async () => 'recovered',
+    )).resolves.toBe('recovered');
+    await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('loads legacy snake_case fields and derives a stable source key without rewriting', async () => {
     const root = await makeVault();
     const path = join(root, fixtureRelativePath);

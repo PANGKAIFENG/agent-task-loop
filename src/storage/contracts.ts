@@ -11,6 +11,7 @@ export class ProjectCreateConflictError extends Error {
 }
 
 export interface TaskRepository {
+  withTaskLock<T>(taskId: string, operation: () => Promise<T>): Promise<T>;
   list(): Promise<Task[]>;
   get(taskId: string): Promise<Task>;
   findBySourceKey(sourceKey: string): Promise<Task | null>;

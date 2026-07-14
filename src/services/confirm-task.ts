@@ -38,6 +38,35 @@ export class ConfirmTaskProjectNotFoundError extends Error {
   }
 }
 
+export class ConfirmTaskInvalidStateError extends Error {
+  readonly code = 'task_confirmation_invalid_state';
+
+  constructor() {
+    super('Task must be in Inbox to confirm');
+    this.name = 'ConfirmTaskInvalidStateError';
+  }
+}
+
+export class TaskConfirmationAuditFailedError extends Error {
+  readonly code = 'task_confirmation_audit_failed';
+
+  constructor() {
+    super('Task confirmation audit failed');
+    this.name = 'TaskConfirmationAuditFailedError';
+  }
+}
+
+export class TaskConfirmationRecoveryError extends Error {
+  readonly code = 'task_confirmation_recovery_error';
+  readonly partialCommit = true;
+  readonly recoveryRequired = true;
+
+  constructor() {
+    super('Task confirmation recovery required');
+    this.name = 'TaskConfirmationRecoveryError';
+  }
+}
+
 const confirmTaskInputSchema = z
   .object({
     projectId: z.string().max(200).optional(),
@@ -60,54 +89,65 @@ export async function confirmTask(
     throw new InvalidConfirmTaskInputError();
   }
 
-  const task = await ctx.tasks.get(taskId);
-  if (task.status !== 'inbox') {
-    throw new Error('Task must be in Inbox to confirm');
-  }
-  assertTransition('inbox', 'ready');
-
-  const candidate: Task = {
-    ...task,
-    projectId: parsed.data.projectId ?? null,
-    taskType: parsed.data.taskType ?? null,
-    objective: parsed.data.objective ?? null,
-    acceptanceCriteria: parsed.data.acceptanceCriteria ?? [],
-    permissionProfile: parsed.data.permissionProfile ?? null,
-    priority: parsed.data.priority,
-    autoExecutable: parsed.data.autoExecutable ?? false,
-  };
-  if (candidate.projectId !== null && candidate.projectId.trim() !== '') {
-    try {
-      await ctx.projects.get(candidate.projectId);
-    } catch (error) {
-      if (error instanceof ProjectNotFoundError) {
-        throw new ConfirmTaskProjectNotFoundError();
-      }
-      throw error;
+  return ctx.tasks.withTaskLock(taskId, async () => {
+    const task = await ctx.tasks.get(taskId);
+    if (task.status !== 'inbox') {
+      throw new ConfirmTaskInvalidStateError();
     }
-  }
-  const errors = readinessErrors(candidate);
-  if (errors.length > 0) {
-    throw new Error(`Task is not ready: ${errors.join('; ')}`);
-  }
+    assertTransition('inbox', 'ready');
 
-  const timestamp = ctx.clock().toISOString();
-  const saved = await ctx.tasks.save({
-    ...candidate,
-    status: 'ready',
-    reviewState: 'confirmed',
-    reviewFeedback: null,
-    readyAt: timestamp,
-    updatedAt: timestamp,
+    const candidate: Task = {
+      ...task,
+      projectId: parsed.data.projectId ?? null,
+      taskType: parsed.data.taskType ?? null,
+      objective: parsed.data.objective ?? null,
+      acceptanceCriteria: parsed.data.acceptanceCriteria ?? [],
+      permissionProfile: parsed.data.permissionProfile ?? null,
+      priority: parsed.data.priority,
+      autoExecutable: parsed.data.autoExecutable ?? false,
+    };
+    if (candidate.projectId !== null && candidate.projectId.trim() !== '') {
+      try {
+        await ctx.projects.get(candidate.projectId);
+      } catch (error) {
+        if (error instanceof ProjectNotFoundError) {
+          throw new ConfirmTaskProjectNotFoundError();
+        }
+        throw error;
+      }
+    }
+    const errors = readinessErrors(candidate);
+    if (errors.length > 0) {
+      throw new Error(`Task is not ready: ${errors.join('; ')}`);
+    }
+
+    const timestamp = ctx.clock().toISOString();
+    const saved = await ctx.tasks.save({
+      ...candidate,
+      status: 'ready',
+      reviewState: 'confirmed',
+      reviewFeedback: null,
+      readyAt: timestamp,
+      updatedAt: timestamp,
+    });
+    try {
+      await ctx.audit.append({
+        event: 'task.confirmed',
+        at: timestamp,
+        taskId: saved.taskId,
+        details: {
+          projectId: saved.projectId,
+          priority: saved.priority,
+        },
+      });
+    } catch {
+      try {
+        await ctx.tasks.save(task);
+      } catch {
+        throw new TaskConfirmationRecoveryError();
+      }
+      throw new TaskConfirmationAuditFailedError();
+    }
+    return saved;
   });
-  await ctx.audit.append({
-    event: 'task.confirmed',
-    at: timestamp,
-    taskId: saved.taskId,
-    details: {
-      projectId: saved.projectId,
-      priority: saved.priority,
-    },
-  });
-  return saved;
 }

@@ -1,5 +1,6 @@
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -51,9 +52,12 @@ async function captureSyntheticTask(context: TestServiceContext) {
   });
 }
 
-async function createSyntheticProject(context: TestServiceContext) {
+async function createSyntheticProject(
+  context: TestServiceContext,
+  projectId = 'project-public-research',
+) {
   return createProject(context.ctx, {
-    projectId: 'project-public-research',
+    projectId,
     name: 'Public research',
     description: 'Synthetic project fixture.',
     resources: [{
@@ -248,6 +252,123 @@ describe('confirmTask', () => {
     expect(serializedAudit).not.toContain(candidate.sourceQuote ?? '');
   });
 
+  it('restores the exact Inbox task when the confirmation audit fails', async () => {
+    const context = await makeContext();
+    await createSyntheticProject(context);
+    const captured = await captureSyntheticTask(context);
+    const original = await context.ctx.tasks.save({
+      ...captured,
+      reviewState: 'ready_for_confirm',
+      objective: 'Unconfirmed draft objective.',
+      acceptanceCriteria: ['Unconfirmed draft criterion.'],
+      reviewFeedback: 'Preserve this old review feedback.',
+      possibleDuplicateIds: ['task-20260714-existing-duplicate'],
+      artifactRefs: ['10_Tasks/Artifacts/existing-result.md'],
+    });
+    const appendAudit = context.ctx.audit.append.bind(context.ctx.audit);
+    context.ctx.audit.append = async (event) => {
+      if (event.event === 'task.confirmed') {
+        throw new Error('private synthetic audit failure');
+      }
+      await appendAudit(event);
+    };
+    const input = confirmInput();
+    const inboxPath = join(
+      context.root,
+      '10_Tasks',
+      'Inbox',
+      '2026-07-14',
+      `${original.taskId}.md`,
+    );
+    const activePath = join(
+      context.root,
+      '10_Tasks',
+      'Active',
+      input.projectId,
+      `${original.taskId}.md`,
+    );
+
+    const error = await confirmTask(
+      context.ctx,
+      original.taskId,
+      input,
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      code: 'task_confirmation_audit_failed',
+      message: 'Task confirmation audit failed',
+    });
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).not.toContain('private synthetic');
+    expect((error as Error).message).not.toContain(original.body);
+    await expect(context.ctx.tasks.get(original.taskId)).resolves.toEqual(original);
+    expect((await stat(inboxPath)).isFile()).toBe(true);
+    await expect(stat(activePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((await context.ctx.audit.listForTask(original.taskId))
+      .filter(({ event }) => event === 'task.confirmed')).toEqual([]);
+  });
+
+  it('reports typed partial state when audit rollback also fails', async () => {
+    const context = await makeContext();
+    await createSyntheticProject(context);
+    const original = await captureSyntheticTask(context);
+    const saveTask = context.ctx.tasks.save.bind(context.ctx.tasks);
+    let saveCalls = 0;
+    context.ctx.tasks.save = async (task) => {
+      saveCalls += 1;
+      if (saveCalls === 2) {
+        throw new Error('private synthetic rollback failure');
+      }
+      return saveTask(task);
+    };
+    context.ctx.audit.append = async (event) => {
+      if (event.event === 'task.confirmed') {
+        throw new Error('private synthetic audit failure');
+      }
+    };
+    const input = confirmInput();
+    const inboxPath = join(
+      context.root,
+      '10_Tasks',
+      'Inbox',
+      '2026-07-14',
+      `${original.taskId}.md`,
+    );
+    const activePath = join(
+      context.root,
+      '10_Tasks',
+      'Active',
+      input.projectId,
+      `${original.taskId}.md`,
+    );
+
+    const error = await confirmTask(
+      context.ctx,
+      original.taskId,
+      input,
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      code: 'task_confirmation_recovery_error',
+      message: 'Task confirmation recovery required',
+      partialCommit: true,
+      recoveryRequired: true,
+    });
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).not.toContain('private synthetic');
+    expect((error as Error).message).not.toContain(original.body);
+    await expect(context.ctx.tasks.get(original.taskId)).resolves.toMatchObject({
+      status: 'ready',
+      reviewState: 'confirmed',
+      autoExecutable: true,
+      readyAt: '2026-07-14T00:00:00.000Z',
+    });
+    expect((await stat(activePath)).isFile()).toBe(true);
+    await expect(stat(inboxPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((await context.ctx.audit.listForTask(original.taskId))
+      .filter(({ event }) => event === 'task.confirmed')).toEqual([]);
+  });
+
   it('rejects confirmation when the persisted task is no longer in Inbox', async () => {
     const context = await makeContext();
     await createSyntheticProject(context);
@@ -317,5 +438,64 @@ describe('confirmTask', () => {
     });
 
     await expect(context.ctx.tasks.get(task.taskId)).resolves.toEqual(task);
+  });
+
+  it('serializes concurrent confirmation through the confirmation audit', async () => {
+    const context = await makeContext();
+    const second = context.createIndependentContext();
+    await createSyntheticProject(context, 'project-public-research');
+    await createSyntheticProject(context, 'project-market-research');
+    const task = await captureSyntheticTask(context);
+    const auditEntered = Promise.withResolvers<void>();
+    const releaseAudit = Promise.withResolvers<void>();
+    const appendAudit = context.ctx.audit.append.bind(context.ctx.audit);
+    context.ctx.audit.append = async (event) => {
+      if (event.event === 'task.confirmed') {
+        auditEntered.resolve();
+        await releaseAudit.promise;
+      }
+      await appendAudit(event);
+    };
+
+    const firstConfirmation = confirmTask(
+      context.ctx,
+      task.taskId,
+      confirmInput({ projectId: 'project-public-research' }),
+    );
+    await auditEntered.promise;
+    const secondConfirmation = confirmTask(
+      second,
+      task.taskId,
+      confirmInput({ projectId: 'project-market-research' }),
+    );
+    const secondSettledWhileAuditPaused = await Promise.race([
+      secondConfirmation.then(() => true, () => true),
+      delay(100, false),
+    ]);
+    releaseAudit.resolve();
+    const results = await Promise.allSettled([
+      firstConfirmation,
+      secondConfirmation,
+    ]);
+
+    expect(secondSettledWhileAuditPaused).toBe(false);
+    expect(results.filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
+    const rejected = results.find(({ status }) => status === 'rejected');
+    expect(rejected).toMatchObject({
+      status: 'rejected',
+      reason: {
+        code: 'task_confirmation_invalid_state',
+        message: 'Task must be in Inbox to confirm',
+      },
+    });
+    const activeFiles = (await readdir(
+      join(context.root, '10_Tasks', 'Active'),
+      { recursive: true },
+    )).filter((path) => path.endsWith(`${task.taskId}.md`));
+    expect(activeFiles).toEqual([
+      join('project-public-research', `${task.taskId}.md`),
+    ]);
+    expect((await context.ctx.audit.listForTask(task.taskId))
+      .filter(({ event }) => event === 'task.confirmed')).toHaveLength(1);
   });
 });

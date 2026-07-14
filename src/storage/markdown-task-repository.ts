@@ -108,12 +108,30 @@ export class TaskSourceClaimTimeoutError extends Error {
   }
 }
 
+export class TaskLockTimeoutError extends Error {
+  readonly code = 'task_lock_timeout';
+
+  constructor() {
+    super('Task lock timed out');
+    this.name = 'TaskLockTimeoutError';
+  }
+}
+
 const SOURCE_CLAIM_ATTEMPTS = 100;
 const SOURCE_CLAIM_RETRY_MS = 10;
 const SOURCE_CLAIM_LEASE_MS = 30_000;
+const TASK_LOCK_ATTEMPTS = 3_100;
+const TASK_LOCK_RETRY_MS = 10;
+const TASK_LOCK_LEASE_MS = 30_000;
 
 export interface MarkdownTaskRepositoryOptions {
   sourceClaim?: {
+    attempts?: number;
+    retryMs?: number;
+    leaseMs?: number;
+    clock?: () => Date;
+  };
+  taskLock?: {
     attempts?: number;
     retryMs?: number;
     leaseMs?: number;
@@ -370,6 +388,7 @@ export class MarkdownTaskRepository implements TaskRepository {
   readonly tasksRoot: string;
   readonly records = new Map<string, TaskRecord>();
   private readonly sourceClaim: SourceClaimOptions;
+  private readonly taskLock: SourceClaimOptions;
 
   constructor(root?: string, options: MarkdownTaskRepositoryOptions = {}) {
     this.root = vaultRoot(root);
@@ -389,6 +408,71 @@ export class MarkdownTaskRepository implements TaskRepository {
       ),
       clock: options.sourceClaim?.clock ?? (() => new Date()),
     };
+    this.taskLock = {
+      attempts: positiveInteger(
+        options.taskLock?.attempts,
+        TASK_LOCK_ATTEMPTS,
+      ),
+      retryMs: nonNegativeInteger(
+        options.taskLock?.retryMs,
+        TASK_LOCK_RETRY_MS,
+      ),
+      leaseMs: positiveInteger(
+        options.taskLock?.leaseMs,
+        TASK_LOCK_LEASE_MS,
+      ),
+      clock: options.taskLock?.clock ?? (() => new Date()),
+    };
+  }
+
+  async withTaskLock<T>(
+    taskId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    assertVaultWriteAllowed(this.root);
+    if (!isSafePathSegment(taskId)) {
+      throw new InvalidTaskDataError();
+    }
+    const lockRoot = join(this.tasksRoot, '.atl', 'task-locks');
+    const lockKey = createHash('sha256').update(taskId).digest('hex');
+    const lockPath = join(lockRoot, `${lockKey}.lock`);
+    const boundary = {
+      vaultRoot: this.root,
+      tasksRoot: this.tasksRoot,
+      subtree: lockRoot,
+    };
+
+    for (let attempt = 0; attempt < this.taskLock.attempts; attempt += 1) {
+      let lock = await acquireSafeFileLock(lockPath, boundary, {
+        acquiredAt: this.taskLock.clock(),
+        leaseMs: this.taskLock.leaseMs,
+      });
+      if (lock === null) {
+        const reclaimed = await reclaimExpiredSafeFileLock(
+          lockPath,
+          boundary,
+          this.taskLock.clock(),
+        );
+        if (reclaimed) {
+          lock = await acquireSafeFileLock(lockPath, boundary, {
+            acquiredAt: this.taskLock.clock(),
+            leaseMs: this.taskLock.leaseMs,
+          });
+        }
+        if (lock === null) {
+          if (attempt + 1 < this.taskLock.attempts) {
+            await delay(this.taskLock.retryMs);
+          }
+          continue;
+        }
+      }
+      try {
+        return await operation();
+      } finally {
+        await lock.release();
+      }
+    }
+    throw new TaskLockTimeoutError();
   }
 
   async list(): Promise<Task[]> {
