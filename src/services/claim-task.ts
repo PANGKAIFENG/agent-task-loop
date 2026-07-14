@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import type { Task } from '../domain/task.js';
+import { readinessErrors, type Task } from '../domain/task.js';
 import { assertTransition } from '../domain/transitions.js';
 import { TaskSavedIndexStaleError } from '../storage/markdown-task-repository.js';
 import type { ServiceContext } from './service-context.js';
@@ -89,8 +89,8 @@ export function resolveClaimTaskOptions(
 
 export function isClaimEligible(task: Task): boolean {
   return task.status === 'ready'
-    && task.taskType === 'research'
-    && task.autoExecutable;
+    && task.reviewState === 'confirmed'
+    && readinessErrors(task).length === 0;
 }
 
 export function localBusinessDate(now: Date): string {
@@ -105,6 +105,22 @@ export function localBusinessDate(now: Date): string {
 
 export function automaticClaimLockKey(localDate: string): string {
   return `claim-automatic-${localDate}`;
+}
+
+export async function automaticClaimSlotAvailable(
+  ctx: ServiceContext,
+  localDate: string,
+  dailyLimit: number,
+): Promise<boolean> {
+  if ((await ctx.tasks.list()).some((task) => task.status === 'in_progress')) {
+    return false;
+  }
+  const claimedToday = await ctx.audit.count({
+    event: 'task.claimed',
+    localDate,
+    mode: 'automatic',
+  });
+  return claimedToday < dailyLimit;
 }
 
 export async function claimTaskWithoutQuotaCheck(
@@ -187,12 +203,11 @@ export async function claimTask(
 
   const localDate = localBusinessDate(now);
   return ctx.tasks.withTaskLock(automaticClaimLockKey(localDate), async () => {
-    const claimedToday = await ctx.audit.count({
-      event: 'task.claimed',
+    if (!(await automaticClaimSlotAvailable(
+      ctx,
       localDate,
-      mode: 'automatic',
-    });
-    if (claimedToday >= options.dailyLimit) {
+      options.dailyLimit,
+    ))) {
       throw new ClaimTaskNotEligibleError();
     }
     return claimTaskWithoutQuotaCheck(ctx, taskId, options, now);

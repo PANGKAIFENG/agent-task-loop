@@ -123,7 +123,7 @@ describe('claimNextTask', () => {
       .toBe('ready');
   });
 
-  it('excludes Inbox, non-research, and non-auto-executable tasks', async () => {
+  it('excludes tasks that do not satisfy the complete Ready admission', async () => {
     const context = await makeContext();
     const inbox = readyTask({
       taskId: 'task-inbox',
@@ -145,21 +145,59 @@ describe('claimNextTask', () => {
       autoExecutable: false,
       priority: 'urgent',
     });
+    const unconfirmed = readyTask({
+      taskId: 'task-unconfirmed',
+      sourceKey: 'synthetic:unconfirmed',
+      reviewState: 'ready_for_confirm',
+      priority: 'urgent',
+    });
+    const missingProject = readyTask({
+      taskId: 'task-missing-project',
+      sourceKey: 'synthetic:missing-project',
+      projectId: null,
+      priority: 'urgent',
+    });
+    const missingObjective = readyTask({
+      taskId: 'task-missing-objective',
+      sourceKey: 'synthetic:missing-objective',
+      objective: null,
+      priority: 'urgent',
+    });
+    const missingCriteria = readyTask({
+      taskId: 'task-missing-criteria',
+      sourceKey: 'synthetic:missing-criteria',
+      acceptanceCriteria: [],
+      priority: 'urgent',
+    });
+    const wrongPermission = readyTask({
+      taskId: 'task-wrong-permission',
+      sourceKey: 'synthetic:wrong-permission',
+      permissionProfile: null,
+      priority: 'urgent',
+    });
     const eligible = readyTask({
       taskId: 'task-eligible',
       sourceKey: 'synthetic:eligible',
       priority: 'low',
     });
-    await saveReadyTasks(context, [inbox, nonResearch, nonAuto, eligible]);
+    const ineligible = [
+      inbox,
+      nonResearch,
+      nonAuto,
+      unconfirmed,
+      missingProject,
+      missingObjective,
+      missingCriteria,
+      wrongPermission,
+    ];
+    await saveReadyTasks(context, [...ineligible, eligible]);
 
     await expect(claimNextTask(context.ctx, automaticOptions)).resolves
       .toMatchObject({ taskId: eligible.taskId });
-    await expect(context.ctx.tasks.get(inbox.taskId)).resolves
-      .toMatchObject({ status: 'inbox', attempts: 0, claim: null });
-    await expect(context.ctx.tasks.get(nonResearch.taskId)).resolves
-      .toMatchObject({ status: 'ready', attempts: 0, claim: null });
-    await expect(context.ctx.tasks.get(nonAuto.taskId)).resolves
-      .toMatchObject({ status: 'ready', attempts: 0, claim: null });
+    for (const task of ineligible) {
+      await expect(context.ctx.tasks.get(task.taskId)).resolves
+        .toMatchObject({ status: task.status, attempts: 0, claim: null });
+    }
   });
 
   it('stops automatic claims at the local-date quota but permits a manual claim', async () => {
@@ -215,7 +253,7 @@ describe('claimNextTask', () => {
     })).resolves.toBe(2);
   });
 
-  it('serializes the automatic quota check with the claim across contexts', async () => {
+  it('allows only one in-progress automatic claim across concurrent contexts', async () => {
     const context = await makeContext();
     const independent = context.createIndependentContext();
     await saveReadyTasks(context, [
@@ -228,15 +266,6 @@ describe('claimNextTask', () => {
         sourceKey: 'synthetic:concurrent-second',
       }),
     ]);
-    for (let index = 0; index < 2; index += 1) {
-      await context.ctx.audit.append({
-        event: 'task.claimed',
-        at: `2026-07-14T00:00:0${index}.000Z`,
-        taskId: `task-prior-automatic-${index}`,
-        details: { mode: 'automatic' },
-      });
-    }
-
     const results = await Promise.all([
       claimNextTask(context.ctx, {
         ...automaticOptions,
@@ -256,7 +285,38 @@ describe('claimNextTask', () => {
       event: 'task.claimed',
       localDate: '2026-07-14',
       mode: 'automatic',
-    })).resolves.toBe(3);
+    })).resolves.toBe(1);
+  });
+
+  it('does not claim another task while one automatic task is in progress', async () => {
+    const context = await makeContext();
+    const first = readyTask({
+      taskId: 'task-running-first',
+      sourceKey: 'synthetic:running-first',
+    });
+    const waiting = readyTask({
+      taskId: 'task-running-waiting',
+      sourceKey: 'synthetic:running-waiting',
+    });
+    await saveReadyTasks(context, [first, waiting]);
+    await expect(claimNextTask(context.ctx, automaticOptions)).resolves
+      .toMatchObject({ taskId: first.taskId, status: 'in_progress' });
+
+    await expect(claimNextTask(context.ctx, {
+      ...automaticOptions,
+      runId: 'run-must-not-claim',
+    })).resolves.toBeNull();
+
+    await expect(context.ctx.tasks.get(waiting.taskId)).resolves.toMatchObject({
+      status: 'ready',
+      attempts: 0,
+      claim: null,
+    });
+    await expect(context.ctx.audit.count({
+      event: 'task.claimed',
+      localDate: '2026-07-14',
+      mode: 'automatic',
+    })).resolves.toBe(1);
   });
 
   it('rejects manual mode without selecting a queue task', async () => {
@@ -297,11 +357,16 @@ describe('claimNextTask', () => {
 });
 
 describe('claimTask', () => {
-  it.each([
+  it.each<[string, Partial<Task>]>([
     ['Inbox', { status: 'inbox', reviewState: 'ready_for_confirm' }],
     ['non-research', { taskType: null }],
     ['non-auto-executable', { autoExecutable: false }],
-  ] as const)('rejects an otherwise valid %s task', async (_label, overrides) => {
+    ['unconfirmed', { reviewState: 'ready_for_confirm' }],
+    ['missing-project', { projectId: null }],
+    ['missing-objective', { objective: null }],
+    ['missing-criteria', { acceptanceCriteria: [] }],
+    ['wrong-permission', { permissionProfile: null }],
+  ])('rejects an otherwise valid %s task', async (_label, overrides) => {
     const context = await makeContext();
     const task = readyTask({
       taskId: `task-manual-rejected-${_label}`,
