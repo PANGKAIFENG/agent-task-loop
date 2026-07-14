@@ -4,19 +4,30 @@ import {
   assertTransition,
   canTransition,
 } from '../../../src/domain/transitions.js';
+import {
+  TASK_STATUSES,
+  type TaskStatus,
+} from '../../../src/domain/task.js';
+
+const expectedTransitions: Record<TaskStatus, readonly TaskStatus[]> = {
+  inbox: ['ready', 'cancelled'],
+  ready: ['in_progress', 'blocked', 'cancelled'],
+  in_progress: ['review', 'ready', 'blocked', 'cancelled'],
+  review: ['done', 'ready', 'blocked', 'cancelled'],
+  done: ['ready'],
+  blocked: ['ready', 'cancelled'],
+  cancelled: [],
+};
 
 describe('task transitions', () => {
-  it('allows the required lifecycle transitions', () => {
-    expect(canTransition('inbox', 'ready')).toBe(true);
-    expect(canTransition('ready', 'in_progress')).toBe(true);
-    expect(canTransition('review', 'done')).toBe(true);
-    expect(canTransition('review', 'ready')).toBe(true);
-    expect(canTransition('done', 'ready')).toBe(true);
-  });
-
-  it('rejects lifecycle shortcuts', () => {
-    expect(canTransition('in_progress', 'done')).toBe(false);
-    expect(canTransition('inbox', 'in_progress')).toBe(false);
+  it('matches the complete transition matrix', () => {
+    for (const from of TASK_STATUSES) {
+      for (const to of TASK_STATUSES) {
+        expect(canTransition(from, to), `${from} -> ${to}`).toBe(
+          expectedTransitions[from].includes(to),
+        );
+      }
+    }
   });
 
   it('throws the exact error for an invalid transition', () => {

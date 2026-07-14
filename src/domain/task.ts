@@ -49,41 +49,44 @@ export interface Task {
   updatedAt: string;
 }
 
-export const taskSchema: z.ZodType<Task> = z.object({
-  schemaVersion: z.literal(1),
-  taskId: z.string(),
-  title: z.string(),
-  body: z.string(),
-  status: z.enum(TASK_STATUSES),
-  reviewState: z.enum(['candidate', 'ready_for_confirm', 'confirmed']),
-  projectId: z.string().nullable(),
-  taskType: z.literal('research').nullable(),
-  objective: z.string().nullable(),
-  acceptanceCriteria: z.array(z.string()),
-  autoExecutable: z.boolean(),
-  permissionProfile: z.literal('read_only_research').nullable(),
-  origin: z.string(),
-  sourceDate: z.string().nullable(),
-  sourceNote: z.string().nullable(),
-  sourceQuote: z.string().nullable(),
-  sourceKey: z.string(),
-  possibleDuplicateIds: z.array(z.string()),
-  priority: z.enum(PRIORITIES),
-  attempts: z.number().int().nonnegative(),
-  claim: z
-    .object({
-      runId: z.string(),
-      agent: z.string(),
-      claimedAt: z.string(),
-      leaseExpiresAt: z.string(),
-    })
-    .nullable(),
-  artifactRefs: z.array(z.string()),
-  reviewFeedback: z.string().nullable(),
-  readyAt: z.string().nullable(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
-});
+export const taskSchema: z.ZodType<Task> = z
+  .object({
+    schemaVersion: z.literal(1),
+    taskId: z.string(),
+    title: z.string(),
+    body: z.string(),
+    status: z.enum(TASK_STATUSES),
+    reviewState: z.enum(['candidate', 'ready_for_confirm', 'confirmed']),
+    projectId: z.string().nullable(),
+    taskType: z.literal('research').nullable(),
+    objective: z.string().nullable(),
+    acceptanceCriteria: z.array(z.string()),
+    autoExecutable: z.boolean(),
+    permissionProfile: z.literal('read_only_research').nullable(),
+    origin: z.string(),
+    sourceDate: z.string().nullable(),
+    sourceNote: z.string().nullable(),
+    sourceQuote: z.string().nullable(),
+    sourceKey: z.string(),
+    possibleDuplicateIds: z.array(z.string()),
+    priority: z.enum(PRIORITIES),
+    attempts: z.number().int().nonnegative(),
+    claim: z
+      .object({
+        runId: z.string(),
+        agent: z.string(),
+        claimedAt: z.string(),
+        leaseExpiresAt: z.string(),
+      })
+      .strict()
+      .nullable(),
+    artifactRefs: z.array(z.string()),
+    reviewFeedback: z.string().nullable(),
+    readyAt: z.string().nullable(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  })
+  .strict();
 
 export const priorityRank: Record<Priority, number> = {
   urgent: 0,
@@ -104,7 +107,7 @@ export function readinessErrors(task: Task): string[] {
   if (task.objective === null || task.objective.trim() === '') {
     errors.push('objective is required');
   }
-  if (task.acceptanceCriteria.length === 0) {
+  if (!task.acceptanceCriteria.some((criterion) => criterion.trim() !== '')) {
     errors.push('acceptanceCriteria requires at least one item');
   }
   if (task.permissionProfile !== 'read_only_research') {

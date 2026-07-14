@@ -15,17 +15,21 @@ export interface Project {
   updatedAt: string;
 }
 
-export const projectResourceSchema: z.ZodType<ProjectResource> = z.object({
-  kind: z.enum(['url', 'local_path', 'github_repo']),
-  value: z.string(),
-  label: z.string(),
-});
+export const projectResourceSchema: z.ZodType<ProjectResource> = z
+  .object({
+    kind: z.enum(['url', 'local_path', 'github_repo']),
+    value: z.string(),
+    label: z.string(),
+  })
+  .strict();
 
-export const projectSchema: z.ZodType<Project> = z.object({
-  projectId: z.string(),
-  name: z.string(),
-  description: z.string(),
-  resources: z.array(projectResourceSchema),
-  createdAt: z.string(),
-  updatedAt: z.string(),
-});
+export const projectSchema: z.ZodType<Project> = z
+  .object({
+    projectId: z.string(),
+    name: z.string(),
+    description: z.string(),
+    resources: z.array(projectResourceSchema),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  })
+  .strict();
