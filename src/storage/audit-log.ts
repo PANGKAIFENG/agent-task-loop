@@ -1,9 +1,8 @@
-import { appendFile, mkdir, readFile } from 'node:fs/promises';
+import { appendFile, mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
-import fastGlob from 'fast-glob';
-
 import type { AuditEvent, AuditLog } from './contracts.js';
+import { listSafeRegularFiles, readSafeTextFile } from './file-io.js';
 import {
   assertVaultWriteAllowed,
   auditFilePath,
@@ -84,15 +83,9 @@ function parseAuditFile(raw: string): AuditEvent[] {
   });
 }
 
-async function readAuditFile(path: string): Promise<AuditEvent[]> {
-  try {
-    return parseAuditFile(await readFile(path, 'utf8'));
-  } catch (error) {
-    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') {
-      return [];
-    }
-    throw error;
-  }
+async function readAuditFile(path: string, auditRoot: string): Promise<AuditEvent[]> {
+  const raw = await readSafeTextFile(path, auditRoot);
+  return raw === null ? [] : parseAuditFile(raw);
 }
 
 export class FileAuditLog implements AuditLog {
@@ -124,7 +117,16 @@ export class FileAuditLog implements AuditLog {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(query.localDate)) {
       throw new InvalidAuditEventError();
     }
-    const events = await readAuditFile(auditFilePath(this.root, query.localDate));
+    let path: string;
+    try {
+      path = auditFilePath(this.root, query.localDate);
+    } catch {
+      return 0;
+    }
+    const events = await readAuditFile(
+      path,
+      this.auditRoot,
+    );
     return events.filter((event) => (
       event.event === query.event
       && (query.mode === undefined || event.details?.mode === query.mode)
@@ -132,12 +134,10 @@ export class FileAuditLog implements AuditLog {
   }
 
   async listForTask(taskId: string): Promise<AuditEvent[]> {
-    const paths = await fastGlob('*.jsonl', {
-      absolute: true,
-      cwd: this.auditRoot,
-      onlyFiles: true,
-    });
-    const events = (await Promise.all(paths.sort().map(readAuditFile))).flat();
+    const paths = await listSafeRegularFiles(this.auditRoot, '*.jsonl');
+    const events = (await Promise.all(
+      paths.map((path) => readAuditFile(path, this.auditRoot)),
+    )).flat();
     return events
       .filter((event) => event.taskId === taskId)
       .sort((left, right) => (

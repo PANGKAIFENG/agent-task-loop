@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   cp,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -75,6 +76,26 @@ async function writeIndexTask(
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `---\ntype: task\ntask_id: ${JSON.stringify(fields.taskId)}\ntitle: ${JSON.stringify(fields.title)}\nstatus: ready\nreview_state: confirmed\norigin: synthetic_index_test\nsource_date: 2026-07-14\npriority: normal\nupdated_at: ${JSON.stringify(fields.updatedAt)}\n---\n\nSynthetic index fixture.\n`);
   return path;
+}
+
+async function plantPredictableTempSymlink(target: string): Promise<{
+  outsidePath: string;
+  sentinel: string;
+  temporaryPath: string;
+}> {
+  const outsideRoot = await mkdtemp(join(tmpdir(), 'atl-storage-atomic-outside-'));
+  temporaryRoots.push(outsideRoot);
+  const outsidePath = join(outsideRoot, 'outside.txt');
+  const sentinel = 'outside-file-must-not-change';
+  const temporaryPath = `${target}.tmp`;
+  await mkdir(dirname(target), { recursive: true });
+  await writeFile(outsidePath, sentinel);
+  await symlink(outsidePath, temporaryPath);
+  return { outsidePath, sentinel, temporaryPath };
+}
+
+function syntheticExternalTask(title: string): string {
+  return `---\ntype: task\ntask_id: task-external-symlink\ntitle: ${JSON.stringify(title)}\nstatus: ready\nreview_state: confirmed\norigin: synthetic_symlink_test\nsource_date: 2026-07-14\npriority: normal\ncreated_at: 2026-07-14T08:00:00+08:00\nupdated_at: 2026-07-14T08:00:00+08:00\n---\n\nExternal synthetic content.\n`;
 }
 
 function makeProject(overrides: Partial<Project> = {}): Project {
@@ -326,6 +347,122 @@ describe('storage path boundaries', () => {
   });
 });
 
+describe('atomic Markdown writes', () => {
+  it('does not follow or rename a predictable task temp symlink', async () => {
+    const root = await makeVault();
+    const repository = new MarkdownTaskRepository(root);
+    const task = await repository.get('task-20260713-deadbeef');
+    const target = join(
+      root,
+      '10_Tasks',
+      'Inbox',
+      '2026-07-13',
+      `${task.taskId}.md`,
+    );
+    const attack = await plantPredictableTempSymlink(target);
+
+    await repository.save(task);
+
+    expect(await readFile(attack.outsidePath, 'utf8')).toBe(attack.sentinel);
+    expect((await lstat(attack.temporaryPath)).isSymbolicLink()).toBe(true);
+    expect((await lstat(target)).isFile()).toBe(true);
+    expect((await lstat(target)).isSymbolicLink()).toBe(false);
+  });
+
+  it('does not follow or rename a predictable project temp symlink', async () => {
+    const root = await makeVault();
+    const target = projectFilePath(root, 'project-public-research');
+    const attack = await plantPredictableTempSymlink(target);
+    const repository = new MarkdownProjectRepository(root);
+
+    await repository.save(makeProject());
+
+    expect(await readFile(attack.outsidePath, 'utf8')).toBe(attack.sentinel);
+    expect((await lstat(attack.temporaryPath)).isSymbolicLink()).toBe(true);
+    expect((await lstat(target)).isFile()).toBe(true);
+    expect((await lstat(target)).isSymbolicLink()).toBe(false);
+  });
+
+  it('does not follow or rename a predictable index temp symlink', async () => {
+    const root = await makeVault();
+    const target = join(root, '10_Tasks', '任务索引.md');
+    const attack = await plantPredictableTempSymlink(target);
+
+    await rebuildTaskIndex(root, '2026-07-14T00:00:00.000Z');
+
+    expect(await readFile(attack.outsidePath, 'utf8')).toBe(attack.sentinel);
+    expect((await lstat(attack.temporaryPath)).isSymbolicLink()).toBe(true);
+    expect((await lstat(target)).isFile()).toBe(true);
+    expect((await lstat(target)).isSymbolicLink()).toBe(false);
+  });
+});
+
+describe('symlink-safe scans', () => {
+  it('skips external task directory and file symlinks in list and index', async () => {
+    const root = await makeVault();
+    const outside = await mkdtemp(join(tmpdir(), 'atl-storage-task-scan-outside-'));
+    temporaryRoots.push(outside);
+    const externalTitle = 'EXTERNAL_TASK_SENTINEL';
+    const externalTask = join(outside, 'external-task.md');
+    await writeFile(externalTask, syntheticExternalTask(externalTitle));
+    const activeRoot = join(root, '10_Tasks', 'Active');
+    await mkdir(activeRoot, { recursive: true });
+    await symlink(outside, join(activeRoot, 'external-directory'), 'dir');
+    await symlink(
+      externalTask,
+      join(root, '10_Tasks', 'Inbox', '2026-07-13', 'external-file.md'),
+    );
+
+    const tasks = await new MarkdownTaskRepository(root).list();
+    expect(tasks.map((task) => task.title)).toEqual([
+      'Research a public product category',
+    ]);
+    await rebuildTaskIndex(root, '2026-07-14T00:00:00.000Z');
+    const index = await readFile(join(root, '10_Tasks', '任务索引.md'), 'utf8');
+    expect(index).not.toContain(externalTitle);
+    expect(index).not.toContain('external-file.md');
+  });
+
+  it('skips external project and audit directory and file symlinks', async () => {
+    const root = await makeVault();
+    const outside = await mkdtemp(join(tmpdir(), 'atl-storage-scan-outside-'));
+    temporaryRoots.push(outside);
+    const outsideProjects = join(outside, 'projects');
+    const outsideAudit = join(outside, 'audit');
+    await mkdir(outsideProjects, { recursive: true });
+    await mkdir(outsideAudit, { recursive: true });
+    const externalProject = join(outsideProjects, 'external-file.md');
+    await writeFile(externalProject, `---\nproject_id: external-file\nname: EXTERNAL_PROJECT_SENTINEL\ndescription: Synthetic external project\nresources: []\ncreated_at: 2026-07-14T08:00:00+08:00\nupdated_at: 2026-07-14T08:00:00+08:00\n---\n`);
+    const externalAudit = join(outsideAudit, 'external.jsonl');
+    await writeFile(externalAudit, `${JSON.stringify({
+      event: 'external_event',
+      at: '2026-07-15T08:00:00+08:00',
+      taskId: 'EXTERNAL_AUDIT_SENTINEL',
+    })}\n`);
+
+    const projectsRoot = join(root, '10_Tasks', 'Projects');
+    const auditRoot = join(root, '10_Tasks', 'Audit');
+    await mkdir(projectsRoot, { recursive: true });
+    await mkdir(auditRoot, { recursive: true });
+    await symlink(outsideProjects, join(projectsRoot, 'external-directory'), 'dir');
+    await symlink(externalProject, join(projectsRoot, 'external-file.md'));
+    await symlink(outsideAudit, join(auditRoot, 'external-directory'), 'dir');
+    await symlink(externalAudit, join(auditRoot, '2026-07-15.jsonl'));
+
+    const projects = new MarkdownProjectRepository(root);
+    await expect(projects.list()).resolves.toEqual([]);
+    await expect(projects.get('external-file')).rejects.toMatchObject({
+      code: 'project_not_found',
+    });
+    const audit = new FileAuditLog(root);
+    await expect(audit.listForTask('EXTERNAL_AUDIT_SENTINEL')).resolves.toEqual([]);
+    await expect(audit.count({
+      event: 'external_event',
+      localDate: '2026-07-15',
+    })).resolves.toBe(0);
+  });
+});
+
 describe('task index rendering', () => {
   it('renders a valid 10-column link row for special Markdown path characters', async () => {
     const root = await mkdtemp(join(tmpdir(), 'atl storage (index)-'));
@@ -364,6 +501,25 @@ describe('task index rendering', () => {
 
     const index = await readFile(join(root, '10_Tasks', '任务索引.md'), 'utf8');
     expect(index.indexOf('Later instant')).toBeLessThan(index.indexOf('Earlier instant'));
+  });
+
+  it('encodes URL-significant filename characters exactly once', async () => {
+    const root = await makeVault();
+    const path = await writeIndexTask(root, 'task#part?literal%20.md', {
+      taskId: 'task-url-significant',
+      title: 'URL significant path',
+      updatedAt: '2026-07-14T08:00:00+08:00',
+    });
+
+    await rebuildTaskIndex(root, '2026-07-14T00:00:00.000Z');
+
+    const index = await readFile(join(root, '10_Tasks', '任务索引.md'), 'utf8');
+    const row = index.split('\n').find((line) => line.includes('URL significant path'));
+    expect(row).toBeDefined();
+    expect(row?.split('|')).toHaveLength(12);
+    const destination = row?.match(/\]\(<([^>]+)>\)/)?.[1];
+    expect(destination).toContain('task%23part%3Fliteral%2520.md');
+    expect(decodeURIComponent(destination ?? '')).toBe(path);
   });
 });
 

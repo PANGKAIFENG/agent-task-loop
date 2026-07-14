@@ -1,10 +1,12 @@
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { basename, dirname } from 'node:path';
-
-import fastGlob from 'fast-glob';
+import { basename } from 'node:path';
 
 import { projectSchema, type Project } from '../domain/project.js';
 import type { ProjectRepository } from './contracts.js';
+import {
+  atomicWriteTextFile,
+  listSafeRegularFiles,
+  readSafeTextFile,
+} from './file-io.js';
 import { parseTaskDocument, serializeTaskDocument } from './frontmatter.js';
 import {
   assertVaultWriteAllowed,
@@ -85,18 +87,20 @@ export class MarkdownProjectRepository implements ProjectRepository {
   }
 
   async list(): Promise<Project[]> {
-    const paths = await fastGlob('*.md', {
-      absolute: true,
-      cwd: this.projectsRoot,
-      onlyFiles: true,
-    });
-    return Promise.all(paths.sort().map(async (path) => {
-      const document = parseTaskDocument(await readFile(path, 'utf8'));
+    const paths = await listSafeRegularFiles(this.projectsRoot, '*.md');
+    const projects: Project[] = [];
+    for (const path of paths) {
+      const raw = await readSafeTextFile(path, this.projectsRoot);
+      if (raw === null) {
+        continue;
+      }
+      const document = parseTaskDocument(raw);
       const record = { path, ...document };
       const project = projectFromRecord(record);
       this.records.set(project.projectId, record);
-      return project;
-    }));
+      projects.push(project);
+    }
+    return projects;
   }
 
   async get(projectId: string): Promise<Project> {
@@ -107,9 +111,18 @@ export class MarkdownProjectRepository implements ProjectRepository {
     if (cached !== undefined) {
       return projectFromRecord(cached);
     }
-    const path = projectFilePath(this.root, projectId);
+    let path: string;
     try {
-      const document = parseTaskDocument(await readFile(path, 'utf8'));
+      path = projectFilePath(this.root, projectId);
+    } catch {
+      throw new ProjectNotFoundError(projectId);
+    }
+    try {
+      const raw = await readSafeTextFile(path, this.projectsRoot);
+      if (raw === null) {
+        throw new ProjectNotFoundError(projectId);
+      }
+      const document = parseTaskDocument(raw);
       const record = { path, ...document };
       const project = projectFromRecord(record);
       this.records.set(project.projectId, record);
@@ -146,15 +159,7 @@ export class MarkdownProjectRepository implements ProjectRepository {
     const data = mergeProjectData(existing?.data ?? {}, validProject);
     const body = existing?.body ?? '\n';
     const path = projectFilePath(this.root, validProject.projectId);
-    const temporaryPath = `${path}.tmp`;
-    await mkdir(dirname(path), { recursive: true });
-    try {
-      await writeFile(temporaryPath, serializeTaskDocument(data, body), 'utf8');
-      await rename(temporaryPath, path);
-    } catch (error) {
-      await rm(temporaryPath, { force: true });
-      throw error;
-    }
+    await atomicWriteTextFile(path, serializeTaskDocument(data, body));
     this.records.set(validProject.projectId, { path, data, body });
     return validProject;
   }

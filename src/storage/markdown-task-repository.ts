@@ -1,8 +1,6 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-
-import fastGlob from 'fast-glob';
 
 import {
   taskSchema,
@@ -11,6 +9,11 @@ import {
   type TaskStatus,
 } from '../domain/task.js';
 import type { TaskRepository } from './contracts.js';
+import {
+  atomicWriteTextFile,
+  listSafeRegularFiles,
+  readSafeTextFile,
+} from './file-io.js';
 import { parseTaskDocument, serializeTaskDocument } from './frontmatter.js';
 import { rebuildTaskIndex } from './task-index.js';
 import {
@@ -231,16 +234,23 @@ export class MarkdownTaskRepository implements TaskRepository {
   }
 
   async list(): Promise<Task[]> {
-    const paths = await fastGlob(
-      ['Inbox/**/*.md', 'Active/**/*.md', 'Archive/**/*.md'],
-      { absolute: true, cwd: this.tasksRoot, onlyFiles: true },
-    );
-    const tasks = await Promise.all(paths.sort().map(async (path) => {
-      const record = await this.readRecord(path);
+    const candidates = (await Promise.all(
+      ['Inbox', 'Active', 'Archive'].map(async (directory) => {
+        const subtree = join(this.tasksRoot, directory);
+        const paths = await listSafeRegularFiles(subtree, '**/*.md');
+        return paths.map((path) => ({ path, subtree }));
+      }),
+    )).flat();
+    const tasks: Task[] = [];
+    for (const { path, subtree } of candidates) {
+      const record = await this.readRecord(path, subtree);
+      if (record === null) {
+        continue;
+      }
       const task = taskFromRecord(record);
       this.records.set(task.taskId, record);
-      return task;
-    }));
+      tasks.push(task);
+    }
     return tasks;
   }
 
@@ -288,15 +298,7 @@ export class MarkdownTaskRepository implements TaskRepository {
     const data = mergeTaskData(existing?.data ?? {}, persistedTask);
     const targetDirectory = lifecycleDirectory(this.tasksRoot, persistedTask);
     const targetPath = join(targetDirectory, `${persistedTask.taskId}.md`);
-    const temporaryPath = `${targetPath}.tmp`;
-    await mkdir(targetDirectory, { recursive: true });
-    try {
-      await writeFile(temporaryPath, serializeTaskDocument(data, body), 'utf8');
-      await rename(temporaryPath, targetPath);
-    } catch (error) {
-      await rm(temporaryPath, { force: true });
-      throw error;
-    }
+    await atomicWriteTextFile(targetPath, serializeTaskDocument(data, body));
 
     if (existing !== undefined && existing.path !== targetPath) {
       await rm(existing.path);
@@ -311,8 +313,12 @@ export class MarkdownTaskRepository implements TaskRepository {
     return persistedTask;
   }
 
-  private async readRecord(path: string): Promise<TaskRecord> {
-    const document = parseTaskDocument(await readFile(path, 'utf8'));
+  private async readRecord(path: string, subtree: string): Promise<TaskRecord | null> {
+    const raw = await readSafeTextFile(path, subtree);
+    if (raw === null) {
+      return null;
+    }
+    const document = parseTaskDocument(raw);
     return { path, ...document };
   }
 }

@@ -1,14 +1,11 @@
-import {
-  mkdir,
-  readdir,
-  readFile,
-  rename,
-  rm,
-  writeFile,
-} from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
 import { priorityRank, type Priority } from '../domain/task.js';
+import {
+  atomicWriteTextFile,
+  listSafeRegularFiles,
+  readSafeTextFile,
+} from './file-io.js';
 import { parseTaskDocument } from './frontmatter.js';
 import {
   assertVaultWriteAllowed,
@@ -67,10 +64,11 @@ function escapeLinkText(value: string): string {
 }
 
 function encodeLinkDestination(value: string): string {
-  return encodeURI(value)
-    .replaceAll('(', '%28')
-    .replaceAll(')', '%29')
-    .replaceAll('|', '%7C');
+  return value.split('/').map((segment) => (
+    encodeURIComponent(segment).replaceAll(/[!'()*]/g, (character) => (
+      `%${character.charCodeAt(0).toString(16).toUpperCase()}`
+    ))
+  )).join('/');
 }
 
 function timestamp(value: string): number {
@@ -78,8 +76,16 @@ function timestamp(value: string): number {
   return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
 }
 
-async function readIndexEntry(path: string, tasksRoot: string): Promise<IndexEntry> {
-  const document = parseTaskDocument(await readFile(path, 'utf8'));
+async function readIndexEntry(
+  path: string,
+  subtree: string,
+  tasksRoot: string,
+): Promise<IndexEntry | null> {
+  const raw = await readSafeTextFile(path, subtree);
+  if (raw === null) {
+    return null;
+  }
+  const document = parseTaskDocument(raw);
   const data = document.data;
   return {
     path,
@@ -96,39 +102,23 @@ async function readIndexEntry(path: string, tasksRoot: string): Promise<IndexEnt
   };
 }
 
-async function listMarkdownFiles(directory: string): Promise<string[]> {
-  let entries;
-  try {
-    entries = await readdir(directory, { withFileTypes: true });
-  } catch (error) {
-    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') {
-      return [];
-    }
-    throw error;
-  }
-
-  const paths = await Promise.all(entries.map(async (entry) => {
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) {
-      return listMarkdownFiles(path);
-    }
-    return entry.isFile() && entry.name.endsWith('.md') ? [path] : [];
-  }));
-  return paths.flat();
-}
-
 export async function rebuildTaskIndex(
   root: string,
   generatedAt = new Date().toISOString(),
 ): Promise<void> {
   assertVaultWriteAllowed(root);
   const tasksRoot = taskStorageRoot(root);
-  const paths = (await Promise.all(
-    ['Inbox', 'Active', 'Archive'].map((directory) => (
-      listMarkdownFiles(join(tasksRoot, directory))
-    )),
+  const candidates = (await Promise.all(
+    ['Inbox', 'Active', 'Archive'].map(async (directory) => {
+      const subtree = join(tasksRoot, directory);
+      const paths = await listSafeRegularFiles(subtree, '**/*.md');
+      return paths.map((path) => ({ path, subtree }));
+    }),
   )).flat();
-  const entries = await Promise.all(paths.map((path) => readIndexEntry(path, tasksRoot)));
+  const scanned = await Promise.all(candidates.map(({ path, subtree }) => (
+    readIndexEntry(path, subtree, tasksRoot)
+  )));
+  const entries = scanned.filter((entry): entry is IndexEntry => entry !== null);
   entries.sort((left, right) => (
     left.lifecycle - right.lifecycle
     || priorityRank[left.priority] - priorityRank[right.priority]
@@ -153,15 +143,5 @@ export async function rebuildTaskIndex(
     return `| ${[...cells, link].join(' | ')} |`;
   });
   const output = `${INDEX_HEADER}${generatedAt}${INDEX_EXPLANATION}${rows.join('\n')}${rows.length > 0 ? '\n' : ''}`;
-  const indexPath = join(tasksRoot, '任务索引.md');
-  const temporaryPath = `${indexPath}.tmp`;
-
-  await mkdir(tasksRoot, { recursive: true });
-  try {
-    await writeFile(temporaryPath, output, 'utf8');
-    await rename(temporaryPath, indexPath);
-  } catch (error) {
-    await rm(temporaryPath, { force: true });
-    throw error;
-  }
+  await atomicWriteTextFile(join(tasksRoot, '任务索引.md'), output);
 }
