@@ -1,16 +1,30 @@
 import type { Project } from '../domain/project.js';
 import type { Task } from '../domain/task.js';
 
+export class ProjectCreateConflictError extends Error {
+  readonly code = 'project_create_conflict';
+
+  constructor() {
+    super('Project already exists');
+    this.name = 'ProjectCreateConflictError';
+  }
+}
+
 export interface TaskRepository {
   list(): Promise<Task[]>;
   get(taskId: string): Promise<Task>;
   findBySourceKey(sourceKey: string): Promise<Task | null>;
+  createIfSourceKeyAbsent(task: Task): Promise<{
+    task: Task;
+    created: boolean;
+  }>;
   save(task: Task): Promise<Task>;
 }
 
 export interface ProjectRepository {
   list(): Promise<Project[]>;
   get(projectId: string): Promise<Project>;
+  create(project: Project): Promise<Project>;
   save(project: Project): Promise<Project>;
 }
 

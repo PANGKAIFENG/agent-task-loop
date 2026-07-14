@@ -1,8 +1,12 @@
 import { basename } from 'node:path';
 
 import { projectSchema, type Project } from '../domain/project.js';
-import type { ProjectRepository } from './contracts.js';
 import {
+  ProjectCreateConflictError,
+  type ProjectRepository,
+} from './contracts.js';
+import {
+  atomicCreateTextFile,
   atomicWriteTextFile,
   listSafeRegularFiles,
   readSafeTextFile,
@@ -137,6 +141,37 @@ export class MarkdownProjectRepository implements ProjectRepository {
       throw new ProjectNotFoundError(projectId);
     }
     return project;
+  }
+
+  async create(project: Project): Promise<Project> {
+    assertVaultWriteAllowed(this.root);
+    const result = projectSchema.safeParse(project);
+    if (!result.success || !isSafePathSegment(result.data.projectId)) {
+      throw new InvalidProjectDataError();
+    }
+    const validProject = result.data;
+    const data = mergeProjectData({}, validProject);
+    const body = '\n';
+    const path = projectFilePath(this.root, validProject.projectId);
+    const created = await atomicCreateTextFile(
+      path,
+      serializeTaskDocument(data, body),
+      {
+        vaultRoot: this.root,
+        tasksRoot: this.tasksRoot,
+        subtree: this.projectsRoot,
+      },
+    );
+    if (!created) {
+      throw new ProjectCreateConflictError();
+    }
+    this.records.set(validProject.projectId, {
+      path,
+      data,
+      body,
+      snapshot: canonicalProjectSnapshot(validProject),
+    });
+    return validProject;
   }
 
   async save(project: Project): Promise<Project> {

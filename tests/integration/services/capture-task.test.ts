@@ -61,6 +61,26 @@ describe('captureTask', () => {
     })).resolves.toBe(1);
   });
 
+  it('atomically captures one task and audit event across independent repositories', async () => {
+    const context = await makeContext();
+    const second = context.createIndependentContext({
+      ids: ['task-20260714-00000002'],
+    });
+    const input = captureInput();
+
+    const [left, right] = await Promise.all([
+      captureTask(context.ctx, input),
+      captureTask(second, input),
+    ]);
+
+    expect(right.taskId).toBe(left.taskId);
+    expect(await context.ctx.tasks.list()).toHaveLength(1);
+    await expect(context.ctx.audit.count({
+      event: 'task.captured',
+      localDate: '2026-07-14',
+    })).resolves.toBe(1);
+  });
+
   it('creates separate tasks for different source keys', async () => {
     const { ctx } = await makeContext();
 
@@ -212,6 +232,50 @@ describe('createProject', () => {
       code: 'project_already_exists',
       message: 'Project already exists: project-public-research',
     });
+  });
+
+  it('atomically rejects one concurrent same-ID creation without replacing the winner', async () => {
+    const context = await makeContext();
+    const second = context.createIndependentContext();
+    const base = {
+      projectId: 'project-concurrent-research',
+      name: 'Concurrent research',
+      resources: [],
+    };
+
+    const results = await Promise.allSettled([
+      createProject(context.ctx, {
+        ...base,
+        description: 'First contender content.',
+      }),
+      createProject(second, {
+        ...base,
+        description: 'Second contender content.',
+      }),
+    ]);
+
+    const fulfilled = results.filter((result) => result.status === 'fulfilled');
+    const rejected = results.filter((result) => result.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]).toMatchObject({
+      reason: {
+        code: 'project_already_exists',
+        message: 'Project already exists: project-concurrent-research',
+      },
+    });
+    const winner = fulfilled[0];
+    expect(winner?.status).toBe('fulfilled');
+    if (winner?.status !== 'fulfilled') {
+      throw new Error('Expected one project creation to succeed');
+    }
+    await expect(context.ctx.projects.get(base.projectId)).resolves.toEqual(
+      winner.value,
+    );
+    await expect(context.ctx.audit.count({
+      event: 'project.created',
+      localDate: '2026-07-14',
+    })).resolves.toBe(1);
   });
 
   it('appends a sanitized project audit event', async () => {

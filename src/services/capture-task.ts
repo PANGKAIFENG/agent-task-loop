@@ -138,7 +138,11 @@ export async function captureTask(
     updatedAt: timestamp,
   });
 
-  const saved = await ctx.tasks.save(task);
+  const result = await ctx.tasks.createIfSourceKeyAbsent(task);
+  if (!result.created) {
+    return result.task;
+  }
+  const saved = result.task;
   await ctx.audit.append({
     event: 'task.captured',
     at: timestamp,

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { basename, join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import {
   taskSchema,
@@ -9,6 +10,7 @@ import {
 } from '../domain/task.js';
 import type { TaskRepository } from './contracts.js';
 import {
+  acquireSafeFileLock,
   atomicWriteTextFile,
   listSafeRegularFiles,
   moveSafeRegularFile,
@@ -95,6 +97,18 @@ export class TaskSavedIndexStaleError extends Error {
     this.name = 'TaskSavedIndexStaleError';
   }
 }
+
+export class TaskSourceClaimTimeoutError extends Error {
+  readonly code = 'task_source_claim_timeout';
+
+  constructor() {
+    super('Task source claim timed out');
+    this.name = 'TaskSourceClaimTimeoutError';
+  }
+}
+
+const SOURCE_CLAIM_ATTEMPTS = 100;
+const SOURCE_CLAIM_RETRY_MS = 10;
 
 function stringValue(value: unknown, fallback = ''): string {
   if (typeof value === 'string') {
@@ -352,6 +366,49 @@ export class MarkdownTaskRepository implements TaskRepository {
 
   async findBySourceKey(sourceKey: string): Promise<Task | null> {
     return (await this.list()).find((task) => task.sourceKey === sourceKey) ?? null;
+  }
+
+  async createIfSourceKeyAbsent(task: Task): Promise<{
+    task: Task;
+    created: boolean;
+  }> {
+    assertVaultWriteAllowed(this.root);
+    const result = taskSchema.safeParse(task);
+    if (!result.success || !hasSafeTaskPaths(result.data)) {
+      throw new InvalidTaskDataError();
+    }
+    const validTask = result.data;
+    const lockRoot = join(this.tasksRoot, '.atl', 'source-key-locks');
+    const lockKey = createHash('sha256').update(validTask.sourceKey).digest('hex');
+    const lockPath = join(lockRoot, `${lockKey}.lock`);
+    const boundary = {
+      vaultRoot: this.root,
+      tasksRoot: this.tasksRoot,
+      subtree: lockRoot,
+    };
+
+    for (let attempt = 0; attempt < SOURCE_CLAIM_ATTEMPTS; attempt += 1) {
+      const lock = await acquireSafeFileLock(lockPath, boundary);
+      if (lock === null) {
+        await delay(SOURCE_CLAIM_RETRY_MS);
+        continue;
+      }
+      try {
+        const existing = await this.findBySourceKey(validTask.sourceKey);
+        if (existing !== null) {
+          return { task: existing, created: false };
+        }
+        return { task: await this.save(validTask), created: true };
+      } finally {
+        await lock.release();
+      }
+    }
+
+    const existing = await this.findBySourceKey(validTask.sourceKey);
+    if (existing !== null) {
+      return { task: existing, created: false };
+    }
+    throw new TaskSourceClaimTimeoutError();
   }
 
   async save(task: Task): Promise<Task> {

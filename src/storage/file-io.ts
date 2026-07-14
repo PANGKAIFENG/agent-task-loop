@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import type { Stats } from 'node:fs';
 import {
+  link,
   lstat,
   mkdir,
   open,
@@ -76,6 +77,17 @@ function isMissingPathError(error: unknown): boolean {
     && error !== null
     && 'code' in error
     && error.code === 'ENOENT';
+}
+
+function isAlreadyExistsError(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && error.code === 'EEXIST';
+}
+
+export interface SafeFileLock {
+  release(): Promise<void>;
 }
 
 export async function listSafeRegularFiles(
@@ -184,6 +196,182 @@ export async function atomicWriteTextFile(
       await unlinkCreatedFile(temporaryPath, createdIdentity);
     }
     throw error;
+  }
+}
+
+export async function atomicCreateTextFile(
+  targetPath: string,
+  content: string,
+  boundary: StorageReadBoundary,
+): Promise<boolean> {
+  const temporaryPath = `${targetPath}.${randomUUID()}.tmp`;
+  let handle: FileHandle | undefined;
+  let createdIdentity: { dev: number | bigint; ino: number | bigint } | undefined;
+  let published = false;
+
+  try {
+    const { canonicalSubtree, directoryIdentities } = await prepareSafeWritableSubtree(
+      boundary,
+    );
+    if (resolve(dirname(targetPath)) !== resolve(boundary.subtree)) {
+      throw new InvalidStorageEntryError();
+    }
+    handle = await open(
+      temporaryPath,
+      constants.O_WRONLY
+        | constants.O_CREAT
+        | constants.O_EXCL
+        | constants.O_NOFOLLOW,
+      0o600,
+    );
+    const openedStat = await handle.stat();
+    if (!openedStat.isFile() || openedStat.nlink !== 1) {
+      throw new InvalidStorageEntryError();
+    }
+    createdIdentity = { dev: openedStat.dev, ino: openedStat.ino };
+    await handle.writeFile(content, 'utf8');
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+
+    const [temporaryStat, canonicalTemporaryPath] = await Promise.all([
+      lstat(temporaryPath),
+      realpath(temporaryPath),
+    ]);
+    if (
+      temporaryStat.isSymbolicLink()
+      || !temporaryStat.isFile()
+      || temporaryStat.nlink !== 1
+      || !sameIdentity(createdIdentity, temporaryStat)
+      || !isStrictlyWithin(canonicalSubtree, canonicalTemporaryPath)
+      || !(await directoryChainMatches(directoryIdentities))
+    ) {
+      throw new InvalidStorageEntryError();
+    }
+
+    try {
+      await link(temporaryPath, targetPath);
+      published = true;
+    } catch (error) {
+      if (isAlreadyExistsError(error)) {
+        return false;
+      }
+      throw error;
+    }
+
+    const [targetStat, canonicalTargetPath] = await Promise.all([
+      lstat(targetPath),
+      realpath(targetPath),
+    ]);
+    if (
+      targetStat.isSymbolicLink()
+      || !targetStat.isFile()
+      || targetStat.nlink !== 2
+      || !sameIdentity(createdIdentity, targetStat)
+      || !isStrictlyWithin(canonicalSubtree, canonicalTargetPath)
+      || !(await directoryChainMatches(directoryIdentities))
+    ) {
+      throw new InvalidStorageEntryError();
+    }
+
+    await unlinkCreatedFile(temporaryPath, createdIdentity);
+    const finalTargetStat = await lstat(targetPath);
+    if (
+      finalTargetStat.isSymbolicLink()
+      || !finalTargetStat.isFile()
+      || finalTargetStat.nlink !== 1
+      || !sameIdentity(createdIdentity, finalTargetStat)
+    ) {
+      throw new InvalidStorageEntryError();
+    }
+    createdIdentity = undefined;
+    return true;
+  } catch {
+    if (published && createdIdentity !== undefined) {
+      await unlinkCreatedFile(targetPath, createdIdentity);
+    }
+    throw new InvalidStorageEntryError();
+  } finally {
+    await handle?.close();
+    if (createdIdentity !== undefined) {
+      await unlinkCreatedFile(temporaryPath, createdIdentity);
+    }
+  }
+}
+
+export async function acquireSafeFileLock(
+  lockPath: string,
+  boundary: StorageReadBoundary,
+): Promise<SafeFileLock | null> {
+  let handle: FileHandle | undefined;
+  let createdIdentity: { dev: number | bigint; ino: number | bigint } | undefined;
+
+  try {
+    const { canonicalSubtree, directoryIdentities } = await prepareSafeWritableSubtree(
+      boundary,
+    );
+    if (resolve(dirname(lockPath)) !== resolve(boundary.subtree)) {
+      throw new InvalidStorageEntryError();
+    }
+    try {
+      handle = await open(
+        lockPath,
+        constants.O_WRONLY
+          | constants.O_CREAT
+          | constants.O_EXCL
+          | constants.O_NOFOLLOW,
+        0o600,
+      );
+    } catch (error) {
+      if (isAlreadyExistsError(error)) {
+        return null;
+      }
+      throw error;
+    }
+
+    const openedStat = await handle.stat();
+    if (!openedStat.isFile() || openedStat.nlink !== 1) {
+      throw new InvalidStorageEntryError();
+    }
+    createdIdentity = { dev: openedStat.dev, ino: openedStat.ino };
+    await handle.chmod(0o600);
+    await handle.sync();
+
+    const [lockStat, canonicalLockPath] = await Promise.all([
+      lstat(lockPath),
+      realpath(lockPath),
+    ]);
+    if (
+      lockStat.isSymbolicLink()
+      || !lockStat.isFile()
+      || lockStat.nlink !== 1
+      || !sameIdentity(createdIdentity, lockStat)
+      || !isStrictlyWithin(canonicalSubtree, canonicalLockPath)
+      || !(await directoryChainMatches(directoryIdentities))
+    ) {
+      throw new InvalidStorageEntryError();
+    }
+    await handle.close();
+    handle = undefined;
+
+    const identity = createdIdentity;
+    createdIdentity = undefined;
+    let released = false;
+    return {
+      release: async () => {
+        if (!released) {
+          await unlinkCreatedFile(lockPath, identity);
+          released = true;
+        }
+      },
+    };
+  } catch {
+    throw new InvalidStorageEntryError();
+  } finally {
+    await handle?.close();
+    if (createdIdentity !== undefined) {
+      await unlinkCreatedFile(lockPath, createdIdentity);
+    }
   }
 }
 
@@ -420,7 +608,13 @@ async function safeDirectoryChain(
       if (!createMissing || !isMissingPathError(error)) {
         throw error;
       }
-      await mkdir(current, { mode: 0o700 });
+      try {
+        await mkdir(current, { mode: 0o700 });
+      } catch (mkdirError) {
+        if (!isAlreadyExistsError(mkdirError)) {
+          throw mkdirError;
+        }
+      }
       currentStat = await lstat(current);
     }
     if (currentStat.isSymbolicLink() || !currentStat.isDirectory()) {
@@ -433,6 +627,53 @@ async function safeDirectoryChain(
     });
   }
   return identities;
+}
+
+async function prepareSafeWritableSubtree(
+  boundary: StorageReadBoundary,
+): Promise<{
+  canonicalSubtree: string;
+  directoryIdentities: PathIdentity[];
+}> {
+  const resolvedVaultRoot = resolve(boundary.vaultRoot);
+  const resolvedTasksRoot = resolve(boundary.tasksRoot);
+  const resolvedSubtree = resolve(boundary.subtree);
+  if (
+    !isStrictlyWithin(resolvedVaultRoot, resolvedTasksRoot)
+    || !isStrictlyWithin(resolvedTasksRoot, resolvedSubtree)
+  ) {
+    throw new InvalidStorageEntryError();
+  }
+  const directoryIdentities = await safeDirectoryChain(
+    boundary.vaultRoot,
+    boundary.subtree,
+    true,
+  );
+  const [canonicalVaultRoot, canonicalTasksRoot, canonicalSubtree] = await Promise.all([
+    realpath(boundary.vaultRoot),
+    realpath(boundary.tasksRoot),
+    realpath(boundary.subtree),
+  ]);
+  const [tasksStat, tasksPathStat, subtreeStat, subtreePathStat] = await Promise.all([
+    lstat(canonicalTasksRoot),
+    lstat(boundary.tasksRoot),
+    lstat(canonicalSubtree),
+    lstat(boundary.subtree),
+  ]);
+  if (
+    tasksPathStat.isSymbolicLink()
+    || !tasksPathStat.isDirectory()
+    || !sameIdentity(tasksStat, tasksPathStat)
+    || subtreePathStat.isSymbolicLink()
+    || !subtreePathStat.isDirectory()
+    || !sameIdentity(subtreeStat, subtreePathStat)
+    || !isStrictlyWithin(canonicalVaultRoot, canonicalTasksRoot)
+    || !isStrictlyWithin(canonicalTasksRoot, canonicalSubtree)
+    || !(await directoryChainMatches(directoryIdentities))
+  ) {
+    throw new InvalidStorageEntryError();
+  }
+  return { canonicalSubtree, directoryIdentities };
 }
 
 async function directoryChainMatches(

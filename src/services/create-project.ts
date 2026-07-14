@@ -6,6 +6,7 @@ import {
   type Project,
   type ProjectResource,
 } from '../domain/project.js';
+import { ProjectCreateConflictError } from '../storage/contracts.js';
 import type { ServiceContext } from './service-context.js';
 
 export interface CreateProjectInput {
@@ -54,20 +55,21 @@ export async function createProject(
     throw new InvalidCreateProjectInputError();
   }
   const validInput = parsed.data;
-  const duplicate = (await ctx.projects.list()).some((project) => (
-    project.projectId === validInput.projectId
-  ));
-  if (duplicate) {
-    throw new ProjectAlreadyExistsError(validInput.projectId);
-  }
-
   const timestamp = ctx.clock().toISOString();
   const project = projectSchema.parse({
     ...validInput,
     createdAt: timestamp,
     updatedAt: timestamp,
   });
-  const saved = await ctx.projects.save(project);
+  let saved: Project;
+  try {
+    saved = await ctx.projects.create(project);
+  } catch (error) {
+    if (error instanceof ProjectCreateConflictError) {
+      throw new ProjectAlreadyExistsError(validInput.projectId);
+    }
+    throw error;
+  }
   await ctx.audit.append({
     event: 'project.created',
     at: timestamp,
