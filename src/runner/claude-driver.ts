@@ -252,23 +252,41 @@ function parseResult(stdout: string): ResearchResult {
 function declaredOptions(help: string): Map<string, string> {
   const options = new Map<string, string>();
   const declaration = /^\s*(?:-[A-Za-z0-9](?:,\s*|\s+))?(--[A-Za-z0-9][A-Za-z0-9-]*)(?=$|[\s<[=])/;
+  const inactive = /\b(?:deprecated|removed|documentation[-\s]+only)\b/i;
   for (const line of help.split(/\r?\n/)) {
     const match = declaration.exec(line);
     const option = match?.[1];
-    if (option !== undefined) {
+    if (option !== undefined && !inactive.test(line)) {
       options.set(option, line);
     }
   }
   return options;
 }
 
+function firstAllowedValues(declaration: string): string[] {
+  const label = /\b(?:choices?|allowed[-\s]+values?)\s*:\s*/i;
+  const match = label.exec(declaration);
+  if (match === null) {
+    return [];
+  }
+  const remainder = declaration.slice(match.index + match[0].length);
+  const nextBoundary = remainder.search(
+    /[)\];]|\b(?:choices?|allowed[-\s]+values?)\s*:/i,
+  );
+  const list = nextBoundary === -1
+    ? remainder
+    : remainder.slice(0, nextBoundary);
+  return list
+    .split(/[\s,|]+/)
+    .map((value) => value.replace(/^["'`]+|["'`]+$/g, ''))
+    .filter((value) => value !== '');
+}
+
 function isCompatibleHelp(help: string): boolean {
   const options = declaredOptions(help);
   const permissionMode = options.get('--permission-mode');
   const allowsDontAsk = permissionMode !== undefined
-    && /\b(?:choices?|allowed\s+values?)\s*:\s*[^)\]\n]*\bdontAsk\b/.test(
-      permissionMode,
-    );
+    && firstAllowedValues(permissionMode).includes('dontAsk');
   return REQUIRED_HELP_MARKERS.every((marker) => options.has(marker))
     && allowsDontAsk;
 }

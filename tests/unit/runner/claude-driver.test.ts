@@ -414,6 +414,77 @@ describe('ClaudeResearchDriver.execute', () => {
     expect(calls).toHaveLength(1);
   });
 
+  it.each([
+    [
+      'a prefixed value',
+      '--permission-mode <mode> (choices: not-dontAsk)',
+    ],
+    [
+      'a suffixed value',
+      '--permission-mode <mode> (choices: dontAskExtra)',
+    ],
+    [
+      'a later unrelated choices list',
+      '--permission-mode <mode> choices: default; note choices: dontAsk',
+    ],
+  ])('does not accept dontAsk from %s', async (_label, permissionLine) => {
+    const calls: ProcessExecution[] = [];
+    const misleadingHelp = REQUIRED_HELP.replace(
+      '--permission-mode <mode> (choices: dontAsk)',
+      permissionLine,
+    );
+    const executor = fakeExecutor(async (execution) => {
+      calls.push(execution);
+      if (execution.args[0] === '--help') {
+        return processResult({ stdout: misleadingHelp });
+      }
+      return processResult({
+        stdout: JSON.stringify({ structured_output: validResult }),
+      });
+    });
+    const driver = await createDriver({ executor });
+
+    await expect(driver.execute({
+      task: makeTask(),
+      context: makeContext(),
+      timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
+    })).rejects.toMatchObject({
+      name: 'ClaudeDriverError',
+      code: 'unsupported_claude_cli',
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.input).toBeUndefined();
+  });
+
+  it('does not accept a removed documentation-only option declaration', async () => {
+    const calls: ProcessExecution[] = [];
+    const deprecatedHelp = REQUIRED_HELP.replace(
+      '--safe-mode',
+      '--safe-mode DEPRECATED: removed; documentation only',
+    );
+    const executor = fakeExecutor(async (execution) => {
+      calls.push(execution);
+      if (execution.args[0] === '--help') {
+        return processResult({ stdout: deprecatedHelp });
+      }
+      return processResult({
+        stdout: JSON.stringify({ structured_output: validResult }),
+      });
+    });
+    const driver = await createDriver({ executor });
+
+    await expect(driver.execute({
+      task: makeTask(),
+      context: makeContext(),
+      timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
+    })).rejects.toMatchObject({
+      name: 'ClaudeDriverError',
+      code: 'unsupported_claude_cli',
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.input).toBeUndefined();
+  });
+
   it('does not accept required flag names mentioned only in prose', async () => {
     const calls: ProcessExecution[] = [];
     const proseOnlyHelp = [
