@@ -92,6 +92,7 @@ export interface SafeFileLock {
 
 interface SafeFileLockMetadata {
   ownerToken: string;
+  ownerPid: number;
   acquiredAt: string;
   leaseExpiresAt: string;
 }
@@ -107,6 +108,7 @@ interface InspectedSafeFileLock {
 }
 
 const SAFE_FILE_LOCK_MAX_BYTES = 1024;
+const SAFE_FILE_LOCK_MAX_PID = 2_147_483_647;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export async function listSafeRegularFiles(
@@ -338,6 +340,7 @@ export async function acquireSafeFileLock(
   }
   const metadata: SafeFileLockMetadata = {
     ownerToken,
+    ownerPid: process.pid,
     acquiredAt: new Date(acquiredAtMs).toISOString(),
     leaseExpiresAt: new Date(leaseExpiresAtMs).toISOString(),
   };
@@ -430,6 +433,7 @@ export async function reclaimExpiredSafeFileLock(
   if (
     inspected === null
     || Date.parse(inspected.metadata.leaseExpiresAt) > nowMs
+    || !isOwnerProcessConfirmedAbsent(inspected.metadata.ownerPid)
   ) {
     return false;
   }
@@ -829,12 +833,17 @@ function parseSafeFileLockMetadata(content: string): SafeFileLockMetadata | null
   const record = value as Record<string, unknown>;
   const keys = Object.keys(record).sort();
   if (
-    keys.length !== 3
+    keys.length !== 4
     || keys[0] !== 'acquiredAt'
     || keys[1] !== 'leaseExpiresAt'
-    || keys[2] !== 'ownerToken'
+    || keys[2] !== 'ownerPid'
+    || keys[3] !== 'ownerToken'
     || typeof record.ownerToken !== 'string'
     || !UUID_PATTERN.test(record.ownerToken)
+    || typeof record.ownerPid !== 'number'
+    || !Number.isSafeInteger(record.ownerPid)
+    || record.ownerPid <= 0
+    || record.ownerPid > SAFE_FILE_LOCK_MAX_PID
     || typeof record.acquiredAt !== 'string'
     || typeof record.leaseExpiresAt !== 'string'
   ) {
@@ -853,9 +862,24 @@ function parseSafeFileLockMetadata(content: string): SafeFileLockMetadata | null
   }
   return {
     ownerToken: record.ownerToken,
+    ownerPid: record.ownerPid,
     acquiredAt: record.acquiredAt,
     leaseExpiresAt: record.leaseExpiresAt,
   };
+}
+
+function isOwnerProcessConfirmedAbsent(ownerPid: number): boolean {
+  try {
+    process.kill(ownerPid, 0);
+    return false;
+  } catch (error) {
+    // PID reuse after a reboot can delay recovery until that process exits.
+    // Cross-boot process identity is intentionally deferred beyond the local MVP.
+    return typeof error === 'object'
+      && error !== null
+      && 'code' in error
+      && error.code === 'ESRCH';
+  }
 }
 
 async function inspectSafeFileLock(

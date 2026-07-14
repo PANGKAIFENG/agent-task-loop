@@ -7,6 +7,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -56,6 +57,7 @@ async function writeSyntheticSourceLock(
   sourceKey: string,
   metadata: {
     ownerToken: string;
+    ownerPid: number;
     acquiredAt: string;
     leaseExpiresAt: string;
   },
@@ -114,16 +116,82 @@ describe('captureTask', () => {
     })).resolves.toBe(1);
   });
 
+  it('does not reclaim an expired source lock while its owner process is alive', async () => {
+    const context = await makeContext();
+    const input = captureInput({
+      sourceKey: 'synthetic:live-expired-source-lock',
+    });
+    const owner = context.createIndependentContext({
+      ids: ['task-20260714-owner'],
+      taskRepository: {
+        sourceClaim: {
+          leaseMs: 1,
+          clock: () => new Date('2026-07-14T00:00:00.000Z'),
+        },
+      },
+    });
+    const contender = context.createIndependentContext({
+      ids: ['task-20260714-contender'],
+      taskRepository: {
+        sourceClaim: {
+          attempts: 1_000,
+          retryMs: 1,
+          leaseMs: 30_000,
+          clock: () => new Date('2026-07-14T00:01:00.000Z'),
+        },
+      },
+    });
+    const lockHeld = Promise.withResolvers<void>();
+    const proceed = Promise.withResolvers<void>();
+    const findBySourceKey = owner.tasks.findBySourceKey.bind(owner.tasks);
+    let findCalls = 0;
+    owner.tasks.findBySourceKey = async (sourceKey) => {
+      const existing = await findBySourceKey(sourceKey);
+      findCalls += 1;
+      if (findCalls === 2) {
+        lockHeld.resolve();
+        await proceed.promise;
+      }
+      return existing;
+    };
+
+    const ownerCapture = captureTask(owner, input);
+    await lockHeld.promise;
+    const contenderCapture = captureTask(contender, input);
+    const contenderSettledWhileOwnerPaused = await Promise.race([
+      contenderCapture.then(() => true),
+      delay(250, false),
+    ]);
+    proceed.resolve();
+    const [ownerTask, contenderTask] = await Promise.all([
+      ownerCapture,
+      contenderCapture,
+    ]);
+
+    expect(contenderSettledWhileOwnerPaused).toBe(false);
+    expect(contenderTask.taskId).toBe(ownerTask.taskId);
+    expect(await owner.tasks.list()).toHaveLength(1);
+    await expect(owner.audit.count({
+      event: 'task.captured',
+      localDate: '2026-07-14',
+    })).resolves.toBe(1);
+  });
+
   it('reclaims an expired source lock and captures exactly once', async () => {
     const context = await makeContext();
     const input = captureInput({
       sourceKey: 'synthetic:expired-source-lock',
     });
+    const absentOwnerPid = 2_147_483_647;
+    expect(() => process.kill(absentOwnerPid, 0)).toThrowError(
+      expect.objectContaining({ code: 'ESRCH' }),
+    );
     const lockPath = await writeSyntheticSourceLock(
       context.root,
       input.sourceKey,
       {
         ownerToken: '00000000-0000-4000-8000-000000000001',
+        ownerPid: absentOwnerPid,
         acquiredAt: '2026-07-13T23:58:00.000Z',
         leaseExpiresAt: '2026-07-13T23:59:00.000Z',
       },
@@ -161,6 +229,7 @@ describe('captureTask', () => {
     });
     const metadata = {
       ownerToken: '00000000-0000-4000-8000-000000000002',
+      ownerPid: process.pid,
       acquiredAt: '2026-07-14T00:00:00.000Z',
       leaseExpiresAt: '2026-07-14T00:01:00.000Z',
     };
