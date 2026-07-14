@@ -11,6 +11,7 @@ import {
   type ConfirmTaskInput,
 } from '../../../src/services/confirm-task.js';
 import { createProject } from '../../../src/services/create-project.js';
+import { TaskSavedIndexStaleError } from '../../../src/storage/markdown-task-repository.js';
 import {
   createTestServiceContext,
   type TestServiceContext,
@@ -250,6 +251,80 @@ describe('confirmTask', () => {
     expect(serializedAudit).not.toContain(candidate.body);
     expect(serializedAudit).not.toContain(candidate.sourceNote ?? '');
     expect(serializedAudit).not.toContain(candidate.sourceQuote ?? '');
+  });
+
+  it('audits a committed confirmation before reporting a stale task index', async () => {
+    const context = await makeContext();
+    await createSyntheticProject(context);
+    const task = await captureSyntheticTask(context);
+    const saveTask = context.ctx.tasks.save.bind(context.ctx.tasks);
+    let readySaveFailed = false;
+    context.ctx.tasks.save = async (submitted) => {
+      const saved = await saveTask(submitted);
+      if (submitted.status === 'ready' && !readySaveFailed) {
+        readySaveFailed = true;
+        throw new TaskSavedIndexStaleError();
+      }
+      return saved;
+    };
+    const input = confirmInput({
+      objective: 'Sensitive stale-index objective.',
+      acceptanceCriteria: ['Sensitive stale-index criterion.'],
+    });
+    const inboxPath = join(
+      context.root,
+      '10_Tasks',
+      'Inbox',
+      '2026-07-14',
+      `${task.taskId}.md`,
+    );
+    const activePath = join(
+      context.root,
+      '10_Tasks',
+      'Active',
+      input.projectId,
+      `${task.taskId}.md`,
+    );
+
+    const error = await confirmTask(
+      context.ctx,
+      task.taskId,
+      input,
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(TaskSavedIndexStaleError);
+    expect(error).toMatchObject({
+      code: 'task_saved_index_stale',
+      message: 'Task saved but task index is stale',
+    });
+    await expect(context.ctx.tasks.get(task.taskId)).resolves.toMatchObject({
+      status: 'ready',
+      reviewState: 'confirmed',
+      projectId: input.projectId,
+      objective: input.objective,
+      acceptanceCriteria: input.acceptanceCriteria,
+      autoExecutable: true,
+    });
+    expect((await stat(activePath)).isFile()).toBe(true);
+    await expect(stat(inboxPath)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    const confirmedEvents = (await context.ctx.audit.listForTask(task.taskId))
+      .filter(({ event }) => event === 'task.confirmed');
+    expect(confirmedEvents).toEqual([{
+      event: 'task.confirmed',
+      at: '2026-07-14T00:00:00.000Z',
+      taskId: task.taskId,
+      details: {
+        projectId: input.projectId,
+        priority: input.priority,
+      },
+    }]);
+    const serializedAudit = JSON.stringify(confirmedEvents);
+    expect(serializedAudit).not.toContain(input.objective);
+    expect(serializedAudit).not.toContain(input.acceptanceCriteria[0]);
+    expect(serializedAudit).not.toContain(task.body);
+    expect(serializedAudit).not.toContain(task.sourceNote ?? '');
+    expect(serializedAudit).not.toContain(task.sourceQuote ?? '');
   });
 
   it('restores the exact Inbox task when the confirmation audit fails', async () => {

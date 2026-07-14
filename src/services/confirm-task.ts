@@ -8,6 +8,7 @@ import {
 } from '../domain/task.js';
 import { assertTransition } from '../domain/transitions.js';
 import { ProjectNotFoundError } from '../storage/markdown-project-repository.js';
+import { TaskSavedIndexStaleError } from '../storage/markdown-task-repository.js';
 import type { ServiceContext } from './service-context.js';
 
 export interface ConfirmTaskInput {
@@ -122,14 +123,25 @@ export async function confirmTask(
     }
 
     const timestamp = ctx.clock().toISOString();
-    const saved = await ctx.tasks.save({
+    const confirmedTask: Task = {
       ...candidate,
       status: 'ready',
       reviewState: 'confirmed',
       reviewFeedback: null,
       readyAt: timestamp,
       updatedAt: timestamp,
-    });
+    };
+    let saved: Task;
+    let staleIndexError: TaskSavedIndexStaleError | null = null;
+    try {
+      saved = await ctx.tasks.save(confirmedTask);
+    } catch (error) {
+      if (!(error instanceof TaskSavedIndexStaleError)) {
+        throw error;
+      }
+      saved = confirmedTask;
+      staleIndexError = error;
+    }
     try {
       await ctx.audit.append({
         event: 'task.confirmed',
@@ -147,6 +159,9 @@ export async function confirmTask(
         throw new TaskConfirmationRecoveryError();
       }
       throw new TaskConfirmationAuditFailedError();
+    }
+    if (staleIndexError !== null) {
+      throw staleIndexError;
     }
     return saved;
   });
