@@ -48,10 +48,12 @@ export class TaskNotFoundError extends Error {
 
 export class InvalidTaskDataError extends Error {
   readonly code = 'invalid_task_data';
+  readonly field: string | undefined;
 
-  constructor() {
-    super('Invalid task data');
+  constructor(field?: string) {
+    super(field === undefined ? 'Invalid task data' : `Invalid task data: ${field}`);
     this.name = 'InvalidTaskDataError';
+    this.field = field;
   }
 }
 
@@ -102,21 +104,71 @@ function stringArray(value: unknown): string[] {
     : [];
 }
 
-function taskStatus(value: unknown): TaskStatus {
-  return value === 'ready'
-    || value === 'in_progress'
-    || value === 'review'
-    || value === 'done'
-    || value === 'blocked'
-    || value === 'cancelled'
-    ? value
-    : 'inbox';
+function legacyEnum<T extends string>(
+  data: Record<string, unknown>,
+  field: string,
+  allowed: readonly T[],
+  fallback: T,
+): T {
+  const value = data[field];
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  if (typeof value === 'string' && allowed.includes(value as T)) {
+    return value as T;
+  }
+  throw new InvalidTaskDataError(field);
 }
 
-function priority(value: unknown): Priority {
-  return value === 'urgent' || value === 'high' || value === 'low'
-    ? value
-    : 'normal';
+function legacyNullableEnum<T extends string>(
+  data: Record<string, unknown>,
+  field: string,
+  allowed: readonly T[],
+): T | null {
+  const value = data[field];
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value === 'string' && allowed.includes(value as T)) {
+    return value as T;
+  }
+  throw new InvalidTaskDataError(field);
+}
+
+function taskStatus(data: Record<string, unknown>): TaskStatus {
+  return legacyEnum(data, 'status', [
+    'inbox',
+    'ready',
+    'in_progress',
+    'review',
+    'done',
+    'blocked',
+    'cancelled',
+  ], 'inbox');
+}
+
+function priority(data: Record<string, unknown>): Priority {
+  return legacyEnum(data, 'priority', [
+    'urgent',
+    'high',
+    'normal',
+    'low',
+  ], 'normal');
+}
+
+function legacyBoolean(
+  data: Record<string, unknown>,
+  field: string,
+  fallback: boolean,
+): boolean {
+  const value = data[field];
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  throw new InvalidTaskDataError(field);
 }
 
 function deriveLegacySourceKey(data: Record<string, unknown>): string {
@@ -149,26 +201,29 @@ function mapClaim(value: unknown): Task['claim'] {
 
 function taskFromRecord(record: Pick<TaskRecord, 'path' | 'data' | 'body'>): Task {
   const data = record.data;
-  const reviewState = data.review_state === 'ready_for_confirm'
-    || data.review_state === 'confirmed'
-    ? data.review_state
-    : 'candidate';
-  const taskType = data.task_type === 'research' ? 'research' : null;
-  const permissionProfile = data.permission_profile === 'read_only_research'
-    ? 'read_only_research'
-    : null;
+  const reviewState = legacyEnum(data, 'review_state', [
+    'candidate',
+    'ready_for_confirm',
+    'confirmed',
+  ], 'candidate');
+  const taskType = legacyNullableEnum(data, 'task_type', ['research']);
+  const permissionProfile = legacyNullableEnum(
+    data,
+    'permission_profile',
+    ['read_only_research'],
+  );
   const task: Task = {
     schemaVersion: 1,
     taskId: stringValue(data.task_id, basename(record.path, '.md')),
     title: stringValue(data.title),
     body: record.body,
-    status: taskStatus(data.status),
+    status: taskStatus(data),
     reviewState,
     projectId: nullableString(data.project_id),
     taskType,
     objective: nullableString(data.objective),
     acceptanceCriteria: stringArray(data.acceptance_criteria),
-    autoExecutable: data.auto_executable === true,
+    autoExecutable: legacyBoolean(data, 'auto_executable', false),
     permissionProfile,
     origin: stringValue(data.origin, 'legacy'),
     sourceDate: nullableString(data.source_date),
@@ -176,7 +231,7 @@ function taskFromRecord(record: Pick<TaskRecord, 'path' | 'data' | 'body'>): Tas
     sourceQuote: nullableString(data.source_quote),
     sourceKey: stringValue(data.source_key) || deriveLegacySourceKey(data),
     possibleDuplicateIds: stringArray(data.possible_duplicate_ids),
-    priority: priority(data.priority),
+    priority: priority(data),
     attempts: typeof data.attempts === 'number'
       && Number.isInteger(data.attempts)
       && data.attempts >= 0

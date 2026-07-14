@@ -42,5 +42,6 @@ export function serializeTaskDocument(
   data: Record<string, unknown>,
   body: string,
 ): string {
+  // Unknown parsed values and body bytes are preserved; YAML formatting and comments may normalize.
   return `---\n${YAML.stringify(data)}---${body}`;
 }

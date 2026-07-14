@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   cp,
+  link,
   lstat,
   mkdir,
   mkdtemp,
@@ -175,6 +176,61 @@ describe('MarkdownTaskRepository', () => {
     });
     expect(task.body).toContain('Sanitized fixture content');
     expect(await readFile(path, 'utf8')).toBe(before);
+  });
+
+  it.each([
+    ['status', 'synthetic-invalid-status'],
+    ['priority', 'synthetic-invalid-priority'],
+    ['review_state', 'synthetic-invalid-review-state'],
+    ['task_type', 'synthetic-invalid-task-type'],
+    ['permission_profile', 'synthetic-invalid-permission-profile'],
+    ['auto_executable', 'synthetic-invalid-boolean'],
+  ])('rejects a present invalid legacy %s without exposing its value', async (field, value) => {
+    const root = await makeVault();
+    const path = join(root, fixtureRelativePath);
+    const document = parseTaskDocument(await readFile(path, 'utf8'));
+    await writeFile(path, serializeTaskDocument({
+      ...document.data,
+      [field]: value,
+    }, '\nSynthetic private body must not appear in errors.\n'));
+
+    const error = await new MarkdownTaskRepository(root).get(
+      'task-20260713-deadbeef',
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      code: 'invalid_task_data',
+      field,
+    });
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain(field);
+    expect((error as Error).message).not.toContain(value);
+    expect((error as Error).message).not.toContain('Synthetic private body');
+  });
+
+  it('uses compatibility defaults for absent or null legacy fields', async () => {
+    const root = await makeVault();
+    const path = join(root, fixtureRelativePath);
+    const document = parseTaskDocument(await readFile(path, 'utf8'));
+    const data = { ...document.data };
+    delete data.status;
+    delete data.priority;
+    delete data.review_state;
+    data.task_type = null;
+    data.permission_profile = null;
+    data.auto_executable = null;
+    await writeFile(path, serializeTaskDocument(data, document.body));
+
+    await expect(new MarkdownTaskRepository(root).get(
+      'task-20260713-deadbeef',
+    )).resolves.toMatchObject({
+      status: 'inbox',
+      priority: 'normal',
+      reviewState: 'candidate',
+      taskType: null,
+      permissionProfile: null,
+      autoExecutable: false,
+    });
   });
 
   it('writes ATL fields, moves a ready task, preserves body, and rebuilds the index', async () => {
@@ -1007,6 +1063,29 @@ describe('FileAuditLog', () => {
     )).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('serializes only validated fields instead of invoking a custom toJSON', async () => {
+    const root = await makeVault();
+    const audit = new FileAuditLog(root, { timeZone: 'Asia/Shanghai' });
+    const privateValue = 'synthetic-private-to-json-value';
+    const event = {
+      event: 'safe_event',
+      at: '2026-07-14T09:00:00+08:00',
+      details: { mode: 'automatic' },
+    };
+    Object.defineProperty(event, 'toJSON', {
+      value: () => ({ content: privateValue }),
+    });
+
+    await audit.append(event);
+
+    const persisted = await readFile(
+      join(root, '10_Tasks', 'Audit', '2026-07-14.jsonl'),
+      'utf8',
+    );
+    expect(persisted).toContain('safe_event');
+    expect(persisted).not.toContain(privateValue);
+  });
+
   it('sorts task history by absolute timestamp across UTC offsets', async () => {
     const root = await makeVault();
     const audit = new FileAuditLog(root);
@@ -1026,5 +1105,174 @@ describe('FileAuditLog', () => {
       '2026-07-14T09:30:00+08:00',
       '2026-07-14T02:00:00Z',
     ]);
+  });
+
+  it('partitions UTC events by the configured local timezone', async () => {
+    const root = await makeVault();
+    const audit = new FileAuditLog(root, { timeZone: 'Asia/Shanghai' });
+
+    await audit.append({
+      event: 'task_updated',
+      at: '2026-07-14T16:30:00Z',
+      taskId: 'task-timezone-boundary',
+    });
+
+    await expect(audit.count({
+      event: 'task_updated',
+      localDate: '2026-07-15',
+    })).resolves.toBe(1);
+    await expect(readFile(
+      join(root, '10_Tasks', 'Audit', '2026-07-15.jsonl'),
+      'utf8',
+    )).resolves.toContain('task-timezone-boundary');
+    await expect(stat(
+      join(root, '10_Tasks', 'Audit', '2026-07-14.jsonl'),
+    )).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it.each([
+    '2026-07-14',
+    '2026-07-14T09:00:00',
+    '2026-02-30T09:00:00Z',
+    '2026-07-14T09:00:00+24:00',
+  ])('rejects a non-RFC-3339 timestamp without echoing it: %s', async (at) => {
+    const root = await makeVault();
+    const audit = new FileAuditLog(root, { timeZone: 'Asia/Shanghai' });
+
+    const error = await audit.append({ event: 'invalid_time', at }).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toMatchObject({ code: 'invalid_audit_event' });
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).not.toContain(at);
+  });
+
+  it('creates daily audit files with owner-only permissions', async () => {
+    const root = await makeVault();
+    const audit = new FileAuditLog(root, { timeZone: 'Asia/Shanghai' });
+    await audit.append({
+      event: 'permission_check',
+      at: '2026-07-14T09:00:00+08:00',
+    });
+
+    const file = await stat(join(root, '10_Tasks', 'Audit', '2026-07-14.jsonl'));
+    expect(file.mode & 0o777).toBe(0o600);
+  });
+
+  it('refuses a daily audit file symlink without changing its target', async () => {
+    const root = await makeVault();
+    const outside = await mkdtemp(join(tmpdir(), 'atl-audit-append-outside-'));
+    temporaryRoots.push(outside);
+    const target = join(outside, 'outside.jsonl');
+    const sentinel = 'synthetic-outside-sentinel\n';
+    await writeFile(target, sentinel);
+    const auditRoot = join(root, '10_Tasks', 'Audit');
+    await mkdir(auditRoot, { recursive: true });
+    await symlink(target, join(auditRoot, '2026-07-14.jsonl'));
+
+    await expect(new FileAuditLog(root, {
+      timeZone: 'Asia/Shanghai',
+    }).append({
+      event: 'must_not_escape',
+      at: '2026-07-14T09:00:00+08:00',
+    })).rejects.toMatchObject({ code: 'invalid_storage_entry' });
+    await expect(readFile(target, 'utf8')).resolves.toBe(sentinel);
+  });
+
+  it('refuses a daily audit file hard link without changing its target', async () => {
+    const root = await makeVault();
+    const outside = await mkdtemp(join(tmpdir(), 'atl-audit-hardlink-outside-'));
+    temporaryRoots.push(outside);
+    const target = join(outside, 'outside.jsonl');
+    const sentinel = 'synthetic-hardlink-sentinel\n';
+    await writeFile(target, sentinel);
+    const auditRoot = join(root, '10_Tasks', 'Audit');
+    await mkdir(auditRoot, { recursive: true });
+    await link(target, join(auditRoot, '2026-07-14.jsonl'));
+
+    await expect(new FileAuditLog(root, {
+      timeZone: 'Asia/Shanghai',
+    }).append({
+      event: 'must_not_alias',
+      at: '2026-07-14T09:00:00+08:00',
+    })).rejects.toMatchObject({ code: 'invalid_storage_entry' });
+    await expect(readFile(target, 'utf8')).resolves.toBe(sentinel);
+  });
+
+  it('rejects an oversized event with a sanitized typed error', async () => {
+    const root = await makeVault();
+    const audit = new FileAuditLog(root, { timeZone: 'Asia/Shanghai' });
+    const oversized = 'synthetic-oversized-value'.repeat(4_000);
+
+    const error = await audit.append({
+      event: 'oversized_event',
+      at: '2026-07-14T09:00:00+08:00',
+      details: { summary: oversized },
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({ code: 'audit_event_too_large' });
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).not.toContain(oversized);
+  });
+
+  it.each([
+    ['malformed', '{"event":"broken","details":{"summary":"synthetic-private-audit-fragment"}}'],
+    ['truncated', JSON.stringify({
+      event: 'complete_but_unterminated',
+      at: '2026-07-14T09:00:00+08:00',
+      taskId: 'task-corrupt-tail',
+      details: { summary: 'synthetic-private-audit-fragment' },
+    })],
+  ])('reports a sanitized corruption error for a %s final line', async (_kind, tail) => {
+    const root = await makeVault();
+    const auditRoot = join(root, '10_Tasks', 'Audit');
+    await mkdir(auditRoot, { recursive: true });
+    const privateFragment = 'synthetic-private-audit-fragment';
+    await writeFile(
+      join(auditRoot, '2026-07-14.jsonl'),
+      `${JSON.stringify({
+        event: 'valid_event',
+        at: '2026-07-14T08:00:00+08:00',
+        taskId: 'task-corrupt-tail',
+      })}\n${tail}`,
+    );
+
+    const error = await new FileAuditLog(root).listForTask(
+      'task-corrupt-tail',
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({ code: 'audit_corruption' });
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).not.toContain(privateFragment);
+  });
+
+  it('preserves every event during concurrent appends', async () => {
+    const root = await makeVault();
+    const audit = new FileAuditLog(root, { timeZone: 'Asia/Shanghai' });
+    const eventCount = 64;
+
+    await Promise.all(Array.from({ length: eventCount }, async (_, index) => {
+      await audit.append({
+        event: 'concurrent_event',
+        at: '2026-07-14T09:00:00+08:00',
+        taskId: `task-concurrent-${index}`,
+        details: { index },
+      });
+    }));
+
+    await expect(audit.count({
+      event: 'concurrent_event',
+      localDate: '2026-07-14',
+    })).resolves.toBe(eventCount);
+    const raw = await readFile(
+      join(root, '10_Tasks', 'Audit', '2026-07-14.jsonl'),
+      'utf8',
+    );
+    const lines = raw.trimEnd().split('\n');
+    expect(lines).toHaveLength(eventCount);
+    expect(new Set(lines.map((line) => (
+      JSON.parse(line) as { taskId: string }
+    ).taskId)).size).toBe(eventCount);
   });
 });

@@ -9,7 +9,7 @@ import {
   unlink,
   type FileHandle,
 } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 import fastGlob from 'fast-glob';
 
@@ -158,6 +158,120 @@ export async function atomicWriteTextFile(
       await unlinkCreatedFile(temporaryPath, createdIdentity);
     }
     throw error;
+  }
+}
+
+export async function appendSafeTextFile(
+  targetPath: string,
+  content: Buffer,
+  boundary: StorageReadBoundary,
+): Promise<void> {
+  let handle: FileHandle | undefined;
+  try {
+    const [canonicalVaultRoot, canonicalTasksRoot] = await Promise.all([
+      realpath(boundary.vaultRoot),
+      realpath(boundary.tasksRoot),
+    ]);
+    const [vaultStat, tasksStat, tasksPathStat] = await Promise.all([
+      lstat(canonicalVaultRoot),
+      lstat(canonicalTasksRoot),
+      lstat(boundary.tasksRoot),
+    ]);
+    if (
+      !vaultStat.isDirectory()
+      || !tasksStat.isDirectory()
+      || tasksPathStat.isSymbolicLink()
+      || !tasksPathStat.isDirectory()
+      || !sameIdentity(tasksStat, tasksPathStat)
+      || !isStrictlyWithin(canonicalVaultRoot, canonicalTasksRoot)
+    ) {
+      throw new InvalidStorageEntryError();
+    }
+
+    await mkdir(boundary.subtree, { recursive: true, mode: 0o700 });
+    const [canonicalSubtree, subtreePathStat] = await Promise.all([
+      realpath(boundary.subtree),
+      lstat(boundary.subtree),
+    ]);
+    const canonicalSubtreeStat = await lstat(canonicalSubtree);
+    if (
+      subtreePathStat.isSymbolicLink()
+      || !subtreePathStat.isDirectory()
+      || !canonicalSubtreeStat.isDirectory()
+      || !sameIdentity(canonicalSubtreeStat, subtreePathStat)
+      || !isStrictlyWithin(canonicalTasksRoot, canonicalSubtree)
+      || resolve(dirname(targetPath)) !== resolve(boundary.subtree)
+    ) {
+      throw new InvalidStorageEntryError();
+    }
+
+    let initialIdentity: { dev: number | bigint; ino: number | bigint } | undefined;
+    try {
+      const targetStat = await lstat(targetPath);
+      if (
+        targetStat.isSymbolicLink()
+        || !targetStat.isFile()
+        || targetStat.nlink !== 1
+      ) {
+        throw new InvalidStorageEntryError();
+      }
+      initialIdentity = { dev: targetStat.dev, ino: targetStat.ino };
+    } catch (error) {
+      if (!isUnsafePathError(error)) {
+        throw error;
+      }
+    }
+
+    handle = await open(
+      targetPath,
+      constants.O_APPEND
+        | constants.O_CREAT
+        | constants.O_WRONLY
+        | constants.O_NOFOLLOW,
+      0o600,
+    );
+    const openedStat = await handle.stat();
+    if (
+      !openedStat.isFile()
+      || openedStat.nlink !== 1
+      || (initialIdentity !== undefined && !sameIdentity(initialIdentity, openedStat))
+    ) {
+      throw new InvalidStorageEntryError();
+    }
+
+    const [
+      finalPathStat,
+      canonicalTarget,
+      finalTasksPathStat,
+      finalSubtreePathStat,
+    ] = await Promise.all([
+      lstat(targetPath),
+      realpath(targetPath),
+      lstat(boundary.tasksRoot),
+      lstat(boundary.subtree),
+    ]);
+    if (
+      finalPathStat.isSymbolicLink()
+      || !finalPathStat.isFile()
+      || finalPathStat.nlink !== 1
+      || !sameIdentity(openedStat, finalPathStat)
+      || !sameIdentity(tasksStat, finalTasksPathStat)
+      || !sameIdentity(canonicalSubtreeStat, finalSubtreePathStat)
+      || !isStrictlyWithin(canonicalSubtree, canonicalTarget)
+    ) {
+      throw new InvalidStorageEntryError();
+    }
+
+    await handle.chmod(0o600);
+    const { bytesWritten } = await handle.write(content, 0, content.length, null);
+    if (bytesWritten !== content.length) {
+      throw new InvalidStorageEntryError();
+    }
+    await handle.sync();
+  } catch {
+    throw new InvalidStorageEntryError();
+  } finally {
+    await handle?.close();
   }
 }
 
