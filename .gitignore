@@ -8,3 +8,4 @@ playwright-report/
 test-results/
 .DS_Store
 docs/superpowers/plans/
+*.tsbuildinfo
