@@ -534,9 +534,49 @@ describe('ClaudeResearchDriver.execute', () => {
     expect(calls[0]?.input).toBeUndefined();
   });
 
+  it.each([
+    [
+      'safe-mode mentioned in another option description',
+      '--safe-mode',
+      '--other-option\n  --safe-mode remains available elsewhere',
+    ],
+    [
+      'permission-mode nested in another option description',
+      '--permission-mode <mode> (choices: dontAsk)',
+      [
+        '--other-option',
+        '  --permission-mode <mode> (choices: dontAsk)',
+      ].join('\n'),
+    ],
+  ])('does not promote %s', async (_label, requiredLine, replacement) => {
+    const calls: ProcessExecution[] = [];
+    const nestedHelp = REQUIRED_HELP.replace(requiredLine, replacement);
+    const executor = fakeExecutor(async (execution) => {
+      calls.push(execution);
+      if (execution.args[0] === '--help') {
+        return processResult({ stdout: nestedHelp });
+      }
+      return processResult({
+        stdout: JSON.stringify({ structured_output: validResult }),
+      });
+    });
+    const driver = await createDriver({ executor });
+
+    await expect(driver.execute({
+      task: makeTask(),
+      context: makeContext(),
+      timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
+    })).rejects.toMatchObject({
+      name: 'ClaudeDriverError',
+      code: 'unsupported_claude_cli',
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.input).toBeUndefined();
+  });
+
   it('accepts bounded choices from a CRLF description continuation', async () => {
     const calls: ProcessExecution[] = [];
-    const continuedHelp = REQUIRED_HELP.replace(
+    const continuedHelp = REQUIRED_HELP.replace('--print', '-p, --print').replace(
       '--permission-mode <mode> (choices: dontAsk)',
       [
         '--permission-mode <mode>',

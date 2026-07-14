@@ -258,6 +258,7 @@ function declaredOptions(help: string): Map<string, string> {
     indentation: number;
     lines: string[];
   } | undefined;
+  let declarationIndentation: number | undefined;
 
   const saveCurrent = () => {
     if (current === undefined) {
@@ -271,26 +272,34 @@ function declaredOptions(help: string): Map<string, string> {
   };
 
   for (const line of help.split(/\r?\n/)) {
+    const indentation = /^\s*/.exec(line)?.[0].length ?? 0;
+    if (
+      current !== undefined
+      && line.trim() !== ''
+      && indentation > current.indentation
+    ) {
+      current.lines.push(line);
+      continue;
+    }
     const match = declaration.exec(line);
     const option = match?.[2];
-    if (option !== undefined) {
+    if (
+      option !== undefined
+      && (
+        declarationIndentation === undefined
+        || indentation === declarationIndentation
+      )
+    ) {
       saveCurrent();
+      declarationIndentation ??= indentation;
       current = {
         option,
-        indentation: match?.[1]?.length ?? 0,
+        indentation,
         lines: [line],
       };
       continue;
     }
-    if (current === undefined) {
-      continue;
-    }
-    const indentation = /^\s*/.exec(line)?.[0].length ?? 0;
-    if (line.trim() !== '' && indentation > current.indentation) {
-      current.lines.push(line);
-    } else {
-      saveCurrent();
-    }
+    saveCurrent();
   }
   saveCurrent();
   return options;
