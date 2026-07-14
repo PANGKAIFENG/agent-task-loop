@@ -1,4 +1,11 @@
-import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import {
+  mkdir,
+  readFile,
+  stat,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
@@ -31,6 +38,32 @@ function captureInput(overrides: Partial<CaptureTaskInput> = {}): CaptureTaskInp
     priority: 'high',
     ...overrides,
   };
+}
+
+function sourceLockPath(root: string, sourceKey: string): string {
+  const digest = createHash('sha256').update(sourceKey).digest('hex');
+  return join(
+    root,
+    '10_Tasks',
+    '.atl',
+    'source-key-locks',
+    `${digest}.lock`,
+  );
+}
+
+async function writeSyntheticSourceLock(
+  root: string,
+  sourceKey: string,
+  metadata: {
+    ownerToken: string;
+    acquiredAt: string;
+    leaseExpiresAt: string;
+  },
+): Promise<string> {
+  const path = sourceLockPath(root, sourceKey);
+  await mkdir(join(path, '..'), { recursive: true, mode: 0o700 });
+  await writeFile(path, `${JSON.stringify(metadata)}\n`, { mode: 0o600 });
+  return path;
 }
 
 afterEach(async () => {
@@ -79,6 +112,93 @@ describe('captureTask', () => {
       event: 'task.captured',
       localDate: '2026-07-14',
     })).resolves.toBe(1);
+  });
+
+  it('reclaims an expired source lock and captures exactly once', async () => {
+    const context = await makeContext();
+    const input = captureInput({
+      sourceKey: 'synthetic:expired-source-lock',
+    });
+    const lockPath = await writeSyntheticSourceLock(
+      context.root,
+      input.sourceKey,
+      {
+        ownerToken: '00000000-0000-4000-8000-000000000001',
+        acquiredAt: '2026-07-13T23:58:00.000Z',
+        leaseExpiresAt: '2026-07-13T23:59:00.000Z',
+      },
+    );
+    const expired = new Date('2026-07-13T23:59:00.000Z');
+    await utimes(lockPath, expired, expired);
+    const independent = context.createIndependentContext({
+      ids: ['task-20260714-00000002'],
+      taskRepository: {
+        sourceClaim: {
+          attempts: 3,
+          retryMs: 1,
+          leaseMs: 30_000,
+          clock: () => new Date('2026-07-14T00:00:00.000Z'),
+        },
+      },
+    });
+
+    const task = await captureTask(independent, input);
+
+    expect(task.taskId).toBe('task-20260714-00000002');
+    expect(await independent.tasks.list()).toHaveLength(1);
+    await expect(independent.audit.count({
+      event: 'task.captured',
+      localDate: '2026-07-14',
+    })).resolves.toBe(1);
+    await expect(stat(lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('does not reclaim a fresh source lock and times out without sensitive data', async () => {
+    const context = await makeContext();
+    const input = captureInput({
+      body: 'fresh-lock-private-body',
+      sourceKey: 'synthetic:fresh-source-lock-private',
+    });
+    const metadata = {
+      ownerToken: '00000000-0000-4000-8000-000000000002',
+      acquiredAt: '2026-07-14T00:00:00.000Z',
+      leaseExpiresAt: '2026-07-14T00:01:00.000Z',
+    };
+    const lockPath = await writeSyntheticSourceLock(
+      context.root,
+      input.sourceKey,
+      metadata,
+    );
+    const independent = context.createIndependentContext({
+      taskRepository: {
+        sourceClaim: {
+          attempts: 2,
+          retryMs: 1,
+          leaseMs: 30_000,
+          clock: () => new Date('2026-07-14T00:00:30.000Z'),
+        },
+      },
+    });
+
+    const error = await captureTask(independent, input).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toMatchObject({
+      code: 'task_source_claim_timeout',
+      message: 'Task source claim timed out',
+    });
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).not.toContain(input.sourceKey);
+    expect((error as Error).message).not.toContain(input.body);
+    await expect(readFile(lockPath, 'utf8')).resolves.toBe(
+      `${JSON.stringify(metadata)}\n`,
+    );
+    expect(await independent.tasks.list()).toEqual([]);
+    await expect(independent.audit.count({
+      event: 'task.captured',
+      localDate: '2026-07-14',
+    })).resolves.toBe(0);
   });
 
   it('creates separate tasks for different source keys', async () => {

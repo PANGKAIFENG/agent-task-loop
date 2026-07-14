@@ -17,6 +17,14 @@ export interface TestServiceContext {
 interface TestContextOptions {
   now?: Date;
   ids?: string[];
+  taskRepository?: {
+    sourceClaim?: {
+      attempts?: number;
+      retryMs?: number;
+      leaseMs?: number;
+      clock?: () => Date;
+    };
+  };
 }
 
 function serviceContext(root: string, options: TestContextOptions): ServiceContext {
@@ -29,7 +37,7 @@ function serviceContext(root: string, options: TestContextOptions): ServiceConte
   let nextId = 0;
 
   return {
-    tasks: new MarkdownTaskRepository(root),
+    tasks: new MarkdownTaskRepository(root, options.taskRepository),
     projects: new MarkdownProjectRepository(root),
     audit: new FileAuditLog(root, { timeZone: 'Asia/Shanghai' }),
     clock: () => new Date(now),

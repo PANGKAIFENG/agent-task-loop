@@ -90,6 +90,25 @@ export interface SafeFileLock {
   release(): Promise<void>;
 }
 
+interface SafeFileLockMetadata {
+  ownerToken: string;
+  acquiredAt: string;
+  leaseExpiresAt: string;
+}
+
+interface SafeFileLockOptions {
+  acquiredAt: Date;
+  leaseMs: number;
+}
+
+interface InspectedSafeFileLock {
+  identity: { dev: number | bigint; ino: number | bigint };
+  metadata: SafeFileLockMetadata;
+}
+
+const SAFE_FILE_LOCK_MAX_BYTES = 1024;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 export async function listSafeRegularFiles(
   boundary: StorageReadBoundary,
   pattern: string,
@@ -302,9 +321,26 @@ export async function atomicCreateTextFile(
 export async function acquireSafeFileLock(
   lockPath: string,
   boundary: StorageReadBoundary,
+  options: SafeFileLockOptions,
 ): Promise<SafeFileLock | null> {
   let handle: FileHandle | undefined;
   let createdIdentity: { dev: number | bigint; ino: number | bigint } | undefined;
+  const ownerToken = randomUUID();
+  const acquiredAtMs = options.acquiredAt.getTime();
+  const leaseExpiresAtMs = acquiredAtMs + options.leaseMs;
+  if (
+    !Number.isFinite(acquiredAtMs)
+    || !Number.isSafeInteger(options.leaseMs)
+    || options.leaseMs <= 0
+    || !Number.isFinite(leaseExpiresAtMs)
+  ) {
+    throw new InvalidStorageEntryError();
+  }
+  const metadata: SafeFileLockMetadata = {
+    ownerToken,
+    acquiredAt: new Date(acquiredAtMs).toISOString(),
+    leaseExpiresAt: new Date(leaseExpiresAtMs).toISOString(),
+  };
 
   try {
     const { canonicalSubtree, directoryIdentities } = await prepareSafeWritableSubtree(
@@ -334,6 +370,7 @@ export async function acquireSafeFileLock(
       throw new InvalidStorageEntryError();
     }
     createdIdentity = { dev: openedStat.dev, ino: openedStat.ino };
+    await handle.writeFile(`${JSON.stringify(metadata)}\n`, 'utf8');
     await handle.chmod(0o600);
     await handle.sync();
 
@@ -360,7 +397,12 @@ export async function acquireSafeFileLock(
     return {
       release: async () => {
         if (!released) {
-          await unlinkCreatedFile(lockPath, identity);
+          await unlinkOwnedSafeFileLock(
+            lockPath,
+            boundary,
+            identity,
+            ownerToken,
+          );
           released = true;
         }
       },
@@ -373,6 +415,31 @@ export async function acquireSafeFileLock(
       await unlinkCreatedFile(lockPath, createdIdentity);
     }
   }
+}
+
+export async function reclaimExpiredSafeFileLock(
+  lockPath: string,
+  boundary: StorageReadBoundary,
+  now: Date,
+): Promise<boolean> {
+  const nowMs = now.getTime();
+  if (!Number.isFinite(nowMs)) {
+    return false;
+  }
+  const inspected = await inspectSafeFileLock(lockPath, boundary);
+  if (
+    inspected === null
+    || Date.parse(inspected.metadata.leaseExpiresAt) > nowMs
+  ) {
+    return false;
+  }
+
+  return unlinkOwnedSafeFileLock(
+    lockPath,
+    boundary,
+    inspected.identity,
+    inspected.metadata.ownerToken,
+  );
 }
 
 export async function appendSafeTextFile(
@@ -741,6 +808,135 @@ async function isSafeRegularFile(
       return false;
     }
     return isWithin(canonicalSubtree, await realpath(path));
+  } catch (error) {
+    if (isUnsafePathError(error)) {
+      return false;
+    }
+    throw new InvalidStorageEntryError();
+  }
+}
+
+function parseSafeFileLockMetadata(content: string): SafeFileLockMetadata | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(content);
+  } catch {
+    return null;
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  if (
+    keys.length !== 3
+    || keys[0] !== 'acquiredAt'
+    || keys[1] !== 'leaseExpiresAt'
+    || keys[2] !== 'ownerToken'
+    || typeof record.ownerToken !== 'string'
+    || !UUID_PATTERN.test(record.ownerToken)
+    || typeof record.acquiredAt !== 'string'
+    || typeof record.leaseExpiresAt !== 'string'
+  ) {
+    return null;
+  }
+  const acquiredAtMs = Date.parse(record.acquiredAt);
+  const leaseExpiresAtMs = Date.parse(record.leaseExpiresAt);
+  if (
+    !Number.isFinite(acquiredAtMs)
+    || !Number.isFinite(leaseExpiresAtMs)
+    || new Date(acquiredAtMs).toISOString() !== record.acquiredAt
+    || new Date(leaseExpiresAtMs).toISOString() !== record.leaseExpiresAt
+    || leaseExpiresAtMs < acquiredAtMs
+  ) {
+    return null;
+  }
+  return {
+    ownerToken: record.ownerToken,
+    acquiredAt: record.acquiredAt,
+    leaseExpiresAt: record.leaseExpiresAt,
+  };
+}
+
+async function inspectSafeFileLock(
+  lockPath: string,
+  boundary: StorageReadBoundary,
+): Promise<InspectedSafeFileLock | null> {
+  let handle: FileHandle | undefined;
+  try {
+    const { canonicalSubtree, directoryIdentities } = await prepareSafeWritableSubtree(
+      boundary,
+    );
+    if (resolve(dirname(lockPath)) !== resolve(boundary.subtree)) {
+      return null;
+    }
+    const pathStat = await lstat(lockPath);
+    if (
+      pathStat.isSymbolicLink()
+      || !pathStat.isFile()
+      || pathStat.nlink !== 1
+      || pathStat.size > SAFE_FILE_LOCK_MAX_BYTES
+    ) {
+      return null;
+    }
+    const canonicalLockPath = await realpath(lockPath);
+    if (!isStrictlyWithin(canonicalSubtree, canonicalLockPath)) {
+      return null;
+    }
+    handle = await open(lockPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const openedStat = await handle.stat();
+    if (
+      !openedStat.isFile()
+      || openedStat.nlink !== 1
+      || openedStat.size > SAFE_FILE_LOCK_MAX_BYTES
+      || !sameIdentity(pathStat, openedStat)
+      || !(await directoryChainMatches(directoryIdentities))
+    ) {
+      return null;
+    }
+    const metadata = parseSafeFileLockMetadata(await handle.readFile('utf8'));
+    if (metadata === null) {
+      return null;
+    }
+    const finalPathStat = await lstat(lockPath);
+    if (
+      finalPathStat.isSymbolicLink()
+      || !finalPathStat.isFile()
+      || finalPathStat.nlink !== 1
+      || !sameIdentity(openedStat, finalPathStat)
+    ) {
+      return null;
+    }
+    return {
+      identity: { dev: openedStat.dev, ino: openedStat.ino },
+      metadata,
+    };
+  } catch {
+    return null;
+  } finally {
+    await handle?.close();
+  }
+}
+
+async function unlinkOwnedSafeFileLock(
+  lockPath: string,
+  boundary: StorageReadBoundary,
+  expectedIdentity: { dev: number | bigint; ino: number | bigint },
+  expectedOwnerToken: string,
+): Promise<boolean> {
+  const inspected = await inspectSafeFileLock(lockPath, boundary);
+  if (
+    inspected === null
+    || !sameIdentity(expectedIdentity, inspected.identity)
+    || inspected.metadata.ownerToken !== expectedOwnerToken
+  ) {
+    return false;
+  }
+  try {
+    // Node has no portable inode-conditional unlink. The identity and owner
+    // token are checked immediately before this narrow path race window.
+    await unlink(lockPath);
+    return true;
   } catch (error) {
     if (isUnsafePathError(error)) {
       return false;

@@ -15,6 +15,7 @@ import {
   listSafeRegularFiles,
   moveSafeRegularFile,
   readSafeTextFile,
+  reclaimExpiredSafeFileLock,
   type StorageReadBoundary,
 } from './file-io.js';
 import { parseTaskDocument, serializeTaskDocument } from './frontmatter.js';
@@ -109,6 +110,35 @@ export class TaskSourceClaimTimeoutError extends Error {
 
 const SOURCE_CLAIM_ATTEMPTS = 100;
 const SOURCE_CLAIM_RETRY_MS = 10;
+const SOURCE_CLAIM_LEASE_MS = 30_000;
+
+export interface MarkdownTaskRepositoryOptions {
+  sourceClaim?: {
+    attempts?: number;
+    retryMs?: number;
+    leaseMs?: number;
+    clock?: () => Date;
+  };
+}
+
+interface SourceClaimOptions {
+  attempts: number;
+  retryMs: number;
+  leaseMs: number;
+  clock: () => Date;
+}
+
+function nonNegativeInteger(value: number | undefined, fallback: number): number {
+  return value !== undefined && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : fallback;
+}
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+  return value !== undefined && Number.isSafeInteger(value) && value > 0
+    ? value
+    : fallback;
+}
 
 function stringValue(value: unknown, fallback = ''): string {
   if (typeof value === 'string') {
@@ -339,10 +369,26 @@ export class MarkdownTaskRepository implements TaskRepository {
   readonly root: string;
   readonly tasksRoot: string;
   readonly records = new Map<string, TaskRecord>();
+  private readonly sourceClaim: SourceClaimOptions;
 
-  constructor(root?: string) {
+  constructor(root?: string, options: MarkdownTaskRepositoryOptions = {}) {
     this.root = vaultRoot(root);
     this.tasksRoot = taskStorageRoot(this.root);
+    this.sourceClaim = {
+      attempts: positiveInteger(
+        options.sourceClaim?.attempts,
+        SOURCE_CLAIM_ATTEMPTS,
+      ),
+      retryMs: nonNegativeInteger(
+        options.sourceClaim?.retryMs,
+        SOURCE_CLAIM_RETRY_MS,
+      ),
+      leaseMs: positiveInteger(
+        options.sourceClaim?.leaseMs,
+        SOURCE_CLAIM_LEASE_MS,
+      ),
+      clock: options.sourceClaim?.clock ?? (() => new Date()),
+    };
   }
 
   async list(): Promise<Task[]> {
@@ -387,11 +433,29 @@ export class MarkdownTaskRepository implements TaskRepository {
       subtree: lockRoot,
     };
 
-    for (let attempt = 0; attempt < SOURCE_CLAIM_ATTEMPTS; attempt += 1) {
-      const lock = await acquireSafeFileLock(lockPath, boundary);
+    for (let attempt = 0; attempt < this.sourceClaim.attempts; attempt += 1) {
+      let lock = await acquireSafeFileLock(lockPath, boundary, {
+        acquiredAt: this.sourceClaim.clock(),
+        leaseMs: this.sourceClaim.leaseMs,
+      });
       if (lock === null) {
-        await delay(SOURCE_CLAIM_RETRY_MS);
-        continue;
+        const reclaimed = await reclaimExpiredSafeFileLock(
+          lockPath,
+          boundary,
+          this.sourceClaim.clock(),
+        );
+        if (reclaimed) {
+          lock = await acquireSafeFileLock(lockPath, boundary, {
+            acquiredAt: this.sourceClaim.clock(),
+            leaseMs: this.sourceClaim.leaseMs,
+          });
+        }
+        if (lock === null) {
+          if (attempt + 1 < this.sourceClaim.attempts) {
+            await delay(this.sourceClaim.retryMs);
+          }
+          continue;
+        }
       }
       try {
         const existing = await this.findBySourceKey(validTask.sourceKey);
