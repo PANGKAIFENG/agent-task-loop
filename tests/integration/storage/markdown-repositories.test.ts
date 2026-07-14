@@ -467,6 +467,8 @@ describe('MarkdownTaskRepository', () => {
     const sourcePath = join(root, fixtureRelativePath);
     const repository = new MarkdownTaskRepository(root);
     const task = await repository.get('task-20260713-deadbeef');
+    const sourceBefore = await readFile(sourcePath, 'utf8');
+    const sourceDocumentBefore = parseTaskDocument(sourceBefore);
     const targetPath = join(
       root,
       '10_Tasks',
@@ -495,9 +497,49 @@ describe('MarkdownTaskRepository', () => {
     expect(parseTaskDocument(await readFile(targetPath, 'utf8')).data.task_id).toBe(
       'task-occupied-target',
     );
-    expect(parseTaskDocument(await readFile(sourcePath, 'utf8')).data.task_id).toBe(
-      task.taskId,
+    const sourceAfter = await readFile(sourcePath, 'utf8');
+    expect(sourceAfter).toBe(sourceBefore);
+    expect(parseTaskDocument(sourceAfter).data).toEqual(sourceDocumentBefore.data);
+    const tasks = await new MarkdownTaskRepository(root).list();
+    expect(tasks.filter((candidate) => candidate.taskId === task.taskId)).toHaveLength(1);
+  });
+
+  it('rolls back a lifecycle move when the target content write fails', async () => {
+    const root = await makeVault();
+    const sourcePath = join(root, fixtureRelativePath);
+    const targetPath = join(
+      root,
+      '10_Tasks',
+      'Active',
+      'project-public-research',
+      'task-20260713-deadbeef.md',
     );
+    class FailingPostMoveRepository extends MarkdownTaskRepository {
+      protected async writeTaskFile(): Promise<void> {
+        throw new Error('Synthetic injected write failure');
+      }
+    }
+    const repository = new FailingPostMoveRepository(root);
+    const task = await repository.get('task-20260713-deadbeef');
+    const sourceBefore = await readFile(sourcePath, 'utf8');
+
+    await expect(repository.save({
+      ...task,
+      status: 'ready',
+      reviewState: 'confirmed',
+      projectId: 'project-public-research',
+      taskType: 'research',
+      objective: 'Synthetic rollback check',
+      acceptanceCriteria: ['Restore the original source'],
+      autoExecutable: true,
+      permissionProfile: 'read_only_research',
+    })).rejects.toMatchObject({
+      code: 'task_move_recovery_error',
+      recovered: true,
+    });
+
+    await expect(readFile(sourcePath, 'utf8')).resolves.toBe(sourceBefore);
+    await expect(stat(targetPath)).rejects.toMatchObject({ code: 'ENOENT' });
     const tasks = await new MarkdownTaskRepository(root).list();
     expect(tasks.filter((candidate) => candidate.taskId === task.taskId)).toHaveLength(1);
   });

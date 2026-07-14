@@ -29,6 +29,7 @@ interface TaskRecord {
   path: string;
   data: Record<string, unknown>;
   body: string;
+  raw: string;
   snapshot: string;
 }
 
@@ -63,6 +64,17 @@ export class TaskConflictError extends Error {
   constructor() {
     super('Task storage conflict');
     this.name = 'TaskConflictError';
+  }
+}
+
+export class TaskMoveRecoveryError extends Error {
+  readonly code = 'task_move_recovery_error';
+  readonly recovered: boolean;
+
+  constructor(recovered: boolean) {
+    super('Task lifecycle move write failed');
+    this.name = 'TaskMoveRecoveryError';
+    this.recovered = recovered;
   }
 }
 
@@ -369,23 +381,39 @@ export class MarkdownTaskRepository implements TaskRepository {
     const targetDirectory = lifecycleDirectory(this.tasksRoot, persistedTask);
     const targetPath = join(targetDirectory, `${persistedTask.taskId}.md`);
     const serialized = serializeTaskDocument(data, body);
-    try {
-      if (existing !== undefined && existing.path !== targetPath) {
-        await atomicWriteTextFile(existing.path, serialized);
-        await moveSafeRegularFile(existing.path, targetPath);
-      } else {
-        await atomicWriteTextFile(targetPath, serialized);
-      }
-    } catch (error) {
-      if (existing !== undefined) {
+    if (existing !== undefined && existing.path !== targetPath) {
+      try {
+        await this.moveTaskFile(existing.path, targetPath, existing.raw);
+      } catch {
         throw new TaskConflictError();
       }
-      throw error;
+      try {
+        await this.writeTaskFile(targetPath, serialized);
+      } catch {
+        let recovered = false;
+        try {
+          await this.moveTaskFile(targetPath, existing.path, existing.raw);
+          recovered = true;
+        } catch {
+          // Leave the single surviving copy in place for a later rescan/recovery.
+        }
+        throw new TaskMoveRecoveryError(recovered);
+      }
+    } else {
+      try {
+        await this.writeTaskFile(targetPath, serialized);
+      } catch (error) {
+        if (existing !== undefined) {
+          throw new TaskConflictError();
+        }
+        throw error;
+      }
     }
     this.records.set(persistedTask.taskId, {
       path: targetPath,
       data,
       body,
+      raw: serialized,
       snapshot: canonicalTaskSnapshot(persistedTask),
     });
 
@@ -395,6 +423,21 @@ export class MarkdownTaskRepository implements TaskRepository {
       throw new TaskSavedIndexStaleError({ cause: error });
     }
     return persistedTask;
+  }
+
+  protected async writeTaskFile(path: string, content: string): Promise<void> {
+    await atomicWriteTextFile(path, content);
+  }
+
+  protected async moveTaskFile(
+    sourcePath: string,
+    targetPath: string,
+    expectedContent: string,
+  ): Promise<void> {
+    await moveSafeRegularFile(sourcePath, targetPath, expectedContent, {
+      vaultRoot: this.root,
+      tasksRoot: this.tasksRoot,
+    });
   }
 
   private async scanEntries(): Promise<TaskEntry[]> {
@@ -441,6 +484,7 @@ export class MarkdownTaskRepository implements TaskRepository {
       record: {
         path,
         ...document,
+        raw,
         snapshot: canonicalTaskSnapshot(task),
       },
     };

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
+import type { Stats } from 'node:fs';
 import {
   lstat,
   mkdir,
@@ -9,7 +10,14 @@ import {
   unlink,
   type FileHandle,
 } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import {
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from 'node:path';
 
 import fastGlob from 'fast-glob';
 
@@ -26,6 +34,17 @@ export interface StorageReadBoundary {
   vaultRoot: string;
   tasksRoot: string;
   subtree: string;
+}
+
+export type StorageMoveBoundary = Pick<
+  StorageReadBoundary,
+  'vaultRoot' | 'tasksRoot'
+>;
+
+interface PathIdentity {
+  path: string;
+  dev: number | bigint;
+  ino: number | bigint;
 }
 
 function isWithin(parent: string, target: string): boolean {
@@ -50,6 +69,13 @@ function isUnsafePathError(error: unknown): boolean {
     && error !== null
     && 'code' in error
     && (error.code === 'ENOENT' || error.code === 'ELOOP' || error.code === 'ENOTDIR');
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && error.code === 'ENOENT';
 }
 
 export async function listSafeRegularFiles(
@@ -278,10 +304,43 @@ export async function appendSafeTextFile(
 export async function moveSafeRegularFile(
   sourcePath: string,
   targetPath: string,
+  expectedContent: string,
+  boundary: StorageMoveBoundary,
 ): Promise<void> {
-  await mkdir(dirname(targetPath), { recursive: true });
   let handle: FileHandle | undefined;
   try {
+    const [canonicalVaultRoot, canonicalTasksRoot] = await Promise.all([
+      realpath(boundary.vaultRoot),
+      realpath(boundary.tasksRoot),
+    ]);
+    const [vaultStat, tasksStat, tasksPathStat] = await Promise.all([
+      lstat(canonicalVaultRoot),
+      lstat(canonicalTasksRoot),
+      lstat(boundary.tasksRoot),
+    ]);
+    if (
+      !vaultStat.isDirectory()
+      || !tasksStat.isDirectory()
+      || tasksPathStat.isSymbolicLink()
+      || !tasksPathStat.isDirectory()
+      || !sameIdentity(tasksStat, tasksPathStat)
+      || !isStrictlyWithin(canonicalVaultRoot, canonicalTasksRoot)
+      || !isStrictlyWithin(resolve(boundary.tasksRoot), resolve(sourcePath))
+      || !isStrictlyWithin(resolve(boundary.tasksRoot), resolve(targetPath))
+    ) {
+      throw new InvalidStorageEntryError();
+    }
+    const sourceDirectories = await safeDirectoryChain(
+      boundary.tasksRoot,
+      dirname(sourcePath),
+      false,
+    );
+    const targetDirectories = await safeDirectoryChain(
+      boundary.tasksRoot,
+      dirname(targetPath),
+      true,
+    );
+
     const sourceStat = await lstat(sourcePath);
     if (sourceStat.isSymbolicLink() || !sourceStat.isFile()) {
       throw new InvalidStorageEntryError();
@@ -295,9 +354,27 @@ export async function moveSafeRegularFile(
       await lstat(targetPath);
       throw new InvalidStorageEntryError();
     } catch (error) {
-      if (!isUnsafePathError(error)) {
+      if (!isMissingPathError(error)) {
         throw error;
       }
+    }
+    if (
+      !sameIdentity(tasksStat, await lstat(boundary.tasksRoot))
+      || !(await directoryChainMatches(sourceDirectories))
+      || !(await directoryChainMatches(targetDirectories))
+    ) {
+      throw new InvalidStorageEntryError();
+    }
+    try {
+      await lstat(targetPath);
+      throw new InvalidStorageEntryError();
+    } catch (error) {
+      if (!isMissingPathError(error)) {
+        throw error;
+      }
+    }
+    if (await handle.readFile('utf8') !== expectedContent) {
+      throw new InvalidStorageEntryError();
     }
     const finalSourceStat = await lstat(sourcePath);
     if (
@@ -309,12 +386,72 @@ export async function moveSafeRegularFile(
     }
     await handle.close();
     handle = undefined;
+    // Node has no portable no-replace rename. A target created after the final
+    // absence check can still be replaced in this narrow race window.
     await rename(sourcePath, targetPath);
     // V0.1 syncs file content before rename; directory fsync remains a local limitation.
   } catch {
     throw new InvalidStorageEntryError();
   } finally {
     await handle?.close();
+  }
+}
+
+async function safeDirectoryChain(
+  root: string,
+  directory: string,
+  createMissing: boolean,
+): Promise<PathIdentity[]> {
+  const resolvedRoot = resolve(root);
+  const resolvedDirectory = resolve(directory);
+  if (!isWithin(resolvedRoot, resolvedDirectory)) {
+    throw new InvalidStorageEntryError();
+  }
+  const difference = relative(resolvedRoot, resolvedDirectory);
+  const segments = difference === '' ? [] : difference.split(sep);
+  const identities: PathIdentity[] = [];
+  let current = resolvedRoot;
+  for (const segment of segments) {
+    current = join(current, segment);
+    let currentStat: Stats;
+    try {
+      currentStat = await lstat(current);
+    } catch (error) {
+      if (!createMissing || !isMissingPathError(error)) {
+        throw error;
+      }
+      await mkdir(current, { mode: 0o700 });
+      currentStat = await lstat(current);
+    }
+    if (currentStat.isSymbolicLink() || !currentStat.isDirectory()) {
+      throw new InvalidStorageEntryError();
+    }
+    identities.push({
+      path: current,
+      dev: currentStat.dev,
+      ino: currentStat.ino,
+    });
+  }
+  return identities;
+}
+
+async function directoryChainMatches(
+  identities: PathIdentity[],
+): Promise<boolean> {
+  try {
+    for (const identity of identities) {
+      const current = await lstat(identity.path);
+      if (
+        current.isSymbolicLink()
+        || !current.isDirectory()
+        || !sameIdentity(identity, current)
+      ) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
   }
 }
 
