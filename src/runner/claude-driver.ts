@@ -251,16 +251,149 @@ function parseResult(stdout: string): ResearchResult {
 
 function declaredOptions(help: string): Map<string, string> {
   const options = new Map<string, string>();
-  const declaration = /^\s*(?:-[A-Za-z0-9](?:,\s*|\s+))?(--[A-Za-z0-9][A-Za-z0-9-]*)(?=$|[\s<[=])/;
+  const declaration = /^(\s*)(?:-[A-Za-z0-9](?:,\s*|\s+))?(--[A-Za-z0-9][A-Za-z0-9-]*)(?=$|[\s<[=])/;
   const inactive = /\b(?:deprecated|removed|documentation[-\s]+only)\b/i;
+  let current: {
+    option: string;
+    indentation: number;
+    lines: string[];
+  } | undefined;
+
+  const saveCurrent = () => {
+    if (current === undefined) {
+      return;
+    }
+    const block = current.lines.join('\n');
+    if (!inactive.test(block)) {
+      options.set(current.option, block);
+    }
+    current = undefined;
+  };
+
   for (const line of help.split(/\r?\n/)) {
     const match = declaration.exec(line);
-    const option = match?.[1];
-    if (option !== undefined && !inactive.test(line)) {
-      options.set(option, line);
+    const option = match?.[2];
+    if (option !== undefined) {
+      saveCurrent();
+      current = {
+        option,
+        indentation: match?.[1]?.length ?? 0,
+        lines: [line],
+      };
+      continue;
+    }
+    if (current === undefined) {
+      continue;
+    }
+    const indentation = /^\s*/.exec(line)?.[0].length ?? 0;
+    if (line.trim() !== '' && indentation > current.indentation) {
+      current.lines.push(line);
+    } else {
+      saveCurrent();
     }
   }
+  saveCurrent();
   return options;
+}
+
+function matchingDelimiterEnd(
+  text: string,
+  openerIndex: number,
+): number | undefined {
+  const delimiters: Record<string, string> = { '(': ')', '[': ']' };
+  const stack: string[] = [];
+  let quote: '"' | "'" | '`' | undefined;
+  for (let index = openerIndex; index < text.length; index += 1) {
+    const character = text[index];
+    if (character === undefined) {
+      break;
+    }
+    if (quote !== undefined) {
+      if (character === quote && text[index - 1] !== '\\') {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (character === '"' || character === "'" || character === '`') {
+      quote = character;
+      continue;
+    }
+    if (character in delimiters) {
+      stack.push(character);
+      continue;
+    }
+    const opener = stack.at(-1);
+    if (opener !== undefined && character === delimiters[opener]) {
+      stack.pop();
+      if (stack.length === 0) {
+        return index;
+      }
+    }
+  }
+  return undefined;
+}
+
+function containingDelimiterStart(
+  text: string,
+  targetIndex: number,
+): number | undefined {
+  const delimiters: Record<string, string> = { ')': '(', ']': '[' };
+  const stack: number[] = [];
+  let quote: '"' | "'" | '`' | undefined;
+  for (let index = 0; index < targetIndex; index += 1) {
+    const character = text[index];
+    if (character === undefined) {
+      break;
+    }
+    if (quote !== undefined) {
+      if (character === quote && text[index - 1] !== '\\') {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (character === '"' || character === "'" || character === '`') {
+      quote = character;
+      continue;
+    }
+    if (character === '(' || character === '[') {
+      stack.push(index);
+      continue;
+    }
+    const openerIndex = stack.at(-1);
+    if (
+      openerIndex !== undefined
+      && character in delimiters
+      && text[openerIndex] === delimiters[character]
+    ) {
+      stack.pop();
+    }
+  }
+  return stack.at(-1);
+}
+
+function tokenizeAllowedValues(list: string): string[] {
+  const values: string[] = [];
+  const token = /"([A-Za-z0-9][A-Za-z0-9_-]*)"|'([A-Za-z0-9][A-Za-z0-9_-]*)'|`([A-Za-z0-9][A-Za-z0-9_-]*)`|([A-Za-z0-9][A-Za-z0-9_-]*)/y;
+  let index = 0;
+  while (index < list.length) {
+    index += /^\s*/.exec(list.slice(index))?.[0].length ?? 0;
+    token.lastIndex = index;
+    const match = token.exec(list);
+    if (match === null) {
+      return [];
+    }
+    values.push(match[1] ?? match[2] ?? match[3] ?? match[4] ?? '');
+    index = token.lastIndex;
+    index += /^\s*/.exec(list.slice(index))?.[0].length ?? 0;
+    if (index === list.length) {
+      return values;
+    }
+    if (list[index] !== ',' && list[index] !== '|') {
+      return [];
+    }
+    index += 1;
+  }
+  return [];
 }
 
 function firstAllowedValues(declaration: string): string[] {
@@ -269,17 +402,17 @@ function firstAllowedValues(declaration: string): string[] {
   if (match === null) {
     return [];
   }
-  const remainder = declaration.slice(match.index + match[0].length);
-  const nextBoundary = remainder.search(
-    /[)\];]|\b(?:choices?|allowed[-\s]+values?)\s*:/i,
+  const openerIndex = containingDelimiterStart(declaration, match.index);
+  if (openerIndex === undefined) {
+    return [];
+  }
+  const closerIndex = matchingDelimiterEnd(declaration, openerIndex);
+  if (closerIndex === undefined || closerIndex < match.index) {
+    return [];
+  }
+  return tokenizeAllowedValues(
+    declaration.slice(match.index + match[0].length, closerIndex),
   );
-  const list = nextBoundary === -1
-    ? remainder
-    : remainder.slice(0, nextBoundary);
-  return list
-    .split(/[\s,|]+/)
-    .map((value) => value.replace(/^["'`]+|["'`]+$/g, ''))
-    .filter((value) => value !== '');
 }
 
 function isCompatibleHelp(help: string): boolean {

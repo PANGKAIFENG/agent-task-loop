@@ -427,6 +427,26 @@ describe('ClaudeResearchDriver.execute', () => {
       'a later unrelated choices list',
       '--permission-mode <mode> choices: default; note choices: dontAsk',
     ],
+    [
+      'prose after a period',
+      '--permission-mode <mode> (choices: default. dontAsk)',
+    ],
+    [
+      'prose after a colon',
+      '--permission-mode <mode> (choices: default: dontAsk)',
+    ],
+    [
+      'prose after a dash',
+      '--permission-mode <mode> (choices: default - dontAsk)',
+    ],
+    [
+      'an unbounded values declaration',
+      '--permission-mode <mode> choices: dontAsk',
+    ],
+    [
+      'a trailing list separator',
+      '--permission-mode <mode> (choices: dontAsk,)',
+    ],
   ])('does not accept dontAsk from %s', async (_label, permissionLine) => {
     const calls: ProcessExecution[] = [];
     const misleadingHelp = REQUIRED_HELP.replace(
@@ -482,6 +502,64 @@ describe('ClaudeResearchDriver.execute', () => {
       code: 'unsupported_claude_cli',
     });
     expect(calls).toHaveLength(1);
+    expect(calls[0]?.input).toBeUndefined();
+  });
+
+  it('does not accept an option deprecated on a continuation line', async () => {
+    const calls: ProcessExecution[] = [];
+    const deprecatedHelp = REQUIRED_HELP.replace(
+      '--safe-mode',
+      '--safe-mode\n  DEPRECATED: removed; documentation only',
+    );
+    const executor = fakeExecutor(async (execution) => {
+      calls.push(execution);
+      if (execution.args[0] === '--help') {
+        return processResult({ stdout: deprecatedHelp });
+      }
+      return processResult({
+        stdout: JSON.stringify({ structured_output: validResult }),
+      });
+    });
+    const driver = await createDriver({ executor });
+
+    await expect(driver.execute({
+      task: makeTask(),
+      context: makeContext(),
+      timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
+    })).rejects.toMatchObject({
+      name: 'ClaudeDriverError',
+      code: 'unsupported_claude_cli',
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.input).toBeUndefined();
+  });
+
+  it('accepts bounded choices from a CRLF description continuation', async () => {
+    const calls: ProcessExecution[] = [];
+    const continuedHelp = REQUIRED_HELP.replace(
+      '--permission-mode <mode> (choices: dontAsk)',
+      [
+        '--permission-mode <mode>',
+        '  Permission behavior [allowed values: "default", "dontAsk"]',
+      ].join('\n'),
+    ).replace(/\n/g, '\r\n');
+    const executor = fakeExecutor(async (execution) => {
+      calls.push(execution);
+      if (execution.args[0] === '--help') {
+        return processResult({ stdout: continuedHelp });
+      }
+      return processResult({
+        stdout: JSON.stringify({ structured_output: validResult }),
+      });
+    });
+    const driver = await createDriver({ executor });
+
+    await expect(driver.execute({
+      task: makeTask(),
+      context: makeContext(),
+      timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
+    })).resolves.toEqual(validResult);
+    expect(calls).toHaveLength(2);
     expect(calls[0]?.input).toBeUndefined();
   });
 
