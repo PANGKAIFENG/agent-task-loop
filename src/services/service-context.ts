@@ -1,6 +1,7 @@
 import { ulid } from 'ulid';
 
 import type {
+  ArtifactRepository,
   AuditLog,
   ProjectRepository,
   TaskRepository,
@@ -8,6 +9,7 @@ import type {
 
 export interface ServiceContext {
   tasks: TaskRepository;
+  artifacts: ArtifactRepository;
   projects: ProjectRepository;
   audit: AuditLog;
   clock: () => Date;

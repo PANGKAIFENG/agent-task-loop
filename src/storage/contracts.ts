@@ -1,5 +1,6 @@
 import type { Project } from '../domain/project.js';
 import type { Task } from '../domain/task.js';
+import type { ArtifactResult } from '../domain/artifact.js';
 
 export class ProjectCreateConflictError extends Error {
   readonly code = 'project_create_conflict';
@@ -20,6 +21,17 @@ export interface TaskRepository {
     created: boolean;
   }>;
   save(task: Task): Promise<Task>;
+}
+
+export interface ArtifactRepository {
+  write(input: {
+    task: Task;
+    runId: string;
+    agent: string;
+    result: ArtifactResult;
+    createdAt: string;
+  }): Promise<{ ref: string; absolutePath: string }>;
+  readSummary(ref: string): Promise<{ summary: string; evidenceCount: number }>;
 }
 
 export interface ProjectRepository {

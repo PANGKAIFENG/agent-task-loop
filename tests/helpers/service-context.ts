@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import type { ServiceContext } from '../../src/services/service-context.js';
 import { FileAuditLog } from '../../src/storage/audit-log.js';
+import { MarkdownArtifactRepository } from '../../src/storage/markdown-artifact-repository.js';
 import { MarkdownProjectRepository } from '../../src/storage/markdown-project-repository.js';
 import { MarkdownTaskRepository } from '../../src/storage/markdown-task-repository.js';
 
@@ -38,6 +39,7 @@ function serviceContext(root: string, options: TestContextOptions): ServiceConte
 
   return {
     tasks: new MarkdownTaskRepository(root, options.taskRepository),
+    artifacts: new MarkdownArtifactRepository(root),
     projects: new MarkdownProjectRepository(root),
     audit: new FileAuditLog(root, { timeZone: 'Asia/Shanghai' }),
     clock: () => new Date(now),
