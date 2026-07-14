@@ -288,6 +288,55 @@ describe('claimNextTask', () => {
     })).resolves.toBe(1);
   });
 
+  it('keeps automatic concurrency at one across the local midnight boundary', async () => {
+    const context = await createTestServiceContext({
+      now: new Date('2026-07-14T15:59:59.000Z'),
+    });
+    contexts.push(context);
+    const afterMidnight = context.createIndependentContext({
+      now: new Date('2026-07-14T16:00:01.000Z'),
+    });
+    await saveReadyTasks(context, [
+      readyTask({
+        taskId: 'task-midnight-first',
+        sourceKey: 'synthetic:midnight-first',
+      }),
+      readyTask({
+        taskId: 'task-midnight-second',
+        sourceKey: 'synthetic:midnight-second',
+      }),
+    ]);
+
+    const results = await Promise.all([
+      claimNextTask(context.ctx, {
+        ...automaticOptions,
+        runId: 'run-before-midnight',
+      }),
+      claimNextTask(afterMidnight, {
+        ...automaticOptions,
+        runId: 'run-after-midnight',
+      }),
+    ]);
+
+    expect(results.filter((task) => task !== null)).toHaveLength(1);
+    expect(results.filter((task) => task === null)).toHaveLength(1);
+    expect((await context.ctx.tasks.list())
+      .filter(({ status }) => status === 'in_progress')).toHaveLength(1);
+    const counts = await Promise.all([
+      context.ctx.audit.count({
+        event: 'task.claimed',
+        localDate: '2026-07-14',
+        mode: 'automatic',
+      }),
+      context.ctx.audit.count({
+        event: 'task.claimed',
+        localDate: '2026-07-15',
+        mode: 'automatic',
+      }),
+    ]);
+    expect(counts[0] + counts[1]).toBe(1);
+  });
+
   it('does not claim another task while one automatic task is in progress', async () => {
     const context = await makeContext();
     const first = readyTask({

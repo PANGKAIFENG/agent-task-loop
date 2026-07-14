@@ -7,6 +7,8 @@ import type { ServiceContext } from './service-context.js';
 
 export type ClaimMode = 'automatic' | 'manual';
 
+export const AUTOMATIC_CLAIM_LOCK_KEY = 'claim-automatic-global';
+
 export interface ClaimTaskOptions {
   mode: ClaimMode;
   agent?: string;
@@ -101,10 +103,6 @@ export function localBusinessDate(now: Date): string {
   const month = String(now.getMonth() + 1).padStart(2, '0');
   const day = String(now.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
-}
-
-export function automaticClaimLockKey(localDate: string): string {
-  return `claim-automatic-${localDate}`;
 }
 
 export async function automaticClaimSlotAvailable(
@@ -202,7 +200,7 @@ export async function claimTask(
   }
 
   const localDate = localBusinessDate(now);
-  return ctx.tasks.withTaskLock(automaticClaimLockKey(localDate), async () => {
+  return ctx.tasks.withTaskLock(AUTOMATIC_CLAIM_LOCK_KEY, async () => {
     if (!(await automaticClaimSlotAvailable(
       ctx,
       localDate,

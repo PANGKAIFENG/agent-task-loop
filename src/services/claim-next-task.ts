@@ -1,7 +1,7 @@
 import { priorityRank, type Task } from '../domain/task.js';
 import {
   ClaimTaskNotEligibleError,
-  automaticClaimLockKey,
+  AUTOMATIC_CLAIM_LOCK_KEY,
   automaticClaimSlotAvailable,
   claimTaskWithoutQuotaCheck,
   isClaimEligible,
@@ -63,7 +63,7 @@ export async function claimNextTask(
   };
 
   const localDate = localBusinessDate(now);
-  return ctx.tasks.withTaskLock(automaticClaimLockKey(localDate), async () => {
+  return ctx.tasks.withTaskLock(AUTOMATIC_CLAIM_LOCK_KEY, async () => {
     if (!(await automaticClaimSlotAvailable(
       ctx,
       localDate,
