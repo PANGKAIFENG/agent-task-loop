@@ -5,6 +5,7 @@ import {
   atomicWriteTextFile,
   listSafeRegularFiles,
   readSafeTextFile,
+  type StorageReadBoundary,
 } from './file-io.js';
 import { parseTaskDocument } from './frontmatter.js';
 import {
@@ -78,10 +79,10 @@ function timestamp(value: string): number {
 
 async function readIndexEntry(
   path: string,
-  subtree: string,
+  boundary: StorageReadBoundary,
   tasksRoot: string,
 ): Promise<IndexEntry | null> {
-  const raw = await readSafeTextFile(path, subtree);
+  const raw = await readSafeTextFile(path, boundary);
   if (raw === null) {
     return null;
   }
@@ -111,12 +112,13 @@ export async function rebuildTaskIndex(
   const candidates = (await Promise.all(
     ['Inbox', 'Active', 'Archive'].map(async (directory) => {
       const subtree = join(tasksRoot, directory);
-      const paths = await listSafeRegularFiles(subtree, '**/*.md');
-      return paths.map((path) => ({ path, subtree }));
+      const boundary = { vaultRoot: root, tasksRoot, subtree };
+      const paths = await listSafeRegularFiles(boundary, '**/*.md');
+      return paths.map((path) => ({ path, boundary }));
     }),
   )).flat();
-  const scanned = await Promise.all(candidates.map(({ path, subtree }) => (
-    readIndexEntry(path, subtree, tasksRoot)
+  const scanned = await Promise.all(candidates.map(({ path, boundary }) => (
+    readIndexEntry(path, boundary, tasksRoot)
   )));
   const entries = scanned.filter((entry): entry is IndexEntry => entry !== null);
   entries.sort((left, right) => (

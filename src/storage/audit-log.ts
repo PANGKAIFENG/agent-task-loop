@@ -2,7 +2,11 @@ import { appendFile, mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import type { AuditEvent, AuditLog } from './contracts.js';
-import { listSafeRegularFiles, readSafeTextFile } from './file-io.js';
+import {
+  listSafeRegularFiles,
+  readSafeTextFile,
+  type StorageReadBoundary,
+} from './file-io.js';
 import {
   assertVaultWriteAllowed,
   auditFilePath,
@@ -83,18 +87,23 @@ function parseAuditFile(raw: string): AuditEvent[] {
   });
 }
 
-async function readAuditFile(path: string, auditRoot: string): Promise<AuditEvent[]> {
-  const raw = await readSafeTextFile(path, auditRoot);
+async function readAuditFile(
+  path: string,
+  boundary: StorageReadBoundary,
+): Promise<AuditEvent[]> {
+  const raw = await readSafeTextFile(path, boundary);
   return raw === null ? [] : parseAuditFile(raw);
 }
 
 export class FileAuditLog implements AuditLog {
   readonly root: string;
+  readonly tasksRoot: string;
   readonly auditRoot: string;
 
   constructor(root?: string) {
     this.root = vaultRoot(root);
-    this.auditRoot = join(taskStorageRoot(this.root), 'Audit');
+    this.tasksRoot = taskStorageRoot(this.root);
+    this.auditRoot = join(this.tasksRoot, 'Audit');
   }
 
   async append(event: AuditEvent): Promise<void> {
@@ -123,10 +132,7 @@ export class FileAuditLog implements AuditLog {
     } catch {
       return 0;
     }
-    const events = await readAuditFile(
-      path,
-      this.auditRoot,
-    );
+    const events = await readAuditFile(path, this.readBoundary());
     return events.filter((event) => (
       event.event === query.event
       && (query.mode === undefined || event.details?.mode === query.mode)
@@ -134,9 +140,10 @@ export class FileAuditLog implements AuditLog {
   }
 
   async listForTask(taskId: string): Promise<AuditEvent[]> {
-    const paths = await listSafeRegularFiles(this.auditRoot, '*.jsonl');
+    const boundary = this.readBoundary();
+    const paths = await listSafeRegularFiles(boundary, '*.jsonl');
     const events = (await Promise.all(
-      paths.map((path) => readAuditFile(path, this.auditRoot)),
+      paths.map((path) => readAuditFile(path, boundary)),
     )).flat();
     return events
       .filter((event) => event.taskId === taskId)
@@ -144,5 +151,13 @@ export class FileAuditLog implements AuditLog {
         Date.parse(left.at) - Date.parse(right.at)
         || left.at.localeCompare(right.at)
       ));
+  }
+
+  private readBoundary(): StorageReadBoundary {
+    return {
+      vaultRoot: this.root,
+      tasksRoot: this.tasksRoot,
+      subtree: this.auditRoot,
+    };
   }
 }

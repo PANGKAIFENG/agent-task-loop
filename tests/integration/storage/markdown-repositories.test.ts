@@ -398,6 +398,79 @@ describe('atomic Markdown writes', () => {
 });
 
 describe('symlink-safe scans', () => {
+  it('ignores an Active root aliased outside 10_Tasks in task list and index', async () => {
+    const root = await makeVault();
+    const outside = await mkdtemp(join(tmpdir(), 'atl-storage-active-root-outside-'));
+    temporaryRoots.push(outside);
+    const externalTitle = 'EXTERNAL_ACTIVE_ROOT_SENTINEL';
+    await writeFile(join(outside, 'external-task.md'), syntheticExternalTask(externalTitle));
+    await symlink(outside, join(root, '10_Tasks', 'Active'), 'dir');
+
+    const tasks = await new MarkdownTaskRepository(root).list();
+    expect.soft(tasks.map((task) => task.title)).toEqual([
+      'Research a public product category',
+    ]);
+    await rebuildTaskIndex(root, '2026-07-14T00:00:00.000Z');
+    const index = await readFile(join(root, '10_Tasks', '任务索引.md'), 'utf8');
+    expect(index).not.toContain(externalTitle);
+  });
+
+  it('ignores a Projects root aliased outside 10_Tasks', async () => {
+    const root = await makeVault();
+    const outside = await mkdtemp(join(tmpdir(), 'atl-storage-project-root-outside-'));
+    temporaryRoots.push(outside);
+    await writeFile(join(outside, 'external.md'), `---\nproject_id: external\nname: EXTERNAL_PROJECT_ROOT_SENTINEL\ndescription: Synthetic external project\nresources: []\ncreated_at: 2026-07-14T08:00:00+08:00\nupdated_at: 2026-07-14T08:00:00+08:00\n---\n`);
+    await symlink(outside, join(root, '10_Tasks', 'Projects'), 'dir');
+
+    await expect(new MarkdownProjectRepository(root).list()).resolves.toEqual([]);
+  });
+
+  it('ignores an Audit root aliased outside 10_Tasks', async () => {
+    const root = await makeVault();
+    const outside = await mkdtemp(join(tmpdir(), 'atl-storage-audit-root-outside-'));
+    temporaryRoots.push(outside);
+    await writeFile(join(outside, '2026-07-15.jsonl'), `${JSON.stringify({
+      event: 'external_event',
+      at: '2026-07-15T08:00:00+08:00',
+      taskId: 'EXTERNAL_AUDIT_ROOT_SENTINEL',
+    })}\n`);
+    await symlink(outside, join(root, '10_Tasks', 'Audit'), 'dir');
+
+    await expect(
+      new FileAuditLog(root).listForTask('EXTERNAL_AUDIT_ROOT_SENTINEL'),
+    ).resolves.toEqual([]);
+  });
+
+  it('ignores a 10_Tasks root aliased outside the configured vault', async () => {
+    const root = await makeVault();
+    const outside = await mkdtemp(join(tmpdir(), 'atl-storage-task-root-outside-'));
+    temporaryRoots.push(outside);
+    await mkdir(join(outside, 'Inbox', '2026-07-15'), { recursive: true });
+    await mkdir(join(outside, 'Projects'), { recursive: true });
+    await mkdir(join(outside, 'Audit'), { recursive: true });
+    await writeFile(
+      join(outside, 'Inbox', '2026-07-15', 'external-task.md'),
+      syntheticExternalTask('EXTERNAL_TASK_ROOT_SENTINEL'),
+    );
+    await writeFile(join(outside, 'Projects', 'external.md'), `---\nproject_id: external\nname: EXTERNAL_PROJECT_TASK_ROOT_SENTINEL\ndescription: Synthetic external project\nresources: []\ncreated_at: 2026-07-14T08:00:00+08:00\nupdated_at: 2026-07-14T08:00:00+08:00\n---\n`);
+    await writeFile(join(outside, 'Audit', '2026-07-15.jsonl'), `${JSON.stringify({
+      event: 'external_event',
+      at: '2026-07-15T08:00:00+08:00',
+      taskId: 'EXTERNAL_TASK_ROOT_AUDIT_SENTINEL',
+    })}\n`);
+    await rm(join(root, '10_Tasks'), { recursive: true });
+    await symlink(outside, join(root, '10_Tasks'), 'dir');
+
+    await expect(new MarkdownTaskRepository(root).list()).resolves.toEqual([]);
+    await expect(new MarkdownProjectRepository(root).list()).resolves.toEqual([]);
+    await expect(
+      new FileAuditLog(root).listForTask('EXTERNAL_TASK_ROOT_AUDIT_SENTINEL'),
+    ).resolves.toEqual([]);
+    await expect(
+      rebuildTaskIndex(root, '2026-07-14T00:00:00.000Z'),
+    ).rejects.toThrow('Vault writes are disabled');
+  });
+
   it('skips external task directory and file symlinks in list and index', async () => {
     const root = await makeVault();
     const outside = await mkdtemp(join(tmpdir(), 'atl-storage-task-scan-outside-'));

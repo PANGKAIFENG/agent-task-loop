@@ -22,10 +22,20 @@ export class InvalidStorageEntryError extends Error {
   }
 }
 
+export interface StorageReadBoundary {
+  vaultRoot: string;
+  tasksRoot: string;
+  subtree: string;
+}
+
 function isWithin(parent: string, target: string): boolean {
   const difference = relative(parent, target);
   return difference === ''
     || (!difference.startsWith('..') && !isAbsolute(difference));
+}
+
+function isStrictlyWithin(parent: string, target: string): boolean {
+  return parent !== target && isWithin(parent, target);
 }
 
 function sameIdentity(
@@ -39,42 +49,46 @@ function isUnsafePathError(error: unknown): boolean {
   return typeof error === 'object'
     && error !== null
     && 'code' in error
-    && (error.code === 'ENOENT' || error.code === 'ELOOP');
+    && (error.code === 'ENOENT' || error.code === 'ELOOP' || error.code === 'ENOTDIR');
 }
 
 export async function listSafeRegularFiles(
-  subtree: string,
+  boundary: StorageReadBoundary,
   pattern: string,
 ): Promise<string[]> {
+  if (await canonicalStorageSubtree(boundary) === null) {
+    return [];
+  }
   const entries = await fastGlob(pattern, {
-    cwd: subtree,
+    cwd: boundary.subtree,
     followSymbolicLinks: false,
     objectMode: true,
     onlyFiles: true,
   });
   // Relative object-mode paths preserve literal POSIX backslashes. Absolute
   // fast-glob output normalizes them into separators.
-  const candidates = entries.map((entry) => join(subtree, entry.path));
+  const candidates = entries.map((entry) => join(boundary.subtree, entry.path));
   const checked = await Promise.all(candidates.sort().map(async (path) => (
-    await isSafeRegularFile(path, subtree) ? path : null
+    await isSafeRegularFile(path, boundary) ? path : null
   )));
   return checked.filter((path): path is string => path !== null);
 }
 
 export async function readSafeTextFile(
   path: string,
-  subtree: string,
+  boundary: StorageReadBoundary,
 ): Promise<string | null> {
   let handle: FileHandle | undefined;
   try {
+    const canonicalSubtree = await canonicalStorageSubtree(boundary);
+    if (canonicalSubtree === null) {
+      return null;
+    }
     const pathStat = await lstat(path);
     if (pathStat.isSymbolicLink() || !pathStat.isFile()) {
       return null;
     }
-    const [canonicalSubtree, canonicalPath] = await Promise.all([
-      realpath(subtree),
-      realpath(path),
-    ]);
+    const canonicalPath = await realpath(path);
     if (!isWithin(canonicalSubtree, canonicalPath)) {
       return null;
     }
@@ -146,17 +160,51 @@ export async function atomicWriteTextFile(
   }
 }
 
-async function isSafeRegularFile(path: string, subtree: string): Promise<boolean> {
+async function canonicalStorageSubtree(
+  boundary: StorageReadBoundary,
+): Promise<string | null> {
   try {
+    const [canonicalVaultRoot, canonicalTasksRoot, canonicalSubtree] = await Promise.all([
+      realpath(boundary.vaultRoot),
+      realpath(boundary.tasksRoot),
+      realpath(boundary.subtree),
+    ]);
+    if (
+      !isStrictlyWithin(canonicalVaultRoot, canonicalTasksRoot)
+      || !isStrictlyWithin(canonicalTasksRoot, canonicalSubtree)
+    ) {
+      return null;
+    }
+    const directoryStats = await Promise.all([
+      lstat(canonicalVaultRoot),
+      lstat(canonicalTasksRoot),
+      lstat(canonicalSubtree),
+    ]);
+    return directoryStats.every((stats) => stats.isDirectory())
+      ? canonicalSubtree
+      : null;
+  } catch (error) {
+    if (isUnsafePathError(error)) {
+      return null;
+    }
+    throw new InvalidStorageEntryError();
+  }
+}
+
+async function isSafeRegularFile(
+  path: string,
+  boundary: StorageReadBoundary,
+): Promise<boolean> {
+  try {
+    const canonicalSubtree = await canonicalStorageSubtree(boundary);
+    if (canonicalSubtree === null) {
+      return false;
+    }
     const pathStat = await lstat(path);
     if (pathStat.isSymbolicLink() || !pathStat.isFile()) {
       return false;
     }
-    const [canonicalSubtree, canonicalPath] = await Promise.all([
-      realpath(subtree),
-      realpath(path),
-    ]);
-    return isWithin(canonicalSubtree, canonicalPath);
+    return isWithin(canonicalSubtree, await realpath(path));
   } catch (error) {
     if (isUnsafePathError(error)) {
       return false;

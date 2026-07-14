@@ -13,6 +13,7 @@ import {
   atomicWriteTextFile,
   listSafeRegularFiles,
   readSafeTextFile,
+  type StorageReadBoundary,
 } from './file-io.js';
 import { parseTaskDocument, serializeTaskDocument } from './frontmatter.js';
 import { rebuildTaskIndex } from './task-index.js';
@@ -237,13 +238,18 @@ export class MarkdownTaskRepository implements TaskRepository {
     const candidates = (await Promise.all(
       ['Inbox', 'Active', 'Archive'].map(async (directory) => {
         const subtree = join(this.tasksRoot, directory);
-        const paths = await listSafeRegularFiles(subtree, '**/*.md');
-        return paths.map((path) => ({ path, subtree }));
+        const boundary = {
+          vaultRoot: this.root,
+          tasksRoot: this.tasksRoot,
+          subtree,
+        };
+        const paths = await listSafeRegularFiles(boundary, '**/*.md');
+        return paths.map((path) => ({ path, boundary }));
       }),
     )).flat();
     const tasks: Task[] = [];
-    for (const { path, subtree } of candidates) {
-      const record = await this.readRecord(path, subtree);
+    for (const { path, boundary } of candidates) {
+      const record = await this.readRecord(path, boundary);
       if (record === null) {
         continue;
       }
@@ -313,8 +319,11 @@ export class MarkdownTaskRepository implements TaskRepository {
     return persistedTask;
   }
 
-  private async readRecord(path: string, subtree: string): Promise<TaskRecord | null> {
-    const raw = await readSafeTextFile(path, subtree);
+  private async readRecord(
+    path: string,
+    boundary: StorageReadBoundary,
+  ): Promise<TaskRecord | null> {
+    const raw = await readSafeTextFile(path, boundary);
     if (raw === null) {
       return null;
     }

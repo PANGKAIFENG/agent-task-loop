@@ -78,19 +78,26 @@ function mergeProjectData(
 
 export class MarkdownProjectRepository implements ProjectRepository {
   readonly root: string;
+  readonly tasksRoot: string;
   readonly projectsRoot: string;
   readonly records = new Map<string, ProjectRecord>();
 
   constructor(root?: string) {
     this.root = vaultRoot(root);
-    this.projectsRoot = `${taskStorageRoot(this.root)}/Projects`;
+    this.tasksRoot = taskStorageRoot(this.root);
+    this.projectsRoot = `${this.tasksRoot}/Projects`;
   }
 
   async list(): Promise<Project[]> {
-    const paths = await listSafeRegularFiles(this.projectsRoot, '*.md');
+    const boundary = {
+      vaultRoot: this.root,
+      tasksRoot: this.tasksRoot,
+      subtree: this.projectsRoot,
+    };
+    const paths = await listSafeRegularFiles(boundary, '*.md');
     const projects: Project[] = [];
     for (const path of paths) {
-      const raw = await readSafeTextFile(path, this.projectsRoot);
+      const raw = await readSafeTextFile(path, boundary);
       if (raw === null) {
         continue;
       }
@@ -118,7 +125,11 @@ export class MarkdownProjectRepository implements ProjectRepository {
       throw new ProjectNotFoundError(projectId);
     }
     try {
-      const raw = await readSafeTextFile(path, this.projectsRoot);
+      const raw = await readSafeTextFile(path, {
+        vaultRoot: this.root,
+        tasksRoot: this.tasksRoot,
+        subtree: this.projectsRoot,
+      });
       if (raw === null) {
         throw new ProjectNotFoundError(projectId);
       }
