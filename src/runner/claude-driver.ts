@@ -249,12 +249,28 @@ function parseResult(stdout: string): ResearchResult {
   return result.data;
 }
 
+function declaredOptions(help: string): Map<string, string> {
+  const options = new Map<string, string>();
+  const declaration = /^\s*(?:-[A-Za-z0-9](?:,\s*|\s+))?(--[A-Za-z0-9][A-Za-z0-9-]*)(?=$|[\s<[=])/;
+  for (const line of help.split(/\r?\n/)) {
+    const match = declaration.exec(line);
+    const option = match?.[1];
+    if (option !== undefined) {
+      options.set(option, line);
+    }
+  }
+  return options;
+}
+
 function isCompatibleHelp(help: string): boolean {
-  const permissionModeOption = help
-    .split(/\r?\n/)
-    .find((line) => line.includes('--permission-mode'));
-  return REQUIRED_HELP_MARKERS.every((marker) => help.includes(marker))
-    && permissionModeOption?.includes('dontAsk') === true;
+  const options = declaredOptions(help);
+  const permissionMode = options.get('--permission-mode');
+  const allowsDontAsk = permissionMode !== undefined
+    && /\b(?:choices?|allowed\s+values?)\s*:\s*[^)\]\n]*\bdontAsk\b/.test(
+      permissionMode,
+    );
+  return REQUIRED_HELP_MARKERS.every((marker) => options.has(marker))
+    && allowsDontAsk;
 }
 
 async function resolveExecutable(
@@ -370,7 +386,7 @@ class ClaudeResearchDriver implements ResearchDriver {
       '--max-budget-usd',
       '2',
     ];
-    if (help.stdout.includes('--strict-mcp-config')) {
+    if (declaredOptions(help.stdout).has('--strict-mcp-config')) {
       args.push('--strict-mcp-config');
     }
 
