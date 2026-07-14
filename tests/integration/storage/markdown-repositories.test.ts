@@ -6,6 +6,7 @@ import {
   readFile,
   rm,
   stat,
+  symlink,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -28,6 +29,12 @@ import {
   MarkdownTaskRepository,
   TaskSavedIndexStaleError,
 } from '../../../src/storage/markdown-task-repository.js';
+import { rebuildTaskIndex } from '../../../src/storage/task-index.js';
+import {
+  artifactDirectory,
+  auditFilePath,
+  projectFilePath,
+} from '../../../src/storage/task-paths.js';
 
 const fixtureVault = fileURLToPath(
   new URL('../../fixtures/vault', import.meta.url),
@@ -46,6 +53,28 @@ async function makeVault(): Promise<string> {
   temporaryRoots.push(root);
   await cp(fixtureVault, root, { recursive: true });
   return root;
+}
+
+async function makeNonTempVault(): Promise<string> {
+  const root = await mkdtemp(join(process.cwd(), '.atl-storage-test-'));
+  temporaryRoots.push(root);
+  await cp(fixtureVault, root, { recursive: true });
+  return root;
+}
+
+async function writeIndexTask(
+  root: string,
+  filename: string,
+  fields: {
+    taskId: string;
+    title: string;
+    updatedAt: string;
+  },
+): Promise<string> {
+  const path = join(root, '10_Tasks', 'Active', 'project-index', filename);
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, `---\ntype: task\ntask_id: ${JSON.stringify(fields.taskId)}\ntitle: ${JSON.stringify(fields.title)}\nstatus: ready\nreview_state: confirmed\norigin: synthetic_index_test\nsource_date: 2026-07-14\npriority: normal\nupdated_at: ${JSON.stringify(fields.updatedAt)}\n---\n\nSynthetic index fixture.\n`);
+  return path;
 }
 
 function makeProject(overrides: Partial<Project> = {}): Project {
@@ -181,7 +210,7 @@ describe('MarkdownTaskRepository', () => {
 
     const index = await readFile(join(root, '10_Tasks', '任务索引.md'), 'utf8');
     expect(index).toContain('| 任务标题 | 状态 | 确认状态 | 来源类型 | 来源日期 | 优先级 | OKR | 钉钉状态 | 最近更新 | 候选文件 |');
-    expect(index).toContain(`[task-20260713-deadbeef.md](${newPath})`);
+    expect(index).toContain(`[task-20260713-deadbeef.md](<${encodeURI(newPath)}>)`);
     expect(index).not.toContain(oldPath);
   });
 
@@ -202,22 +231,41 @@ describe('MarkdownTaskRepository', () => {
     expect(persisted.title).toBe('Updated synthetic title');
   });
 
-  it('rejects configured real-root-equivalent writes unless explicitly allowed', async () => {
+  it('always allows OS temp roots even when real-vault environment differs', async () => {
     const root = await makeVault();
-    process.env.ATL_VAULT_ROOT = root;
+    process.env.ATL_VAULT_ROOT = join(process.cwd(), 'different-vault');
     const repository = new MarkdownTaskRepository(root);
     const task = await repository.get('task-20260713-deadbeef');
 
     await expect(repository.save({
       ...task,
-      title: 'This write must be rejected',
-    })).rejects.toThrow('Real vault writes are disabled');
+      title: 'Allowed synthetic temp write',
+    })).resolves.toMatchObject({ title: 'Allowed synthetic temp write' });
+  });
 
+  it('fails closed for non-temp roots and resolves symlink aliases canonically', async () => {
+    const root = await makeNonTempVault();
+    const repository = new MarkdownTaskRepository(root);
+    const task = await repository.get('task-20260713-deadbeef');
+
+    await expect(repository.save(task)).rejects.toThrow('Vault writes are disabled');
     process.env.ATL_ALLOW_REAL_WRITES = '1';
-    await expect(repository.save({
-      ...task,
-      title: 'Explicitly allowed synthetic write',
-    })).resolves.toMatchObject({ title: 'Explicitly allowed synthetic write' });
+    await expect(repository.save(task)).rejects.toThrow('Vault writes are disabled');
+    process.env.ATL_VAULT_ROOT = `${root}-different`;
+    await expect(repository.save(task)).rejects.toThrow('Vault writes are disabled');
+
+    process.env.ATL_VAULT_ROOT = root;
+    await expect(repository.save(task)).resolves.toEqual(task);
+
+    const alias = `${root}-alias`;
+    temporaryRoots.push(alias);
+    await symlink(root, alias, 'dir');
+    delete process.env.ATL_ALLOW_REAL_WRITES;
+    const aliasRepository = new MarkdownTaskRepository(alias);
+    const aliasedTask = await aliasRepository.get(task.taskId);
+    await expect(aliasRepository.save(aliasedTask)).rejects.toThrow('Vault writes are disabled');
+    process.env.ATL_ALLOW_REAL_WRITES = '1';
+    await expect(aliasRepository.save(aliasedTask)).resolves.toEqual(aliasedTask);
   });
 
   it('rejects task path fields that could escape lifecycle directories', async () => {
@@ -233,6 +281,89 @@ describe('MarkdownTaskRepository', () => {
       ...task,
       sourceDate: '../../escaped',
     })).rejects.toMatchObject({ code: 'invalid_task_data' });
+  });
+});
+
+describe('storage path boundaries', () => {
+  it('rejects traversal, absolute paths, separators, and encoded traversal', async () => {
+    const root = await makeVault();
+    const invalidSegments = [
+      '.',
+      '..',
+      '../../escaped',
+      '/absolute/path',
+      'nested/path',
+      'nested\\path',
+      '%2e%2e%2fescaped',
+      '%252e%252e%252fescaped',
+      '%2525252e%2525252e%2525252fescaped',
+    ];
+
+    for (const segment of invalidSegments) {
+      expect(() => artifactDirectory(root, segment)).toThrow('Invalid path segment');
+      expect(() => projectFilePath(root, segment)).toThrow('Invalid path segment');
+      expect(() => auditFilePath(root, segment)).toThrow('Invalid path segment');
+    }
+  });
+
+  it('guards direct index rebuilds outside OS temp', async () => {
+    const root = await makeNonTempVault();
+
+    await expect(rebuildTaskIndex(root)).rejects.toThrow('Vault writes are disabled');
+  });
+
+  it('rejects storage subdirectories that symlink outside 10_Tasks', async () => {
+    const root = await makeVault();
+    const outside = await mkdtemp(join(tmpdir(), 'atl-storage-outside-'));
+    temporaryRoots.push(outside);
+    const projects = join(root, '10_Tasks', 'Projects');
+    await mkdir(dirname(projects), { recursive: true });
+    await symlink(outside, projects, 'dir');
+
+    expect(() => projectFilePath(root, 'project-safe-name')).toThrow(
+      'Storage path escapes required directory',
+    );
+  });
+});
+
+describe('task index rendering', () => {
+  it('renders a valid 10-column link row for special Markdown path characters', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'atl storage (index)-'));
+    temporaryRoots.push(root);
+    const path = await writeIndexTask(root, 'task]legacy\\name.md', {
+      taskId: 'task-index-special',
+      title: 'Title with ] and \\ characters',
+      updatedAt: '2026-07-14T08:00:00+08:00',
+    });
+
+    await rebuildTaskIndex(root, '2026-07-14T00:00:00.000Z');
+
+    const index = await readFile(join(root, '10_Tasks', '任务索引.md'), 'utf8');
+    const row = index.split('\n').find((line) => line.includes('Title with'));
+    expect(row).toBeDefined();
+    expect(row?.split('|')).toHaveLength(12);
+    expect(row).toContain('[task\\]legacy\\\\name.md]');
+    expect(row).toContain(`<${encodeURI(path).replaceAll('(', '%28').replaceAll(')', '%29')}>`);
+  });
+
+  it('sorts updated times by parsed instant with deterministic offset handling', async () => {
+    const root = await makeVault();
+    await rm(join(root, fixtureRelativePath));
+    await writeIndexTask(root, 'earlier.md', {
+      taskId: 'task-earlier',
+      title: 'Earlier instant',
+      updatedAt: '2026-07-14T09:30:00+08:00',
+    });
+    await writeIndexTask(root, 'later.md', {
+      taskId: 'task-later',
+      title: 'Later instant',
+      updatedAt: '2026-07-14T02:00:00Z',
+    });
+
+    await rebuildTaskIndex(root, '2026-07-14T00:00:00.000Z');
+
+    const index = await readFile(join(root, '10_Tasks', '任务索引.md'), 'utf8');
+    expect(index.indexOf('Later instant')).toBeLessThan(index.indexOf('Earlier instant'));
   });
 });
 
@@ -333,6 +464,40 @@ describe('FileAuditLog', () => {
       at: '2026-07-14T09:00:00+08:00',
       details: { nested: { value: 'not scalar' } } as never,
     })).rejects.toThrow('Invalid audit event');
+  });
+
+  it('rejects normalized sensitive audit keys without persisting values', async () => {
+    const root = await makeVault();
+    const audit = new FileAuditLog(root);
+    const secret = 'synthetic-sensitive-value';
+    const sensitiveKeys = [
+      'api_key',
+      'apikey',
+      'Authorization',
+      'credential',
+      'credentials',
+      'cookie',
+      'access-token',
+      'clientSecret',
+      'password',
+      'system_prompt',
+      'environment',
+      'noteContent',
+      'response_body',
+      'content',
+    ];
+
+    for (const key of sensitiveKeys) {
+      await expect(audit.append({
+        event: 'invalid_event',
+        at: '2026-07-14T09:00:00+08:00',
+        details: { [key]: secret },
+      })).rejects.not.toThrow(secret);
+    }
+    await expect(readFile(
+      join(root, '10_Tasks', 'Audit', '2026-07-14.jsonl'),
+      'utf8',
+    )).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('sorts task history by absolute timestamp across UTC offsets', async () => {

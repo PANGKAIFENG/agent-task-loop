@@ -304,7 +304,7 @@ export class MarkdownTaskRepository implements TaskRepository {
     this.records.set(persistedTask.taskId, { path: targetPath, data, body });
 
     try {
-      await rebuildTaskIndex(this.tasksRoot);
+      await rebuildTaskIndex(this.root);
     } catch (error) {
       throw new TaskSavedIndexStaleError({ cause: error });
     }

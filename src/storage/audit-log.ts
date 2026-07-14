@@ -55,12 +55,17 @@ function validateEvent(value: unknown): AuditEvent {
       const normalizedKey = key.toLowerCase();
       const compactKey = normalizedKey.replaceAll(/[^a-z0-9]/g, '');
       const sensitive = compactKey.includes('prompt')
+        || compactKey.includes('apikey')
+        || compactKey.includes('authorization')
+        || compactKey.includes('credential')
+        || compactKey.includes('cookie')
         || compactKey.includes('secret')
         || compactKey.includes('password')
         || compactKey.includes('token')
         || compactKey.includes('env')
-        || compactKey === 'note'
-        || compactKey.includes('body');
+        || compactKey.includes('note')
+        || compactKey.includes('body')
+        || compactKey.includes('content');
       if (!isScalar(detail) || (sensitive && detail !== null)) {
         throw new InvalidAuditEventError();
       }

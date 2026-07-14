@@ -1,10 +1,19 @@
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { basename, join } from 'node:path';
-
-import fastGlob from 'fast-glob';
 
 import { priorityRank, type Priority } from '../domain/task.js';
 import { parseTaskDocument } from './frontmatter.js';
+import {
+  assertVaultWriteAllowed,
+  taskStorageRoot,
+} from './task-paths.js';
 
 interface IndexEntry {
   path: string;
@@ -49,8 +58,24 @@ function escapeCell(value: string): string {
     .replaceAll('\n', ' ');
 }
 
-function escapeLinkTarget(value: string): string {
-  return value.replaceAll('\\', '\\\\').replaceAll(')', '\\)');
+function escapeLinkText(value: string): string {
+  return value
+    .replaceAll('\\', '\\\\')
+    .replaceAll('[', '\\[')
+    .replaceAll(']', '\\]')
+    .replaceAll('|', '\\|');
+}
+
+function encodeLinkDestination(value: string): string {
+  return encodeURI(value)
+    .replaceAll('(', '%28')
+    .replaceAll(')', '%29')
+    .replaceAll('|', '%7C');
+}
+
+function timestamp(value: string): number {
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
 }
 
 async function readIndexEntry(path: string, tasksRoot: string): Promise<IndexEntry> {
@@ -71,25 +96,50 @@ async function readIndexEntry(path: string, tasksRoot: string): Promise<IndexEnt
   };
 }
 
+async function listMarkdownFiles(directory: string): Promise<string[]> {
+  let entries;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') {
+      return [];
+    }
+    throw error;
+  }
+
+  const paths = await Promise.all(entries.map(async (entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      return listMarkdownFiles(path);
+    }
+    return entry.isFile() && entry.name.endsWith('.md') ? [path] : [];
+  }));
+  return paths.flat();
+}
+
 export async function rebuildTaskIndex(
-  tasksRoot: string,
+  root: string,
   generatedAt = new Date().toISOString(),
 ): Promise<void> {
-  const paths = await fastGlob(
-    ['Inbox/**/*.md', 'Active/**/*.md', 'Archive/**/*.md'],
-    { absolute: true, cwd: tasksRoot, onlyFiles: true },
-  );
+  assertVaultWriteAllowed(root);
+  const tasksRoot = taskStorageRoot(root);
+  const paths = (await Promise.all(
+    ['Inbox', 'Active', 'Archive'].map((directory) => (
+      listMarkdownFiles(join(tasksRoot, directory))
+    )),
+  )).flat();
   const entries = await Promise.all(paths.map((path) => readIndexEntry(path, tasksRoot)));
   entries.sort((left, right) => (
     left.lifecycle - right.lifecycle
     || priorityRank[left.priority] - priorityRank[right.priority]
+    || timestamp(right.updatedAt) - timestamp(left.updatedAt)
     || right.updatedAt.localeCompare(left.updatedAt)
     || left.path.localeCompare(right.path)
   ));
 
   const rows = entries.map((entry) => {
-    const link = `[${escapeCell(basename(entry.path))}](${escapeLinkTarget(entry.path)})`;
-    return `| ${[
+    const link = `[${escapeLinkText(basename(entry.path))}](<${encodeLinkDestination(entry.path)}>)`;
+    const cells = [
       entry.title,
       entry.status,
       entry.reviewState,
@@ -99,8 +149,8 @@ export async function rebuildTaskIndex(
       entry.okr,
       entry.dingtalkStatus,
       entry.updatedAt,
-      link,
-    ].map(escapeCell).join(' | ')} |`;
+    ].map(escapeCell);
+    return `| ${[...cells, link].join(' | ')} |`;
   });
   const output = `${INDEX_HEADER}${generatedAt}${INDEX_EXPLANATION}${rows.join('\n')}${rows.length > 0 ? '\n' : ''}`;
   const indexPath = join(tasksRoot, '任务索引.md');
