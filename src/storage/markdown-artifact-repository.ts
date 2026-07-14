@@ -58,6 +58,21 @@ function markdownText(value: string): string {
   return value.replaceAll('|', '\\|');
 }
 
+function escapeCell(value: string): string {
+  return value
+    .replaceAll('\\', '\\\\')
+    .replaceAll('|', '\\|')
+    .replaceAll('\r', ' ')
+    .replaceAll('\n', ' ');
+}
+
+function isValidMetadata(value: string): boolean {
+  return typeof value === 'string'
+    && value.trim() !== ''
+    && value.length <= 200
+    && !/[\0\r\n]/.test(value);
+}
+
 function bulletList(items: string[]): string {
   return items.length === 0
     ? '_None._'
@@ -83,7 +98,11 @@ function renderArtifact(input: Parameters<ArtifactRepository['write']>[0]): stri
         '| Title | URL | Accessed At |',
         '| --- | --- | --- |',
         ...input.result.evidence.map((item) => (
-          `| ${markdownText(item.title)} | ${item.url} | ${item.accessedAt} |`
+          `| ${[
+            item.title,
+            item.url,
+            item.accessedAt,
+          ].map(escapeCell).join(' | ')} |`
         )),
       ].join('\n');
   const acceptance = input.result.acceptance.length === 0
@@ -92,7 +111,11 @@ function renderArtifact(input: Parameters<ArtifactRepository['write']>[0]): stri
         '| Criterion | Status | Note |',
         '| --- | --- | --- |',
         ...input.result.acceptance.map((item) => (
-          `| ${markdownText(item.criterion)} | ${item.status} | ${markdownText(item.note)} |`
+          `| ${[
+            item.criterion,
+            item.status,
+            item.note,
+          ].map(escapeCell).join(' | ')} |`
         )),
       ].join('\n');
 
@@ -158,10 +181,8 @@ export class MarkdownArtifactRepository implements ArtifactRepository {
     if (
       !parsed.success
       || !isSafePathSegment(input.task.taskId)
-      || !isSafePathSegment(input.runId)
-      || !isSafePathSegment(input.agent)
-      || input.agent.length > 200
-      || /[\0\r\n]/.test(input.agent)
+      || !isValidMetadata(input.runId)
+      || !isValidMetadata(input.agent)
       || !Number.isInteger(input.task.attempts)
       || input.task.attempts <= 0
       || !Number.isFinite(Date.parse(input.createdAt))

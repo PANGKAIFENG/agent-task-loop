@@ -215,38 +215,87 @@ describe('artifact review loop', () => {
     ))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it('rejects traversal-style Artifact metadata without leaking it in the error', async () => {
+  it('accepts slash-containing claim metadata but rejects metadata controls', async () => {
     const context = await makeContext();
-    const privateAgent = '../../synthetic-private-agent';
+    const runId = 'run/001';
+    const agent = 'team/research';
     const task = inProgressTask({
       taskId: 'task-20260714-metadata',
       claim: {
-        runId: 'run-artifact-001',
-        agent: privateAgent,
+        runId,
+        agent,
         claimedAt: NOW,
         leaseExpiresAt: '2026-07-14T00:15:00.000Z',
       },
     });
     await context.ctx.tasks.save(task);
 
-    const error = await submitArtifact(context.ctx, task.taskId, {
-      runId: 'run-artifact-001',
+    const submitted = await submitArtifact(context.ctx, task.taskId, {
+      runId,
       result: artifactResult(),
-    }).catch((caught: unknown) => caught);
-
-    expect(error).toMatchObject({
-      code: 'invalid_artifact_input',
-      message: 'Invalid Artifact input',
     });
-    expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).not.toContain(privateAgent);
-    await expect(stat(join(
+
+    expect(submitted).toMatchObject({
+      status: 'review',
+      claim: null,
+    });
+    const markdown = await readFile(join(
       context.root,
       '10_Tasks',
       'Artifacts',
       task.taskId,
       'attempt-001.md',
-    ))).rejects.toMatchObject({ code: 'ENOENT' });
+    ), 'utf8');
+    expect(markdown).toContain(`run_id: ${runId}`);
+    expect(markdown).toContain(`agent: ${agent}`);
+
+    const invalidTask = inProgressTask({
+      taskId: 'task-20260714-invalid-metadata',
+      claim: {
+        runId: 'run-control\n001',
+        agent: 'team/research',
+        claimedAt: NOW,
+        leaseExpiresAt: '2026-07-14T00:15:00.000Z',
+      },
+    });
+    await context.ctx.tasks.save(invalidTask);
+    await expect(submitArtifact(context.ctx, invalidTask.taskId, {
+      runId: invalidTask.claim?.runId ?? '',
+      result: artifactResult(),
+    })).rejects.toMatchObject({ code: 'invalid_artifact_input' });
+  });
+
+  it('escapes every Artifact table cell without breaking rows', async () => {
+    const context = await makeContext();
+    const task = inProgressTask({ taskId: 'task-20260714-table-cells' });
+    await context.ctx.tasks.save(task);
+
+    const submitted = await submitArtifact(context.ctx, task.taskId, {
+      runId: task.claim?.runId ?? '',
+      result: artifactResult({
+        evidence: [{
+          title: 'Official \\ pricing | first\rsecond\nthird',
+          url: 'https://example.com/a|b',
+          accessedAt: NOW,
+        }],
+        acceptance: [{
+          criterion: 'Criterion \\ | one\r\ntwo',
+          status: 'partial',
+          note: 'Note \\ | alpha\nbeta',
+        }],
+      }),
+    });
+
+    const markdown = await readFile(
+      join(context.root, '10_Tasks', submitted.artifactRefs[0] ?? ''),
+      'utf8',
+    );
+    expect(markdown).toContain(
+      `| Official \\\\ pricing \\| first second third | https://example.com/a\\|b | ${NOW} |`,
+    );
+    expect(markdown).toContain(
+      '| Criterion \\\\ \\| one  two | partial | Note \\\\ \\| alpha beta |',
+    );
   });
 
   it('allows only one concurrent submission for the same task transition', async () => {
