@@ -1,0 +1,84 @@
+<mxfile host="app.diagrams.net" modified="2026-07-14T00:00:00.000Z" agent="Codex" version="26.0.11">
+  <diagram id="agent-task-loop-architecture" name="Agent Task Loop 系统架构总图">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="title" value="Agent Task Loop V0.1 系统架构" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=28;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="400" y="20" width="800" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="lane-1" value="任务输入层&#xa;捕获但不自动执行" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eef4ff;strokeColor=#5b8def;strokeWidth=2;fontSize=20;fontStyle=1;verticalAlign=top;spacingTop=18;" vertex="1" parent="1">
+          <mxGeometry x="40" y="80" width="300" height="520" as="geometry"/>
+        </mxCell>
+        <mxCell id="lane-2" value="任务管理层&#xa;形成唯一任务事实" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff7db;strokeColor=#d8a437;strokeWidth=2;fontSize=20;fontStyle=1;verticalAlign=top;spacingTop=18;" vertex="1" parent="1">
+          <mxGeometry x="390" y="80" width="300" height="520" as="geometry"/>
+        </mxCell>
+        <mxCell id="lane-3" value="Agent 执行层&#xa;受限领取与只读调研" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eef4ff;strokeColor=#5b8def;strokeWidth=2;fontSize=20;fontStyle=1;verticalAlign=top;spacingTop=18;" vertex="1" parent="1">
+          <mxGeometry x="740" y="80" width="300" height="520" as="geometry"/>
+        </mxCell>
+        <mxCell id="lane-4" value="验收回流层&#xa;用户保留最终决策权" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dff4e6;strokeColor=#2e9c61;strokeWidth=2;fontSize=20;fontStyle=1;verticalAlign=top;spacingTop=18;" vertex="1" parent="1">
+          <mxGeometry x="1090" y="80" width="300" height="520" as="geometry"/>
+        </mxCell>
+        <mxCell id="card-1" value="每日复盘&#xa;明确待办 / 推断候选" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5b8def;strokeWidth=2;fontSize=17;" vertex="1" parent="1">
+          <mxGeometry x="72" y="170" width="236" height="86" as="geometry"/>
+        </mxCell>
+        <mxCell id="card-2" value="主动快速录入&#xa;工作中随手捕获" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5b8def;strokeWidth=2;fontSize=17;" vertex="1" parent="1">
+          <mxGeometry x="72" y="290" width="236" height="86" as="geometry"/>
+        </mxCell>
+        <mxCell id="card-3" value="未来渠道&#xa;通过收集接口扩展" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5b8def;strokeWidth=2;fontSize=17;" vertex="1" parent="1">
+          <mxGeometry x="72" y="410" width="236" height="86" as="geometry"/>
+        </mxCell>
+        <mxCell id="card-4" value="Inbox 与来源去重&#xa;候选任务不可执行" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d8a437;strokeWidth=2;fontSize=17;" vertex="1" parent="1">
+          <mxGeometry x="422" y="170" width="236" height="86" as="geometry"/>
+        </mxCell>
+        <mxCell id="card-5" value="人工严格准入&#xa;目标 / 项目 / 验收 / 权限" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d8a437;strokeWidth=2;fontSize=17;" vertex="1" parent="1">
+          <mxGeometry x="422" y="290" width="236" height="86" as="geometry"/>
+        </mxCell>
+        <mxCell id="card-6" value="项目看板与 Task Store&#xa;状态和上下文唯一事实" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d8a437;strokeWidth=2;fontSize=17;" vertex="1" parent="1">
+          <mxGeometry x="422" y="410" width="236" height="86" as="geometry"/>
+        </mxCell>
+        <mxCell id="card-7" value="执行入口&#xa;队列 / 时段 / 额度校验" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5b8def;strokeWidth=2;fontSize=17;" vertex="1" parent="1">
+          <mxGeometry x="772" y="170" width="236" height="86" as="geometry"/>
+        </mxCell>
+        <mxCell id="card-8" value="Agent 领取&#xa;仅一个 Ready 调研任务" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5b8def;strokeWidth=2;fontSize=17;" vertex="1" parent="1">
+          <mxGeometry x="772" y="290" width="236" height="86" as="geometry"/>
+        </mxCell>
+        <mxCell id="card-9" value="只读调研与 Artifact&#xa;证据 / 结论 / 不确定项" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5b8def;strokeWidth=2;fontSize=17;" vertex="1" parent="1">
+          <mxGeometry x="772" y="410" width="236" height="86" as="geometry"/>
+        </mxCell>
+        <mxCell id="card-10" value="待验收入口&#xa;结果与标准逐项对照" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#2e9c61;strokeWidth=2;fontSize=17;" vertex="1" parent="1">
+          <mxGeometry x="1122" y="170" width="236" height="86" as="geometry"/>
+        </mxCell>
+        <mxCell id="card-11" value="人工通过或退回&#xa;反馈驱动下一次执行" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#2e9c61;strokeWidth=2;fontSize=17;" vertex="1" parent="1">
+          <mxGeometry x="1122" y="290" width="236" height="86" as="geometry"/>
+        </mxCell>
+        <mxCell id="card-12" value="Done / Blocked / Cancelled&#xa;结果和历史持续可追溯" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#2e9c61;strokeWidth=2;fontSize=17;" vertex="1" parent="1">
+          <mxGeometry x="1122" y="410" width="236" height="86" as="geometry"/>
+        </mxCell>
+        <mxCell id="support" value="共享治理支撑：权限边界 / 审计记录 / 幂等去重 / 失败恢复 / 运行时段 / 并发与每日额度" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff1b8;strokeColor=#d8a437;strokeWidth=2;fontSize=17;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="390" y="640" width="650" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4e7fd1;strokeWidth=2.5;endArrow=block;" edge="1" parent="1" source="card-1" target="card-4"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4e7fd1;strokeWidth=2.5;endArrow=block;" edge="1" parent="1" source="card-2" target="card-4"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4e7fd1;strokeWidth=2.5;endArrow=block;" edge="1" parent="1" source="card-3" target="card-4"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d8a437;strokeWidth=2.5;endArrow=block;" edge="1" parent="1" source="card-4" target="card-5"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d8a437;strokeWidth=2.5;endArrow=block;" edge="1" parent="1" source="card-5" target="card-6"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4e7fd1;strokeWidth=2.5;endArrow=block;" edge="1" parent="1" source="card-6" target="card-7"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4e7fd1;strokeWidth=2.5;endArrow=block;" edge="1" parent="1" source="card-7" target="card-8"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e8" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4e7fd1;strokeWidth=2.5;endArrow=block;" edge="1" parent="1" source="card-8" target="card-9"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e9" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#2e9c61;strokeWidth=2.5;endArrow=block;" edge="1" parent="1" source="card-9" target="card-10"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e10" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#2e9c61;strokeWidth=2.5;endArrow=block;" edge="1" parent="1" source="card-10" target="card-11"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e11" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#2e9c61;strokeWidth=2.5;endArrow=block;" edge="1" parent="1" source="card-11" target="card-12"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e12" value="退回并附反馈" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#c65d4d;strokeWidth=2.5;endArrow=block;fontSize=15;exitX=0;exitY=0.5;entryX=0.5;entryY=1;" edge="1" parent="1" source="card-11" target="card-6">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1060" y="333"/>
+              <mxPoint x="1060" y="550"/>
+              <mxPoint x="540" y="550"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

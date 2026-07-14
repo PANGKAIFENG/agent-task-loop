@@ -1,0 +1,43 @@
+<mxfile host="app.diagrams.net" modified="2026-07-14T00:00:00.000Z" agent="Codex" version="26.0.11">
+  <diagram id="agent-task-loop-core-flow" name="Agent Task Loop 核心执行闭环">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="title" value="Agent Task Loop V0.1 核心执行闭环" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=28;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="400" y="20" width="800" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="step-1" value="收集进入 Inbox&#xa;保留来源" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eef4ff;strokeColor=#5b8def;strokeWidth=2;fontSize=17;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="30" y="190" width="160" height="100" as="geometry"/></mxCell>
+        <mxCell id="decision-1" value="信息完整且&#xa;人工确认？" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff7db;strokeColor=#d8a437;strokeWidth=2;fontSize=17;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="230" y="190" width="160" height="100" as="geometry"/></mxCell>
+        <mxCell id="step-2" value="进入 Ready&#xa;允许自动执行" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff7db;strokeColor=#d8a437;strokeWidth=2;fontSize=17;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="430" y="190" width="160" height="100" as="geometry"/></mxCell>
+        <mxCell id="step-3" value="队列校验与领取&#xa;并发 1 / 每日 3 个" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eef4ff;strokeColor=#5b8def;strokeWidth=2;fontSize=17;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="630" y="190" width="160" height="100" as="geometry"/></mxCell>
+        <mxCell id="step-4" value="Agent 只读调研&#xa;读取授权上下文" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eef4ff;strokeColor=#5b8def;strokeWidth=2;fontSize=17;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="830" y="190" width="160" height="100" as="geometry"/></mxCell>
+        <mxCell id="step-5" value="提交 Artifact&#xa;进入 Review" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dff4e6;strokeColor=#2e9c61;strokeWidth=2;fontSize=17;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="1030" y="190" width="160" height="100" as="geometry"/></mxCell>
+        <mxCell id="decision-2" value="人工验收&#xa;通过？" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff7db;strokeColor=#d8a437;strokeWidth=2;fontSize=17;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="1230" y="190" width="160" height="100" as="geometry"/></mxCell>
+        <mxCell id="step-6" value="Done&#xa;保留最终结果" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dff4e6;strokeColor=#2e9c61;strokeWidth=2;fontSize=17;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="1430" y="190" width="140" height="100" as="geometry"/></mxCell>
+        <mxCell id="branch-1" value="保持 Inbox&#xa;提示缺失信息" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe5e1;strokeColor=#c65d4d;strokeWidth=2;fontSize=16;" vertex="1" parent="1"><mxGeometry x="230" y="390" width="160" height="80" as="geometry"/></mxCell>
+        <mxCell id="branch-2" value="退回 Ready&#xa;附反馈并保留历史" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe5e1;strokeColor=#c65d4d;strokeWidth=2;fontSize=16;" vertex="1" parent="1"><mxGeometry x="1030" y="390" width="180" height="80" as="geometry"/></mxCell>
+        <mxCell id="branch-3" value="连续两次失败&#xa;进入 Blocked" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe5e1;strokeColor=#c65d4d;strokeWidth=2;fontSize=16;" vertex="1" parent="1"><mxGeometry x="830" y="60" width="160" height="80" as="geometry"/></mxCell>
+        <mxCell id="support" value="全程约束：来源可追溯 / 权限最小化 / 状态可观察 / 运行可审计 / Agent 不得自行确认 Ready 或 Done" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff1b8;strokeColor=#d8a437;strokeWidth=2;fontSize=17;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="430" y="560" width="760" height="90" as="geometry"/></mxCell>
+        <mxCell id="e1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4e7fd1;strokeWidth=2.5;endArrow=block;" edge="1" parent="1" source="step-1" target="decision-1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e2" value="是" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d8a437;strokeWidth=2.5;endArrow=block;fontSize=15;" edge="1" parent="1" source="decision-1" target="step-2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4e7fd1;strokeWidth=2.5;endArrow=block;" edge="1" parent="1" source="step-2" target="step-3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4e7fd1;strokeWidth=2.5;endArrow=block;" edge="1" parent="1" source="step-3" target="step-4"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#2e9c61;strokeWidth=2.5;endArrow=block;" edge="1" parent="1" source="step-4" target="step-5"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#2e9c61;strokeWidth=2.5;endArrow=block;" edge="1" parent="1" source="step-5" target="decision-2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e7" value="通过" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#2e9c61;strokeWidth=2.5;endArrow=block;fontSize=15;" edge="1" parent="1" source="decision-2" target="step-6"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e8" value="否" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#c65d4d;strokeWidth=2.5;endArrow=block;fontSize=15;" edge="1" parent="1" source="decision-1" target="branch-1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e9" value="退回" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#c65d4d;strokeWidth=2.5;endArrow=block;fontSize=15;exitX=0.5;exitY=1;entryX=1;entryY=0.5;" edge="1" parent="1" source="decision-2" target="branch-2">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1310" y="430"/>
+              <mxPoint x="1230" y="430"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e10" value="重新执行" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#c65d4d;strokeWidth=2.5;endArrow=block;fontSize=15;" edge="1" parent="1" source="branch-2" target="step-2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e11" value="失败" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#c65d4d;strokeWidth=2.5;endArrow=block;fontSize=15;" edge="1" parent="1" source="step-4" target="branch-3"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
