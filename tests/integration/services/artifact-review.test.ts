@@ -1,4 +1,4 @@
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
@@ -7,7 +7,9 @@ import type { ArtifactResult } from '../../../src/domain/artifact.js';
 import type { Task } from '../../../src/domain/task.js';
 import {
   ReviewTaskAuditFailedError,
+  ReviewTaskArtifactInvalidError,
   ReviewTaskInvalidInputError,
+  type ReviewTaskInput,
   reviewTask,
 } from '../../../src/services/review-task.js';
 import {
@@ -15,6 +17,7 @@ import {
   reopenTask,
 } from '../../../src/services/reopen-task.js';
 import {
+  ArtifactSubmissionAuditFailedError,
   ArtifactSubmissionInvalidStateError,
   ArtifactSubmissionTaskSaveFailedError,
   submitArtifact,
@@ -99,6 +102,28 @@ function artifactResult(overrides: Partial<ArtifactResult> = {}): ArtifactResult
   };
 }
 
+const reviewInputs: Array<{
+  decision: ReviewTaskInput['decision'];
+  input: ReviewTaskInput;
+}> = [
+  { decision: 'approve', input: { decision: 'approve' } },
+  {
+    decision: 'request_changes',
+    input: {
+      decision: 'request_changes',
+      feedback: 'Synthetic reviewer feedback.',
+    },
+  },
+  {
+    decision: 'block',
+    input: { decision: 'block', feedback: 'Synthetic reviewer feedback.' },
+  },
+  {
+    decision: 'cancel',
+    input: { decision: 'cancel', feedback: 'Synthetic reviewer feedback.' },
+  },
+];
+
 afterEach(async () => {
   await Promise.all(contexts.splice(0).map(({ cleanup }) => cleanup()));
 });
@@ -129,6 +154,7 @@ describe('artifact review loop', () => {
     expect(markdown).toContain('agent: synthetic-agent');
     expect(markdown).toContain(`created_at: ${NOW}`);
     expect(markdown).toContain(`updated_at: ${NOW}`);
+    expect(markdown).toMatch(/input_digest: [0-9a-f]{64}/);
     for (const heading of [
       '## Summary',
       '## Findings',
@@ -368,6 +394,90 @@ describe('artifact review loop', () => {
     });
   });
 
+  it('reuses an orphan Artifact when an identical submission retries after audit failure', async () => {
+    const context = await makeContext();
+    const task = inProgressTask({ taskId: 'task-20260714-audit-retry' });
+    await context.ctx.tasks.save(task);
+    const appendAudit = context.ctx.audit.append.bind(context.ctx.audit);
+    let failSubmissionAudit = true;
+    context.ctx.audit.append = async (event) => {
+      if (event.event === 'artifact.submitted' && failSubmissionAudit) {
+        failSubmissionAudit = false;
+        throw new Error('synthetic private audit failure');
+      }
+      await appendAudit(event);
+    };
+
+    await expect(submitArtifact(context.ctx, task.taskId, {
+      runId: task.claim?.runId ?? '',
+      result: artifactResult(),
+    })).rejects.toBeInstanceOf(ArtifactSubmissionAuditFailedError);
+
+    const ref = `Artifacts/${task.taskId}/attempt-001.md`;
+    const artifactPath = join(context.root, '10_Tasks', ref);
+    const orphanBytes = await readFile(artifactPath, 'utf8');
+    await expect(context.ctx.tasks.get(task.taskId)).resolves.toEqual(task);
+    expect((await stat(artifactPath)).isFile()).toBe(true);
+
+    await expect(submitArtifact(context.ctx, task.taskId, {
+      runId: task.claim?.runId ?? '',
+      result: artifactResult({ summary: 'Different orphan content.' }),
+    })).rejects.toBeInstanceOf(ArtifactAlreadyExistsError);
+
+    context.ctx.clock = () => new Date('2026-07-14T01:00:00.000Z');
+    const retried = await submitArtifact(context.ctx, task.taskId, {
+      runId: task.claim?.runId ?? '',
+      result: artifactResult(),
+    });
+
+    expect(retried).toMatchObject({
+      status: 'review',
+      claim: null,
+      artifactRefs: [ref],
+    });
+    expect(await readFile(artifactPath, 'utf8')).toBe(orphanBytes);
+    const submittedEvents = (await context.ctx.audit.listForTask(task.taskId))
+      .filter(({ event }) => event === 'artifact.submitted');
+    expect(submittedEvents).toEqual([{
+      event: 'artifact.submitted',
+      at: '2026-07-14T01:00:00.000Z',
+      taskId: task.taskId,
+      runId: task.claim?.runId,
+      details: { artifactRef: ref, attempt: 1 },
+    }]);
+  });
+
+  it('rejects a corrupt orphan Artifact even when its input digest remains', async () => {
+    const context = await makeContext();
+    const task = inProgressTask({ taskId: 'task-20260714-corrupt-orphan' });
+    await context.ctx.tasks.save(task);
+    const appendAudit = context.ctx.audit.append.bind(context.ctx.audit);
+    context.ctx.audit.append = async () => {
+      throw new Error('synthetic private audit failure');
+    };
+
+    await expect(submitArtifact(context.ctx, task.taskId, {
+      runId: task.claim?.runId ?? '',
+      result: artifactResult(),
+    })).rejects.toBeInstanceOf(ArtifactSubmissionAuditFailedError);
+
+    const ref = `Artifacts/${task.taskId}/attempt-001.md`;
+    const artifactPath = join(context.root, '10_Tasks', ref);
+    const original = await readFile(artifactPath, 'utf8');
+    const corrupt = original.replace(/^summary:.*\n/m, '');
+    expect(corrupt).not.toBe(original);
+    await writeFile(artifactPath, corrupt, 'utf8');
+    context.ctx.audit.append = appendAudit;
+
+    await expect(submitArtifact(context.ctx, task.taskId, {
+      runId: task.claim?.runId ?? '',
+      result: artifactResult(),
+    })).rejects.toBeInstanceOf(ArtifactAlreadyExistsError);
+    await expect(context.ctx.tasks.get(task.taskId)).resolves.toEqual(task);
+    await expect(context.ctx.audit.listForTask(task.taskId)).resolves.toEqual([]);
+    expect(await readFile(artifactPath, 'utf8')).toBe(corrupt);
+  });
+
   it.each([
     ['request_changes', 'ready'],
     ['block', 'blocked'],
@@ -377,14 +487,15 @@ describe('artifact review loop', () => {
     expectedStatus,
   ) => {
     const context = await makeContext();
-    const ref = 'Artifacts/task-review-decision/attempt-001.md';
     const task = inProgressTask({
-      taskId: 'task-review-decision',
-      status: 'review',
-      claim: null,
-      artifactRefs: [ref],
+      taskId: `task-review-${decision}`,
     });
     await context.ctx.tasks.save(task);
+    const submitted = await submitArtifact(context.ctx, task.taskId, {
+      runId: task.claim?.runId ?? '',
+      result: artifactResult(),
+    });
+    const ref = `Artifacts/${task.taskId}/attempt-001.md`;
 
     const reviewed = await reviewTask(context.ctx, task.taskId, {
       decision,
@@ -401,6 +512,42 @@ describe('artifact review loop', () => {
       at: NOW,
       taskId: task.taskId,
       details: { decision },
+    });
+    expect(submitted.artifactRefs).toEqual([ref]);
+  });
+
+  describe.each([
+    ['empty Artifact refs', 'task-review-empty-artifacts', []],
+    [
+      'a cross-task Artifact ref',
+      'task-review-cross-artifact',
+      ['Artifacts/task-review-other/attempt-001.md'],
+    ],
+    [
+      'a missing same-task Artifact ref',
+      'task-review-missing-artifact',
+      ['Artifacts/task-review-missing-artifact/attempt-001.md'],
+    ],
+  ] as const)('rejects %s', (_label, taskId, artifactRefs) => {
+    it.each(reviewInputs)('before the $decision decision', async ({ input }) => {
+      const context = await makeContext();
+      const task = inProgressTask({
+        taskId,
+        status: 'review',
+        claim: null,
+        artifactRefs: [...artifactRefs],
+      });
+      await context.ctx.tasks.save(task);
+
+      const error = await reviewTask(context.ctx, task.taskId, input)
+        .catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(ReviewTaskArtifactInvalidError);
+      expect(error).toMatchObject({
+        code: 'task_review_artifact_invalid',
+        message: 'Task Review Artifact is invalid',
+      });
+      await expect(context.ctx.tasks.get(task.taskId)).resolves.toEqual(task);
+      await expect(context.ctx.audit.listForTask(task.taskId)).resolves.toEqual([]);
     });
   });
 
@@ -428,11 +575,12 @@ describe('artifact review loop', () => {
     const context = await makeContext();
     const task = inProgressTask({
       taskId: 'task-review-audit-failure',
-      status: 'review',
-      claim: null,
-      artifactRefs: ['Artifacts/task-review-audit-failure/attempt-001.md'],
     });
     await context.ctx.tasks.save(task);
+    const submitted = await submitArtifact(context.ctx, task.taskId, {
+      runId: task.claim?.runId ?? '',
+      result: artifactResult(),
+    });
     context.ctx.audit.append = async () => {
       throw new Error('synthetic private audit failure');
     };
@@ -440,7 +588,7 @@ describe('artifact review loop', () => {
     await expect(reviewTask(context.ctx, task.taskId, {
       decision: 'approve',
     })).rejects.toBeInstanceOf(ReviewTaskAuditFailedError);
-    await expect(context.ctx.tasks.get(task.taskId)).resolves.toEqual(task);
+    await expect(context.ctx.tasks.get(task.taskId)).resolves.toEqual(submitted);
   });
 
   it('manually stops only an In Progress task without deleting partial evidence', async () => {

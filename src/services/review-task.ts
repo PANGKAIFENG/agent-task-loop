@@ -25,6 +25,15 @@ export class ReviewTaskInvalidStateError extends Error {
   }
 }
 
+export class ReviewTaskArtifactInvalidError extends Error {
+  readonly code = 'task_review_artifact_invalid';
+
+  constructor() {
+    super('Task Review Artifact is invalid');
+    this.name = 'ReviewTaskArtifactInvalidError';
+  }
+}
+
 export class ReviewTaskAuditFailedError extends Error {
   readonly code = 'task_review_audit_failed';
 
@@ -65,6 +74,22 @@ export async function reviewTask(
     const task = await ctx.tasks.get(taskId);
     if (task.status !== 'review') {
       throw new ReviewTaskInvalidStateError();
+    }
+    const artifactRef = task.artifactRefs.at(-1);
+    const parts = artifactRef?.split('/');
+    if (
+      artifactRef === undefined
+      || parts?.length !== 3
+      || parts[0] !== 'Artifacts'
+      || parts[1] !== task.taskId
+      || !/^attempt-\d{3,}\.md$/.test(parts[2] ?? '')
+    ) {
+      throw new ReviewTaskArtifactInvalidError();
+    }
+    try {
+      await ctx.artifacts.readSummary(artifactRef);
+    } catch {
+      throw new ReviewTaskArtifactInvalidError();
     }
     const status = {
       approve: 'done',

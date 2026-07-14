@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 
 import YAML from 'yaml';
@@ -79,7 +80,41 @@ function bulletList(items: string[]): string {
     : items.map((item) => `- ${markdownText(item)}`).join('\n');
 }
 
-function renderArtifact(input: Parameters<ArtifactRepository['write']>[0]): string {
+function artifactInputDigest(
+  input: Parameters<ArtifactRepository['write']>[0],
+): string {
+  return createHash('sha256').update(JSON.stringify({
+    taskId: input.task.taskId,
+    attempt: input.task.attempts,
+    runId: input.runId,
+    agent: input.agent,
+    result: input.result,
+  })).digest('hex');
+}
+
+function hasMatchingArtifactMetadata(
+  data: Record<string, unknown>,
+  input: Parameters<ArtifactRepository['write']>[0],
+  inputDigest: string,
+): boolean {
+  return data.type === 'artifact'
+    && data.schema_version === 1
+    && data.task_id === input.task.taskId
+    && data.run_id === input.runId
+    && data.attempt === input.task.attempts
+    && data.agent === input.agent
+    && data.summary === input.result.summary
+    && data.evidence_count === input.result.evidence.length
+    && data.input_digest === inputDigest
+    && typeof data.created_at === 'string'
+    && Number.isFinite(Date.parse(data.created_at))
+    && data.updated_at === data.created_at;
+}
+
+function renderArtifact(
+  input: Parameters<ArtifactRepository['write']>[0],
+  inputDigest: string,
+): string {
   const frontmatter = YAML.stringify({
     type: 'artifact',
     schema_version: 1,
@@ -91,6 +126,7 @@ function renderArtifact(input: Parameters<ArtifactRepository['write']>[0]): stri
     updated_at: input.createdAt,
     summary: input.result.summary,
     evidence_count: input.result.evidence.length,
+    input_digest: inputDigest,
   });
   const evidence = input.result.evidence.length === 0
     ? '_None._'
@@ -193,12 +229,28 @@ export class MarkdownArtifactRepository implements ArtifactRepository {
     const filename = `attempt-${String(input.task.attempts).padStart(3, '0')}.md`;
     const absolutePath = join(directory, filename);
     const ref = `Artifacts/${input.task.taskId}/${filename}`;
+    const normalizedInput = { ...input, result: parsed.data };
+    const inputDigest = artifactInputDigest(normalizedInput);
     const created = await atomicCreateTextFile(
       absolutePath,
-      renderArtifact({ ...input, result: parsed.data }),
+      renderArtifact(normalizedInput, inputDigest),
       this.readBoundary(directory),
     );
     if (!created) {
+      const existing = await readSafeTextFile(
+        absolutePath,
+        this.readBoundary(directory),
+      );
+      if (existing !== null) {
+        try {
+          const data = parseTaskDocument(existing).data;
+          if (hasMatchingArtifactMetadata(data, normalizedInput, inputDigest)) {
+            return { ref, absolutePath };
+          }
+        } catch {
+          // A malformed create-only Artifact remains a conflict.
+        }
+      }
       throw new ArtifactAlreadyExistsError();
     }
     return { ref, absolutePath };
