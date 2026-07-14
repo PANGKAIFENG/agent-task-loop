@@ -286,6 +286,41 @@ describe('buildContextBundle', () => {
     bundle.blocks.forEach(expectValidDigest);
   });
 
+  it('redacts provider tokens after encoded and raw word-character adjacency', async () => {
+    const root = await temporaryRoot();
+    const localSource = join(root, 'adjacent-provider-tokens.md');
+    const tokens = {
+      aws: 'AKIAABCDEFGHIJKLMNOP',
+      gitlab: 'glpat-abcdefghijklmnopqrst',
+      npm: 'npm_abcdefghijklmnopqrstuvwx',
+      stripe: 'whsec_abcdefghijklmnopqrstuvwx',
+    };
+    await writeFile(localSource, `Raw local adjacency: prefix${tokens.npm}\n`);
+    const encodedReference = [
+      `https://example.com/%20${tokens.aws}/%20${tokens.gitlab}`,
+      `?npm=%20${tokens.npm}&stripe=%20${tokens.stripe}`,
+    ].join('');
+
+    const bundle = await buildContextBundle(
+      makeTask({ objective: `Raw task adjacency: prefix${tokens.aws}suffix` }),
+      makeProject({
+        resources: [
+          { kind: 'local_path', value: localSource, label: 'Adjacent tokens' },
+          { kind: 'url', value: encodedReference, label: 'Encoded tokens' },
+        ],
+      }),
+      { allowedLocalRoots: [root] },
+    );
+
+    const serialized = JSON.stringify(bundle);
+    for (const token of Object.values(tokens)) {
+      expect(serialized).not.toContain(token);
+    }
+    expect(serialized).toContain('prefix[REDACTED]');
+    expect(serialized.match(/\[REDACTED\]/g)).toHaveLength(6);
+    bundle.blocks.forEach(expectValidDigest);
+  });
+
   it.each([
     ['task source note', 'task'],
     ['project local_path resource', 'project'],
