@@ -258,6 +258,42 @@ describe('claimNextTask', () => {
       mode: 'automatic',
     })).resolves.toBe(3);
   });
+
+  it('rejects manual mode without selecting a queue task', async () => {
+    const context = await makeContext();
+    const candidate = readyTask({
+      taskId: 'task-manual-next-rejected',
+      sourceKey: 'synthetic:manual-next-rejected',
+      body: '\nSanitized body that must not appear in errors.\n',
+    });
+    await context.ctx.tasks.save(candidate);
+    const privateAgent = 'private-agent-must-not-leak';
+    const privateRunId = 'private-run-must-not-leak';
+
+    const error = await claimNextTask(context.ctx, {
+      agent: privateAgent,
+      runId: privateRunId,
+      // @ts-expect-error claimNextTask is automatic-only.
+      mode: 'manual',
+      dailyLimit: 3,
+      leaseMinutes: 15,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({
+      name: 'InvalidClaimNextTaskModeError',
+      code: 'invalid_claim_next_task_mode',
+      message: 'Invalid claim-next-task mode',
+    });
+    expect((error as Error).message).not.toContain(privateAgent);
+    expect((error as Error).message).not.toContain(privateRunId);
+    expect((error as Error).message).not.toContain(candidate.body);
+    await expect(context.ctx.tasks.get(candidate.taskId)).resolves.toEqual(candidate);
+    await expect(context.ctx.audit.count({
+      event: 'task.claimed',
+      localDate: '2026-07-14',
+    })).resolves.toBe(0);
+  });
 });
 
 describe('claimTask', () => {

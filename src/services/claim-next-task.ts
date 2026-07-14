@@ -6,14 +6,22 @@ import {
   isClaimEligible,
   localBusinessDate,
   resolveClaimTaskOptions,
-  type ClaimMode,
 } from './claim-task.js';
 import type { ServiceContext } from './service-context.js';
+
+export class InvalidClaimNextTaskModeError extends Error {
+  readonly code = 'invalid_claim_next_task_mode';
+
+  constructor() {
+    super('Invalid claim-next-task mode');
+    this.name = 'InvalidClaimNextTaskModeError';
+  }
+}
 
 export interface ClaimNextTaskOptions {
   agent: string;
   runId: string;
-  mode: ClaimMode;
+  mode: 'automatic';
   dailyLimit: number;
   leaseMinutes: number;
 }
@@ -27,6 +35,9 @@ export async function claimNextTask(
   ctx: ServiceContext,
   rawOptions: ClaimNextTaskOptions,
 ): Promise<Task | null> {
+  if (rawOptions.mode !== 'automatic') {
+    throw new InvalidClaimNextTaskModeError();
+  }
   const options = resolveClaimTaskOptions(rawOptions);
   const now = ctx.clock();
 
@@ -49,10 +60,6 @@ export async function claimNextTask(
     }
     return null;
   };
-
-  if (options.mode === 'manual') {
-    return claimFirstEligible();
-  }
 
   const localDate = localBusinessDate(now);
   return ctx.tasks.withTaskLock(automaticClaimLockKey(localDate), async () => {
