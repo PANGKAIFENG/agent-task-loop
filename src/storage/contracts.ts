@@ -30,8 +30,12 @@ export interface ArtifactRepository {
     agent: string;
     result: ArtifactResult;
     createdAt: string;
-  }): Promise<{ ref: string; absolutePath: string }>;
-  readSummary(ref: string): Promise<{ summary: string; evidenceCount: number }>;
+  }): Promise<{ ref: string; absolutePath: string; sha256: string }>;
+  readSummary(ref: string): Promise<{
+    summary: string;
+    evidenceCount: number;
+    sha256: string;
+  }>;
 }
 
 export interface ProjectRepository {

@@ -124,6 +124,24 @@ const reviewInputs: Array<{
   },
 ];
 
+const submittedArtifactTamperCases = [
+  {
+    id: 'body',
+    label: 'Findings body',
+    tamper: (raw: string) => raw.replace(
+      '- Free tier exists.',
+      '- Tampered after submission.',
+    ),
+  },
+  {
+    id: 'timestamps',
+    label: 'timestamps',
+    tamper: (raw: string) => raw
+      .replace(`created_at: ${NOW}`, 'created_at: 2026-07-14T02:00:00.000Z')
+      .replace(`updated_at: ${NOW}`, 'updated_at: 2026-07-14T02:00:00.000Z'),
+  },
+];
+
 afterEach(async () => {
   await Promise.all(contexts.splice(0).map(({ cleanup }) => cleanup()));
 });
@@ -167,16 +185,21 @@ describe('artifact review loop', () => {
     }
     expect(markdown).toContain('Official pricing \\| public');
     expect(markdown).toContain('Use official \\| public evidence.');
-    await expect(context.ctx.artifacts.readSummary(ref)).resolves.toEqual({
+    await expect(context.ctx.artifacts.readSummary(ref)).resolves.toMatchObject({
       summary: 'Public pricing evidence was reviewed.',
       evidenceCount: 1,
+      sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
     expect(await context.ctx.audit.listForTask(task.taskId)).toContainEqual({
       event: 'artifact.submitted',
       at: NOW,
       taskId: task.taskId,
       runId: 'run-artifact-001',
-      details: { artifactRef: ref, attempt: 1 },
+      details: {
+        artifactRef: ref,
+        attempt: 1,
+        artifactSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      },
     });
 
     const approved = await reviewTask(context.ctx, task.taskId, {
@@ -380,7 +403,7 @@ describe('artifact review loop', () => {
       recoveryRequired: true,
     });
     await expect(context.ctx.tasks.get(task.taskId)).resolves.toEqual(task);
-    await expect(context.ctx.artifacts.readSummary(ref)).resolves.toEqual({
+    await expect(context.ctx.artifacts.readSummary(ref)).resolves.toMatchObject({
       summary: artifactResult().summary,
       evidenceCount: 1,
     });
@@ -388,7 +411,7 @@ describe('artifact review loop', () => {
       runId: task.claim?.runId ?? '',
       result: artifactResult({ summary: 'Must not overwrite the orphan.' }),
     })).rejects.toBeInstanceOf(ArtifactAlreadyExistsError);
-    expect(await context.ctx.artifacts.readSummary(ref)).toEqual({
+    expect(await context.ctx.artifacts.readSummary(ref)).toMatchObject({
       summary: artifactResult().summary,
       evidenceCount: 1,
     });
@@ -443,7 +466,11 @@ describe('artifact review loop', () => {
       at: '2026-07-14T01:00:00.000Z',
       taskId: task.taskId,
       runId: task.claim?.runId,
-      details: { artifactRef: ref, attempt: 1 },
+      details: {
+        artifactRef: ref,
+        attempt: 1,
+        artifactSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      },
     }]);
   });
 
@@ -626,6 +653,78 @@ describe('artifact review loop', () => {
         .filter(({ event }) => event === 'task.reviewed');
       expect(reviewEvents).toEqual([]);
     });
+  });
+
+  describe.each(submittedArtifactTamperCases)(
+    'rejects submitted Artifact $label tampering',
+    ({ id, tamper }) => {
+      it.each(reviewInputs)('before the $decision decision', async ({
+        decision,
+        input,
+      }) => {
+        const context = await makeContext();
+        const task = inProgressTask({
+          taskId: `task-review-audit-anchor-${id}-${decision}`,
+        });
+        await context.ctx.tasks.save(task);
+        const submitted = await submitArtifact(context.ctx, task.taskId, {
+          runId: task.claim?.runId ?? '',
+          result: artifactResult(),
+        });
+        const ref = submitted.artifactRefs.at(-1) ?? '';
+        const artifactPath = join(context.root, '10_Tasks', ref);
+        const original = await readFile(artifactPath, 'utf8');
+        const tampered = tamper(original);
+        expect(tampered).not.toBe(original);
+        await writeFile(artifactPath, tampered, 'utf8');
+
+        await expect(reviewTask(context.ctx, task.taskId, input))
+          .rejects.toBeInstanceOf(ReviewTaskArtifactInvalidError);
+        await expect(context.ctx.tasks.get(task.taskId)).resolves.toEqual(submitted);
+        const reviewEvents = (await context.ctx.audit.listForTask(task.taskId))
+          .filter(({ event }) => event === 'task.reviewed');
+        expect(reviewEvents).toEqual([]);
+      });
+    },
+  );
+
+  it.each([
+    ['missing', null],
+    ['incorrect', '0'.repeat(64)],
+  ] as const)('rejects a submitted Artifact with %s audit digest', async (
+    _label,
+    auditSha256,
+  ) => {
+    const context = await makeContext();
+    const task = inProgressTask({ taskId: `task-review-audit-${_label}` });
+    await context.ctx.tasks.save(task);
+    const appendAudit = context.ctx.audit.append.bind(context.ctx.audit);
+    context.ctx.audit.append = async (event) => {
+      if (event.event !== 'artifact.submitted') {
+        await appendAudit(event);
+        return;
+      }
+      await appendAudit({
+        ...event,
+        details: {
+          artifactRef: event.details?.artifactRef ?? '',
+          attempt: event.details?.attempt ?? 0,
+          ...(auditSha256 === null ? {} : { artifactSha256: auditSha256 }),
+        },
+      });
+    };
+    const submitted = await submitArtifact(context.ctx, task.taskId, {
+      runId: task.claim?.runId ?? '',
+      result: artifactResult(),
+    });
+    context.ctx.audit.append = appendAudit;
+
+    await expect(reviewTask(context.ctx, task.taskId, { decision: 'approve' }))
+      .rejects.toBeInstanceOf(ReviewTaskArtifactInvalidError);
+    await expect(context.ctx.tasks.get(task.taskId)).resolves.toEqual(submitted);
+    const reviewEvents = (await context.ctx.audit.listForTask(task.taskId))
+      .filter(({ event }) => event === 'task.reviewed');
+    expect(reviewEvents).toEqual([]);
   });
 
   it.each(['request_changes', 'block', 'cancel'] as const)(

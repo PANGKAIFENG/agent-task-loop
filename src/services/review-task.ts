@@ -87,7 +87,15 @@ export async function reviewTask(
       throw new ReviewTaskArtifactInvalidError();
     }
     try {
-      await ctx.artifacts.readSummary(artifactRef);
+      const artifact = await ctx.artifacts.readSummary(artifactRef);
+      const submission = (await ctx.audit.listForTask(taskId))
+        .findLast((event) => (
+          event.event === 'artifact.submitted'
+          && event.details?.artifactRef === artifactRef
+        ));
+      if (submission?.details?.artifactSha256 !== artifact.sha256) {
+        throw new ReviewTaskArtifactInvalidError();
+      }
     } catch {
       throw new ReviewTaskArtifactInvalidError();
     }

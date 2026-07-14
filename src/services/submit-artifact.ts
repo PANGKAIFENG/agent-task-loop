@@ -98,7 +98,11 @@ export async function submitArtifact(
         at: timestamp,
         taskId: task.taskId,
         runId: input.runId,
-        details: { artifactRef: artifact.ref, attempt: task.attempts },
+        details: {
+          artifactRef: artifact.ref,
+          attempt: task.attempts,
+          artifactSha256: artifact.sha256,
+        },
       });
     } catch {
       try {

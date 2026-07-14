@@ -93,6 +93,10 @@ function artifactInputDigest(
   })).digest('hex');
 }
 
+function fileSha256(content: string): string {
+  return createHash('sha256').update(content).digest('hex');
+}
+
 function renderArtifact(
   input: Parameters<ArtifactRepository['write']>[0],
   inputDigest: string,
@@ -200,7 +204,7 @@ export class MarkdownArtifactRepository implements ArtifactRepository {
 
   async write(
     input: Parameters<ArtifactRepository['write']>[0],
-  ): Promise<{ ref: string; absolutePath: string }> {
+  ): ReturnType<ArtifactRepository['write']> {
     assertVaultWriteAllowed(this.root);
     const parsed = artifactResultSchema.safeParse(input.result);
     if (
@@ -220,9 +224,10 @@ export class MarkdownArtifactRepository implements ArtifactRepository {
     const ref = `Artifacts/${input.task.taskId}/${filename}`;
     const normalizedInput = { ...input, result: parsed.data };
     const inputDigest = artifactInputDigest(normalizedInput);
+    const content = renderArtifact(normalizedInput, inputDigest);
     const created = await atomicCreateTextFile(
       absolutePath,
-      renderArtifact(normalizedInput, inputDigest),
+      content,
       this.readBoundary(directory),
     );
     if (!created) {
@@ -245,7 +250,7 @@ export class MarkdownArtifactRepository implements ArtifactRepository {
               expectedInput,
               artifactInputDigest(expectedInput),
             )) {
-              return { ref, absolutePath };
+              return { ref, absolutePath, sha256: fileSha256(existing) };
             }
           }
         } catch {
@@ -254,10 +259,10 @@ export class MarkdownArtifactRepository implements ArtifactRepository {
       }
       throw new ArtifactAlreadyExistsError();
     }
-    return { ref, absolutePath };
+    return { ref, absolutePath, sha256: fileSha256(content) };
   }
 
-  async readSummary(ref: string): Promise<{ summary: string; evidenceCount: number }> {
+  async readSummary(ref: string): ReturnType<ArtifactRepository['readSummary']> {
     const parts = artifactRefParts(ref);
     if (parts === null) {
       throw new InvalidArtifactReferenceError();
@@ -283,7 +288,11 @@ export class MarkdownArtifactRepository implements ArtifactRepository {
     ) {
       throw new InvalidArtifactReferenceError();
     }
-    return { summary: data.summary, evidenceCount: data.evidence_count };
+    return {
+      summary: data.summary,
+      evidenceCount: data.evidence_count,
+      sha256: fileSha256(raw),
+    };
   }
 
   private readBoundary(directory: string): StorageReadBoundary {
