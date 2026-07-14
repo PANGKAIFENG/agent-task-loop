@@ -273,7 +273,9 @@ function mapClaim(value: unknown): Task['claim'] {
   };
 }
 
-function taskFromRecord(record: Pick<TaskRecord, 'path' | 'data' | 'body'>): Task {
+export function taskFromDocument(
+  record: Pick<TaskRecord, 'path' | 'data' | 'body'>,
+): Task {
   const data = record.data;
   const reviewState = legacyEnum(data, 'review_state', [
     'candidate',
@@ -683,7 +685,7 @@ export class MarkdownTaskRepository implements TaskRepository {
       return null;
     }
     const document = parseTaskDocument(raw);
-    const task = taskFromRecord({ path, ...document });
+    const task = taskFromDocument({ path, ...document });
     return {
       task,
       record: {
