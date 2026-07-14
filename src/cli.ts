@@ -2,7 +2,7 @@
 
 import { readFile } from 'node:fs/promises';
 
-import { Command } from 'commander';
+import { Command, CommanderError } from 'commander';
 
 import { loadConfig, assertWriteEnabled, type AtlConfig } from './config.js';
 import { TASK_STATUSES, type TaskStatus } from './domain/task.js';
@@ -142,6 +142,8 @@ function reviewInput(options: {
 
 function buildProgram(): Command {
   const program = new Command()
+    .exitOverride()
+    .configureOutput({ writeErr: () => undefined })
     .name('atl')
     .description('Agent Task Loop CLI')
     .version(ATL_VERSION);
@@ -405,6 +407,12 @@ function buildProgram(): Command {
 }
 
 function errorDetails(error: unknown): { code: string; message: string } {
+  if (error instanceof CommanderError) {
+    return {
+      code: 'invalid_cli_input',
+      message: error.message.replace(/^error:\s*/, ''),
+    };
+  }
   if (error instanceof Error) {
     const code = 'code' in error && typeof error.code === 'string'
       ? error.code
@@ -421,11 +429,15 @@ export async function main(argv = process.argv): Promise<void> {
 try {
   await main();
 } catch (error) {
-  const details = errorDetails(error);
-  if (process.argv.includes('--json')) {
-    process.stdout.write(`${JSON.stringify({ ok: false, error: details })}\n`);
+  if (error instanceof CommanderError && error.exitCode === 0) {
+    process.exitCode = 0;
   } else {
-    process.stderr.write(`Error: ${details.message}\n`);
+    const details = errorDetails(error);
+    if (process.argv.includes('--json')) {
+      process.stdout.write(`${JSON.stringify({ ok: false, error: details })}\n`);
+    } else {
+      process.stderr.write(`Error: ${details.message}\n`);
+    }
+    process.exitCode = 1;
   }
-  process.exitCode = 1;
 }

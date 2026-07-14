@@ -44,6 +44,22 @@ async function runCli(
   };
 }
 
+async function runReadmeShell(root: string, script: string): Promise<CliResult> {
+  const result = await execa('bash', ['-c', script], {
+    cwd: repositoryRoot,
+    env: {
+      ATL_VAULT_ROOT: root,
+      ATL_ALLOW_REAL_WRITES: undefined,
+    },
+    reject: false,
+  });
+  return {
+    stdout: result.stdout,
+    stderr: result.stderr,
+    exitCode: result.exitCode ?? 1,
+  };
+}
+
 function json<T>(result: CliResult): T {
   expect(result.exitCode, result.stderr).toBe(0);
   expect(() => JSON.parse(result.stdout)).not.toThrow();
@@ -114,6 +130,59 @@ afterEach(async () => {
 });
 
 describe('atl CLI core loop', () => {
+  it('keeps the README task capture pipeline machine-readable', async () => {
+    const root = await makeVault();
+    const readme = await readFile(join(repositoryRoot, 'README.md'), 'utf8');
+    expect(readme).toContain('TASK_ID="$(pnpm --silent atl task capture');
+
+    const result = await runReadmeShell(root, `
+      TASK_ID="$(pnpm --silent atl task capture \\
+        --title "Review public pricing" \\
+        --body "Compare the public pricing page." \\
+        --origin manual_cli \\
+        --source-date 2026-07-15 \\
+        --source-key manual:readme:pipeline \\
+        --priority high \\
+        --json | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).taskId")"
+      printf '%s\\n' "$TASK_ID"
+      pnpm --silent atl task list --status inbox --json
+    `);
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stderr).toBe('');
+    const lines = result.stdout.split('\n');
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatch(/^task-\d{8}-[a-z0-9]{8}$/);
+    const inbox = JSON.parse(lines[1] ?? '') as Task[];
+    expect(inbox).toHaveLength(1);
+    expect(inbox[0]?.taskId).toBe(lines[0]);
+  });
+
+  it.each([
+    ['unknown option', ['task', 'list', '--unknown', '--json']],
+    ['missing option argument', ['task', 'list', '--status', '--json']],
+  ])('normalizes the %s parser error in JSON mode', async (_label, args) => {
+    const root = await makeVault();
+    const result = await runCli(root, args);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toBe('');
+    expect(result.stdout.split('\n')).toHaveLength(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: false,
+      error: { code: 'invalid_cli_input' },
+    });
+  });
+
+  it('prints a concise parser error in human mode', async () => {
+    const root = await makeVault();
+    const result = await runCli(root, ['task', 'list', '--unknown']);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toBe("Error: unknown option '--unknown'");
+  });
+
   it('runs capture, confirmation, supervised claim, submission and approval to Archive', async () => {
     const root = await makeVault();
     await createProject(root);

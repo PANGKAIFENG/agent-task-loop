@@ -25,7 +25,7 @@ pnpm atl project create \
   --name "Public research" \
   --description "Research only public sources."
 
-TASK_ID="$(pnpm atl task capture \
+TASK_ID="$(pnpm --silent atl task capture \
   --title "Review public pricing" \
   --body "Compare the public pricing page." \
   --origin manual_cli \
@@ -34,7 +34,7 @@ TASK_ID="$(pnpm atl task capture \
   --priority high \
   --json | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).taskId")"
 
-pnpm atl task list --status inbox --json
+pnpm --silent atl task list --status inbox --json
 
 pnpm atl task confirm \
   --task-id "$TASK_ID" \
@@ -44,7 +44,7 @@ pnpm atl task confirm \
   --priority high \
   --auto-executable
 
-pnpm atl task next --json
+pnpm --silent atl task next --json
 
 pnpm atl task next \
   --claim \
@@ -81,7 +81,7 @@ pnpm atl task submit \
   --result "$ATL_VAULT_ROOT/result.json"
 
 pnpm atl task review --task-id "$TASK_ID" --approve
-pnpm atl doctor --json
+pnpm --silent atl doctor --json
 find "$ATL_VAULT_ROOT/10_Tasks/Archive" -name "$TASK_ID.md"
 find "$ATL_VAULT_ROOT/10_Tasks/Artifacts/$TASK_ID" -name 'attempt-*.md'
 ```
@@ -107,7 +107,7 @@ pnpm atl task reopen --task-id "$TASK_ID" --feedback "More work is required."
 > ```bash
 > export ATL_VAULT_ROOT="/Users/linctex/Documents/ClawVault"
 > export ATL_ALLOW_REAL_WRITES=1
-> pnpm atl task list --status inbox --json
+> pnpm --silent atl task list --status inbox --json
 > # Run a mutating command only after reviewing its arguments.
 > ```
 
