@@ -86,6 +86,19 @@ function sameIdentity(
   return left.dev === right.dev && left.ino === right.ino;
 }
 
+function canReclaim(
+  record: LockRecord,
+  now: Date,
+  isPidAlive: (pid: number) => boolean,
+): boolean {
+  const age = now.getTime() - Date.parse(record.startedAt);
+  return !(
+    age <= RUNNER_LOCK_STALE_MS
+    || age < 0
+    || isPidAlive(record.pid)
+  );
+}
+
 async function readLock(path: string): Promise<{
   record: LockRecord;
   identity: FileIdentity;
@@ -222,21 +235,30 @@ export async function acquireProcessLock(
   if (existing === null) {
     return null;
   }
-  const age = now.getTime() - Date.parse(existing.record.startedAt);
   const isPidAlive = options.isPidAlive ?? defaultIsPidAlive;
-  if (
-    age <= RUNNER_LOCK_STALE_MS
-    || age < 0
-    || isPidAlive(existing.record.pid)
-  ) {
+  if (!canReclaim(existing.record, now, isPidAlive)) {
     return null;
   }
-  if (!(await removeIfOwned(
-    path,
-    existing.identity,
-    existing.record.token,
-  ))) {
+
+  const reclaimGuard = await createLock(`${path}.reclaim`, record);
+  if (reclaimGuard === null) {
     return null;
   }
-  return createLock(path, record);
+  try {
+    const guardedExisting = await readLock(path);
+    if (
+      guardedExisting === null
+      || !canReclaim(guardedExisting.record, now, isPidAlive)
+      || !(await removeIfOwned(
+        path,
+        guardedExisting.identity,
+        guardedExisting.record.token,
+      ))
+    ) {
+      return null;
+    }
+    return createLock(path, record);
+  } finally {
+    await reclaimGuard.release();
+  }
 }

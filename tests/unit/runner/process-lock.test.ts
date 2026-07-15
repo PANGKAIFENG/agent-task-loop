@@ -8,7 +8,97 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const staleReclaimRace = vi.hoisted(() => {
+  let targetPath: string | null = null;
+  let removeArrivals = 0;
+  let reclaimArrivals = 0;
+  let staleRemoved = false;
+  let releaseFirstRemove: (() => void) | null = null;
+  let releaseFirstReclaim: (() => void) | null = null;
+  let releaseSecondRemove: (() => void) | null = null;
+  let firstRemoveReady = Promise.resolve();
+  let firstReclaimReady = Promise.resolve();
+  let replacementReady = Promise.resolve();
+
+  return {
+    enable(path: string) {
+      targetPath = path;
+      removeArrivals = 0;
+      reclaimArrivals = 0;
+      staleRemoved = false;
+      firstRemoveReady = new Promise((resolve) => {
+        releaseFirstRemove = resolve;
+      });
+      firstReclaimReady = new Promise((resolve) => {
+        releaseFirstReclaim = resolve;
+      });
+      replacementReady = new Promise((resolve) => {
+        releaseSecondRemove = resolve;
+      });
+    },
+    disable() {
+      targetPath = null;
+      releaseFirstRemove?.();
+      releaseFirstReclaim?.();
+      releaseSecondRemove?.();
+    },
+    async opening(path: unknown) {
+      if (typeof path !== 'string' || path !== `${targetPath}.reclaim`) {
+        return;
+      }
+      reclaimArrivals += 1;
+      if (reclaimArrivals === 1) {
+        await firstReclaimReady;
+        return;
+      }
+      if (reclaimArrivals === 2) {
+        releaseFirstReclaim?.();
+        releaseFirstRemove?.();
+      }
+    },
+    async remove(path: unknown, operation: () => Promise<void>) {
+      if (path !== targetPath) {
+        return operation();
+      }
+      removeArrivals += 1;
+      const arrival = removeArrivals;
+      if (arrival === 1) {
+        await firstRemoveReady;
+        await operation();
+        staleRemoved = true;
+        return;
+      }
+      if (arrival === 2) {
+        releaseFirstRemove?.();
+        await replacementReady;
+      }
+      await operation();
+    },
+    opened(path: unknown) {
+      if (path === targetPath && staleRemoved) {
+        releaseSecondRemove?.();
+      }
+    },
+  };
+});
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    async open(...args: Parameters<typeof actual.open>) {
+      await staleReclaimRace.opening(args[0]);
+      const handle = await actual.open(...args);
+      staleReclaimRace.opened(args[0]);
+      return handle;
+    },
+    async rm(...args: Parameters<typeof actual.rm>) {
+      return staleReclaimRace.remove(args[0], () => actual.rm(...args));
+    },
+  };
+});
 
 import { acquireProcessLock } from '../../../src/runner/process-lock.js';
 
@@ -86,6 +176,37 @@ describe('acquireProcessLock', () => {
     });
     await handle?.release();
     await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('allows only one cooperative reclaimer to replace a stale lock', async () => {
+    const root = await runtimeRoot();
+    const path = await seedLock(root, {
+      pid: 10,
+      startedAt: '2026-07-15T00:24:59.999Z',
+      token: 'stale-token',
+    });
+    staleReclaimRace.enable(path);
+
+    const handles = await Promise.all([
+      acquireProcessLock({
+        runtimeRoot: root,
+        clock: () => NOW,
+        pid: 98,
+        isPidAlive: () => false,
+        token: () => 'first-token',
+      }),
+      acquireProcessLock({
+        runtimeRoot: root,
+        clock: () => NOW,
+        pid: 99,
+        isPidAlive: () => false,
+        token: () => 'second-token',
+      }),
+    ]);
+    staleReclaimRace.disable();
+
+    expect(handles.filter((handle) => handle !== null)).toHaveLength(1);
+    await Promise.all(handles.map((handle) => handle?.release()));
   });
 
   it('does not remove a replacement lock during release', async () => {
