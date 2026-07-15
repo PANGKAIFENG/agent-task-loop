@@ -62,4 +62,5 @@ export interface AuditLog {
     mode?: 'automatic' | 'manual';
   }): Promise<number>;
   listForTask(taskId: string): Promise<AuditEvent[]>;
+  latest(query: { events: readonly string[] }): Promise<AuditEvent | null>;
 }

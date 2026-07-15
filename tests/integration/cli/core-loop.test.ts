@@ -1,4 +1,12 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -130,6 +138,50 @@ afterEach(async () => {
 });
 
 describe('atl CLI core loop', () => {
+  it('exposes bounded runner commands and keeps status read-only', async () => {
+    const root = await makeVault();
+    const help = await runCli(root, ['runner', '--help']);
+    expect(help.exitCode, help.stderr).toBe(0);
+    expect(help.stdout).toContain('run-once');
+    expect(help.stdout).toContain('run-task');
+    expect(help.stdout).toContain('status');
+
+    for (const args of [
+      ['runner', 'run-once', '--driver', 'synthetic', '--json'],
+      [
+        'runner', 'run-task', '--task-id', 'task-synthetic',
+        '--driver', 'synthetic', '--json',
+      ],
+    ]) {
+      const unsupported = await runCli(root, args);
+      expect(unsupported.exitCode).toBe(1);
+      expect(JSON.parse(unsupported.stdout)).toMatchObject({
+        ok: false,
+        error: {
+          code: 'invalid_cli_input',
+          message: '--driver must be claude',
+        },
+      });
+    }
+
+    const before = await readdir(root);
+    const status = json<{
+      latestRun: null;
+      automaticClaimsToday: number;
+      dailyLimit: number;
+      blockedTasks: Task[];
+      nextEligibleTask: Task | null;
+    }>(await runCli(root, ['runner', 'status', '--json']));
+    expect(status).toEqual({
+      latestRun: null,
+      automaticClaimsToday: 0,
+      dailyLimit: 3,
+      blockedTasks: [],
+      nextEligibleTask: null,
+    });
+    expect(await readdir(root)).toEqual(before);
+  });
+
   it('keeps the README task capture pipeline machine-readable', async () => {
     const root = await makeVault();
     const readme = await readFile(join(repositoryRoot, 'README.md'), 'utf8');

@@ -272,6 +272,26 @@ export class FileAuditLog implements AuditLog {
       ));
   }
 
+  async latest(query: { events: readonly string[] }): Promise<AuditEvent | null> {
+    const selected = new Set(query.events);
+    if (selected.size === 0 || [...selected].some((event) => event === '')) {
+      throw new InvalidAuditEventError();
+    }
+    const boundary = this.readBoundary();
+    const paths = await listSafeRegularFiles(boundary, '*.jsonl');
+    const events = (await Promise.all(
+      paths.map((path) => readAuditFile(path, boundary)),
+    )).flat();
+    return events
+      .map((event, index) => ({ event, index }))
+      .filter(({ event }) => selected.has(event.event))
+      .sort((left, right) => (
+        Date.parse(right.event.at) - Date.parse(left.event.at)
+        || right.event.at.localeCompare(left.event.at)
+        || right.index - left.index
+      ))[0]?.event ?? null;
+  }
+
   private readBoundary(): StorageReadBoundary {
     return {
       vaultRoot: this.root,

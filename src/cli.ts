@@ -1,11 +1,20 @@
 #!/usr/bin/env node
 
 import { readFile } from 'node:fs/promises';
+import { delimiter, isAbsolute, join } from 'node:path';
 
 import { Command, CommanderError } from 'commander';
 
 import { loadConfig, assertWriteEnabled, type AtlConfig } from './config.js';
 import { TASK_STATUSES, type TaskStatus } from './domain/task.js';
+import {
+  CLAUDE_RESEARCH_TIMEOUT_MS,
+  createClaudeResearchDriver,
+} from './runner/claude-driver.js';
+import {
+  createRunnerController,
+  getRunnerStatus,
+} from './runner/runner-controller.js';
 import { captureTask } from './services/capture-task.js';
 import { claimTask } from './services/claim-task.js';
 import { confirmTask } from './services/confirm-task.js';
@@ -63,6 +72,39 @@ function contextForWrite(): { config: AtlConfig; ctx: ServiceContext } {
 function contextForRead(): { config: AtlConfig; ctx: ServiceContext } {
   const config = loadConfig();
   return { config, ctx: createContext(config) };
+}
+
+function allowedLocalRoots(
+  environment: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const configured = environment.ATL_ALLOWED_LOCAL_ROOTS;
+  if (configured === undefined || configured.trim() === '') {
+    return [];
+  }
+  const roots = configured.split(delimiter).filter((root) => root !== '');
+  if (roots.length === 0 || roots.some((root) => !isAbsolute(root))) {
+    throw new CliUsageError('ATL_ALLOWED_LOCAL_ROOTS must contain absolute paths');
+  }
+  return roots;
+}
+
+async function runnerController(driverName: string) {
+  if (driverName !== 'claude') {
+    throw new CliUsageError('--driver must be claude');
+  }
+  const { config, ctx } = contextForWrite();
+  const driver = await createClaudeResearchDriver();
+  return createRunnerController({
+    ctx,
+    driver,
+    runtimeRoot: join(process.cwd(), '.atl-runtime'),
+    allowedLocalRoots: allowedLocalRoots(),
+    dailyLimit: config.dailyLimit,
+    leaseMinutes: config.leaseMinutes,
+    timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
+    agent: driver.name,
+    runId: () => `run-${createTaskId()}`,
+  });
 }
 
 function humanLine(value: unknown): string {
@@ -388,6 +430,43 @@ function buildProgram(): Command {
       const { ctx } = contextForWrite();
       output(await reopenTask(ctx, required(options.taskId, '--task-id'), {
         reason: required(options.feedback, '--feedback'),
+      }), options);
+    });
+
+  const runner = program.command('runner');
+  runner
+    .command('run-once')
+    .requiredOption('--driver <driver>')
+    .option('--json')
+    .action(async (options: { driver: string; json?: boolean }) => {
+      const controller = await runnerController(options.driver);
+      output(await controller.runAndWait({ mode: 'automatic' }), options);
+    });
+
+  runner
+    .command('run-task')
+    .requiredOption('--task-id <id>')
+    .requiredOption('--driver <driver>')
+    .option('--json')
+    .action(async (options: {
+      taskId: string;
+      driver: string;
+      json?: boolean;
+    }) => {
+      const controller = await runnerController(options.driver);
+      output(await controller.runAndWait({
+        mode: 'manual',
+        taskId: required(options.taskId, '--task-id'),
+      }), options);
+    });
+
+  runner
+    .command('status')
+    .option('--json')
+    .action(async (options: { json?: boolean }) => {
+      const { config, ctx } = contextForRead();
+      output(await getRunnerStatus(ctx, {
+        dailyLimit: config.dailyLimit,
       }), options);
     });
 
