@@ -10,6 +10,7 @@ import {
 } from '../storage/file-io.js';
 import { parseTaskDocument } from '../storage/frontmatter.js';
 import {
+  isTaskMarkdownPath,
   lifecycleDirectory,
   taskStorageRoot,
 } from '../storage/task-paths.js';
@@ -50,8 +51,8 @@ function decodeIndexPath(value: string): string | null {
 
 function indexLinks(raw: string): Set<string> {
   const links = new Set<string>();
-  for (const match of raw.matchAll(/\]\(<([^>]+)>\)/g)) {
-    const decoded = decodeIndexPath(match[1] ?? '');
+  for (const match of raw.matchAll(/\]\((?:<([^>]+)>|([^)]+))\)/g)) {
+    const decoded = decodeIndexPath(match[1] ?? match[2] ?? '');
     if (decoded !== null) {
       links.add(decoded);
     }
@@ -118,8 +119,23 @@ export async function validateStorage(root: string): Promise<StorageValidationRe
     if (raw === null) {
       continue;
     }
+    let document;
     try {
-      const document = parseTaskDocument(raw);
+      document = parseTaskDocument(raw);
+    } catch {
+      if (isTaskMarkdownPath(path)) {
+        issues.push({
+          code: 'invalid_frontmatter',
+          path,
+          message: 'Task Markdown frontmatter is invalid',
+        });
+      }
+      continue;
+    }
+    if (!isTaskMarkdownPath(path) && document.data.type !== 'task') {
+      continue;
+    }
+    try {
       const task = taskFromDocument({ path, ...document });
       const expectedPath = join(
         lifecycleDirectory(tasksRoot, task),
@@ -129,7 +145,7 @@ export async function validateStorage(root: string): Promise<StorageValidationRe
       const duplicatePaths = pathsByTaskId.get(task.taskId) ?? [];
       duplicatePaths.push(path);
       pathsByTaskId.set(task.taskId, duplicatePaths);
-      if (resolve(path) !== resolve(expectedPath)) {
+      if (resolve(dirname(path)) !== resolve(dirname(expectedPath))) {
         issues.push({
           code: 'path_status_mismatch',
           path,

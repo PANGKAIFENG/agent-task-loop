@@ -77,6 +77,8 @@ export interface RenderedLaunchAgent {
     ATL_ALLOW_REAL_WRITES: '1';
     ATL_AGENT_DRIVER: 'claude';
     ATL_CLAUDE_BIN: string;
+    ATL_CLAUDE_CONFIG_DIR: string;
+    ATL_CLAUDE_MODEL: string;
     ATL_ALLOWED_LOCAL_ROOTS: string;
     ATL_DAILY_LIMIT: string;
     HOME: string;
@@ -277,6 +279,13 @@ function positiveInteger(value: string | undefined): string {
   return candidate;
 }
 
+function modelName(value: string | undefined): string {
+  if (value === undefined || !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(value)) {
+    throw new LaunchAgentError('ATL_CLAUDE_MODEL must be a valid model name');
+  }
+  return value;
+}
+
 function plistArray(values: readonly string[], indent: string): string[] {
   return [
     `${indent}<array>`,
@@ -365,6 +374,10 @@ export async function renderLaunchAgent(
     'ATL_CLAUDE_BIN',
     true,
   );
+  const claudeConfigDirectory = await existingDirectory(
+    environment.ATL_CLAUDE_CONFIG_DIR ?? '',
+    'ATL_CLAUDE_CONFIG_DIR',
+  );
   const stateDirectory = join(
     homeDirectory,
     '.local',
@@ -386,6 +399,8 @@ export async function renderLaunchAgent(
       ATL_ALLOW_REAL_WRITES: '1',
       ATL_AGENT_DRIVER: 'claude',
       ATL_CLAUDE_BIN: claudeBinary,
+      ATL_CLAUDE_CONFIG_DIR: claudeConfigDirectory,
+      ATL_CLAUDE_MODEL: modelName(environment.ATL_CLAUDE_MODEL),
       ATL_ALLOWED_LOCAL_ROOTS: await allowedLocalRoots(
         environment.ATL_ALLOWED_LOCAL_ROOTS,
       ),

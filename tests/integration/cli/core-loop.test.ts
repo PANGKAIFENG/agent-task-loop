@@ -509,6 +509,58 @@ describe('atl CLI core loop', () => {
 });
 
 describe('atl doctor', () => {
+  it('accepts legacy slug filenames, plain index links, and lifecycle notes', async () => {
+    const root = await makeVault('atl-doctor-legacy-');
+    const tasksRoot = join(root, '10_Tasks');
+    const taskPath = join(
+      tasksRoot,
+      'Inbox',
+      '2026-07-15',
+      'task-20260715-readable-title-deadbeef.md',
+    );
+    await mkdir(dirname(taskPath), { recursive: true });
+    await Promise.all([
+      writeFile(taskPath, `---\n${[
+        'type: task',
+        'schema_version: 1',
+        'task_id: task-20260715-deadbeef',
+        'title: Legacy generated task',
+        'status: inbox',
+        'review_state: candidate',
+        'task_type: research',
+        'objective: Synthetic objective.',
+        'acceptance_criteria: [Synthetic criterion.]',
+        'auto_executable: false',
+        'origin: synthetic_legacy',
+        'source_date: 2026-07-15',
+        'source_key: synthetic:legacy',
+        'priority: normal',
+        'attempts: 0',
+        'artifact_refs: []',
+        'created_at: 2026-07-15T00:00:00.000Z',
+        'updated_at: 2026-07-15T00:00:00.000Z',
+      ].join('\n')}\n---\n\nSynthetic body.\n`),
+      ...['Inbox', 'Active', 'Archive'].map(async (directory) => {
+        const path = join(tasksRoot, directory, '目录说明.md');
+        await mkdir(dirname(path), { recursive: true });
+        await writeFile(path, `# ${directory}\n`, 'utf8');
+      }),
+      writeFile(join(tasksRoot, '任务索引.md'), [
+        '# 任务索引',
+        '',
+        `| Legacy generated task | [task](${taskPath}) |`,
+        '',
+      ].join('\n')),
+    ]);
+
+    const listResult = await runCli(root, ['task', 'list', '--json']);
+    expect(json<Task[]>(listResult).map(({ taskId }) => taskId))
+      .toEqual(['task-20260715-deadbeef']);
+    expect(json<{ ok: boolean; issues: unknown[] }>(
+      await runCli(root, ['doctor', '--json']),
+    )).toEqual({ ok: true, issues: [] });
+  });
+
   it('reports all read-only storage issues with expected lifecycle repair paths', async () => {
     const root = await makeVault('atl-doctor-');
     const tasksRoot = join(root, '10_Tasks');

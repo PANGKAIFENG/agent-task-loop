@@ -22,6 +22,8 @@ import { researchResultJsonSchema } from '../../../src/runner/result-contract.js
 const NOW = '2026-07-15T00:00:00.000Z';
 const CLAUDE_BIN = '/opt/testing/bin/claude';
 const RUN_DIRECTORY = '/tmp/atl-claude-test/run-001';
+const CLAUDE_CONFIG_DIR = '/Users/synthetic/.claude-atl';
+const CLAUDE_MODEL = 'glm-4-flash';
 const REQUIRED_HELP = [
   '--print',
   '--safe-mode',
@@ -599,6 +601,8 @@ describe('ClaudeResearchDriver.execute', () => {
       ANTHROPIC_API_KEY: 'synthetic-api-key',
       ANTHROPIC_AUTH_TOKEN: 'synthetic-auth-token',
       ANTHROPIC_BASE_URL: 'https://api.example.com',
+      ATL_CLAUDE_CONFIG_DIR: CLAUDE_CONFIG_DIR,
+      ATL_CLAUDE_MODEL: CLAUDE_MODEL,
       HOME: '/Users/synthetic',
       PATH: '/untrusted/launchd/path',
     };
@@ -632,9 +636,14 @@ describe('ClaudeResearchDriver.execute', () => {
       '--output-format',
       'json',
       '--json-schema',
-      JSON.stringify(researchResultJsonSchema),
+      JSON.stringify(Object.fromEntries(
+        Object.entries(researchResultJsonSchema)
+          .filter(([key]) => key !== '$schema'),
+      )),
       '--max-budget-usd',
       '2',
+      '--model',
+      CLAUDE_MODEL,
     ]);
     expect(execution?.cwd).toBe(RUN_DIRECTORY);
     expect(execution?.timeoutMs).toBe(CLAUDE_RESEARCH_TIMEOUT_MS);
@@ -652,6 +661,7 @@ describe('ClaudeResearchDriver.execute', () => {
       ANTHROPIC_API_KEY: 'synthetic-api-key',
       ANTHROPIC_AUTH_TOKEN: 'synthetic-auth-token',
       ANTHROPIC_BASE_URL: 'https://api.example.com',
+      CLAUDE_CONFIG_DIR,
     });
 
     const prompt = execution?.input ?? '';
@@ -669,7 +679,9 @@ describe('ClaudeResearchDriver.execute', () => {
     expect(prompt).not.toContain('BODY_SENTINEL_MUST_NOT_ENTER_PROMPT');
     expect(prompt).not.toContain('SOURCE_QUOTE_SENTINEL_MUST_NOT_ENTER_PROMPT');
     expect(prompt).not.toContain('ENV_SENTINEL_MUST_NOT_ENTER_PROMPT_OR_CHILD');
-    expect(JSON.stringify(execution)).not.toContain('/Users/synthetic');
+    expect(execution?.environment.HOME).not.toBe('/Users/synthetic');
+    expect(prompt).not.toContain('/Users/synthetic');
+    expect(JSON.stringify(execution)).toContain(CLAUDE_CONFIG_DIR);
     expect(execution?.args.join(' ')).not.toMatch(
       /Bash|Edit|Write|NotebookEdit|dangerously-skip-permissions|ClawVault/,
     );

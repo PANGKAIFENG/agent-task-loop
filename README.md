@@ -117,3 +117,9 @@ pnpm atl task reopen --task-id "$TASK_ID" --feedback "More work is required."
 task IDs, invalid frontmatter, lifecycle path mismatches, or stale/missing task
 index links. Each path mismatch includes the expected lifecycle path for manual
 repair; the command never repairs files itself.
+
+The scanner treats `task-*.md` files and Markdown documents whose frontmatter
+declares `type: task` under `Inbox`, `Active`, and `Archive` as tasks. Lifecycle
+notes such as `目录说明.md` are ignored. Existing readable slug filenames are
+accepted when their parent lifecycle directory matches the task status, and the
+index parser accepts both ordinary Markdown links and angle-bracket links.

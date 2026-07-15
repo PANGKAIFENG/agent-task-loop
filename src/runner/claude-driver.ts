@@ -37,6 +37,10 @@ const REQUIRED_HELP_MARKERS = [
   '--json-schema',
   '--max-budget-usd',
 ] as const;
+const claudeResearchJsonSchema = Object.fromEntries(
+  Object.entries(researchResultJsonSchema)
+    .filter(([key]) => key !== '$schema'),
+);
 
 const ERROR_MESSAGES = {
   invalid_claude_binary: 'Claude executable is not safely configured',
@@ -265,6 +269,7 @@ function allowedEnvironment(
   source: NodeJS.ProcessEnv,
   runDirectory: string,
   executable: string,
+  claudeConfigDirectory: string | undefined,
 ): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {
     HOME: runDirectory,
@@ -287,7 +292,26 @@ function allowedEnvironment(
       environment[name] = source[name];
     }
   }
+  if (claudeConfigDirectory !== undefined) {
+    environment.CLAUDE_CONFIG_DIR = claudeConfigDirectory;
+  }
   return environment;
+}
+
+function configuredDirectory(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  if (!isAbsolute(value)) {
+    throw new ClaudeDriverError('invalid_driver_input');
+  }
+  return value;
+}
+
+function configuredModel(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(value)) {
+    throw new ClaudeDriverError('invalid_driver_input');
+  }
+  return value;
 }
 
 function buildPrompt(context: ContextBundle): string {
@@ -306,7 +330,7 @@ function buildPrompt(context: ContextBundle): string {
     '- Do not create or modify calendar events.',
     '',
     'Output contract:',
-    JSON.stringify(researchResultJsonSchema),
+    JSON.stringify(claudeResearchJsonSchema),
     'Return only the structured result required by the output contract.',
   ].join('\n');
 }
@@ -606,6 +630,8 @@ class ClaudeResearchDriver implements ResearchDriver {
     private readonly environment: NodeJS.ProcessEnv,
     private readonly executor: ProcessExecutor,
     private readonly fileSystem: ClaudeDriverFileSystem,
+    private readonly claudeConfigDirectory: string | undefined,
+    private readonly model: string | undefined,
   ) {}
 
   async execute(input: ResearchDriverInput): Promise<ResearchResult> {
@@ -623,6 +649,7 @@ class ClaudeResearchDriver implements ResearchDriver {
       this.environment,
       runDirectory,
       this.executable.path,
+      this.claudeConfigDirectory,
     );
     let outcome:
       | { success: true; value: ResearchResult }
@@ -687,10 +714,13 @@ class ClaudeResearchDriver implements ResearchDriver {
       '--output-format',
       'json',
       '--json-schema',
-      JSON.stringify(researchResultJsonSchema),
+      JSON.stringify(claudeResearchJsonSchema),
       '--max-budget-usd',
       '2',
     ];
+    if (this.model !== undefined) {
+      args.push('--model', this.model);
+    }
     if (declaredOptions(help.stdout).has('--strict-mcp-config')) {
       args.push('--strict-mcp-config');
     }
@@ -728,6 +758,10 @@ export async function createClaudeResearchDriver(
   const environment = options.environment ?? process.env;
   const fileSystem = options.fileSystem ?? defaultFileSystem;
   const executable = await resolveExecutable(environment, fileSystem);
+  const claudeConfigDirectory = configuredDirectory(
+    environment.ATL_CLAUDE_CONFIG_DIR,
+  );
+  const model = configuredModel(environment.ATL_CLAUDE_MODEL);
   const maxProcessOutputBytes = options.maxProcessOutputBytes
     ?? DEFAULT_PROCESS_OUTPUT_LIMIT_BYTES;
   if (
@@ -741,5 +775,7 @@ export async function createClaudeResearchDriver(
     environment,
     options.executor ?? createDefaultExecutor(maxProcessOutputBytes),
     fileSystem,
+    claudeConfigDirectory,
+    model,
   );
 }

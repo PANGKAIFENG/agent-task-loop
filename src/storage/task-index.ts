@@ -10,6 +10,7 @@ import {
 import { parseTaskDocument } from './frontmatter.js';
 import {
   assertVaultWriteAllowed,
+  isTaskMarkdownPath,
   taskStorageRoot,
 } from './task-paths.js';
 
@@ -86,7 +87,18 @@ async function readIndexEntry(
   if (raw === null) {
     return null;
   }
-  const document = parseTaskDocument(raw);
+  let document;
+  try {
+    document = parseTaskDocument(raw);
+  } catch (error) {
+    if (!isTaskMarkdownPath(path)) {
+      return null;
+    }
+    throw error;
+  }
+  if (!isTaskMarkdownPath(path) && document.data.type !== 'task') {
+    return null;
+  }
   const data = document.data;
   return {
     path,

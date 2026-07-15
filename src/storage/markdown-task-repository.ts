@@ -23,6 +23,7 @@ import { rebuildTaskIndex } from './task-index.js';
 import {
   assertVaultWriteAllowed,
   isSafePathSegment,
+  isTaskMarkdownPath,
   lifecycleDirectory,
   taskStorageRoot,
   vaultRoot,
@@ -684,7 +685,18 @@ export class MarkdownTaskRepository implements TaskRepository {
     if (raw === null) {
       return null;
     }
-    const document = parseTaskDocument(raw);
+    let document;
+    try {
+      document = parseTaskDocument(raw);
+    } catch (error) {
+      if (!isTaskMarkdownPath(path)) {
+        return null;
+      }
+      throw error;
+    }
+    if (!isTaskMarkdownPath(path) && document.data.type !== 'task') {
+      return null;
+    }
     const task = taskFromDocument({ path, ...document });
     return {
       task,

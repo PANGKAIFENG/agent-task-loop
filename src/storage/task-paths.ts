@@ -24,6 +24,11 @@ export function taskStorageRoot(root: string): string {
   return join(resolve(root), '10_Tasks');
 }
 
+export function isTaskMarkdownPath(path: string): boolean {
+  const name = basename(path);
+  return name.startsWith('task-') && name.endsWith('.md');
+}
+
 export function isSafePathSegment(value: string): boolean {
   let candidate = value.normalize('NFKC');
   for (let depth = 0; depth < 16; depth += 1) {

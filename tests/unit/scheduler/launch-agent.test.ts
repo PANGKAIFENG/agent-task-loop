@@ -33,6 +33,7 @@ async function fixture() {
   const repositoryRoot = join(root, 'repo & source');
   const vaultRoot = join(root, 'vault <research>');
   const allowedRoot = join(root, 'allowed "sources"');
+  const claudeConfigDir = join(root, 'claude config');
   const claudeBinary = join(root, "claude's bin");
   const cliPath = join(repositoryRoot, 'build', 'server', 'cli.js');
   await Promise.all([
@@ -40,6 +41,7 @@ async function fixture() {
     mkdir(join(repositoryRoot, 'build', 'server'), { recursive: true }),
     mkdir(vaultRoot, { recursive: true }),
     mkdir(allowedRoot, { recursive: true }),
+    mkdir(claudeConfigDir, { recursive: true }),
   ]);
   await writeFile(cliPath, '#!/usr/bin/env node\n', 'utf8');
   await writeFile(claudeBinary, '#!/bin/sh\n', 'utf8');
@@ -50,6 +52,7 @@ async function fixture() {
     repositoryRoot,
     vaultRoot,
     allowedRoot,
+    claudeConfigDir,
     claudeBinary,
     cliPath,
   };
@@ -78,6 +81,8 @@ function renderOptions(paths: Awaited<ReturnType<typeof fixture>>) {
     environment: {
       ATL_VAULT_ROOT: paths.vaultRoot,
       ATL_CLAUDE_BIN: paths.claudeBinary,
+      ATL_CLAUDE_CONFIG_DIR: paths.claudeConfigDir,
+      ATL_CLAUDE_MODEL: 'glm-4-flash',
       ATL_ALLOWED_LOCAL_ROOTS: paths.allowedRoot,
       ATL_DAILY_LIMIT: '2',
     },
@@ -112,6 +117,7 @@ describe('renderLaunchAgent', () => {
       vaultRoot: await realpath(paths.vaultRoot),
       allowedRoot: await realpath(paths.allowedRoot),
       claudeBinary: await realpath(paths.claudeBinary),
+      claudeConfigDir: await realpath(paths.claudeConfigDir),
       cliPath: await realpath(paths.cliPath),
     };
 
@@ -144,6 +150,8 @@ describe('renderLaunchAgent', () => {
       ATL_ALLOW_REAL_WRITES: '1',
       ATL_AGENT_DRIVER: 'claude',
       ATL_CLAUDE_BIN: canonical.claudeBinary,
+      ATL_CLAUDE_CONFIG_DIR: canonical.claudeConfigDir,
+      ATL_CLAUDE_MODEL: 'glm-4-flash',
       ATL_ALLOWED_LOCAL_ROOTS: canonical.allowedRoot,
       ATL_DAILY_LIMIT: '2',
       HOME: canonical.home,
