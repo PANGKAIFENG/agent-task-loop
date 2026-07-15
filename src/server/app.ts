@@ -60,6 +60,11 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
       root: options.staticRoot,
       wildcard: false,
     });
+    for (const route of ['/inbox', '/review', '/projects', '/projects/:id']) {
+      app.get(route, async (_request, reply) => reply
+        .type('text/html; charset=utf-8')
+        .sendFile('index.html'));
+    }
   }
   return app;
 }

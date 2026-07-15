@@ -199,6 +199,42 @@ describe('local task board routes', () => {
     ]);
   });
 
+  it('serves the SPA shell on direct board routes without swallowing other 404s', async () => {
+    const context = await createTestServiceContext();
+    contexts.push(context);
+    const staticRoot = join(context.root, 'build', 'ui');
+    const shell = '<main>synthetic board shell</main>';
+    await mkdir(join(staticRoot, 'assets'), { recursive: true });
+    await writeFile(join(staticRoot, 'index.html'), shell);
+    await writeFile(join(staticRoot, 'assets', 'board.js'), 'export {};');
+    const app = await createApp({
+      ctx: context.ctx,
+      runner: runner(),
+      boardOrigin: BOARD_ORIGIN,
+      environment: { ATL_BOARD_TOKEN: BOARD_TOKEN },
+      staticRoot,
+    });
+
+    for (const url of ['/inbox', '/review', '/projects', '/projects/project-alpha']) {
+      const response = await app.inject({ method: 'GET', url });
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['content-type']).toContain('text/html');
+      expect(response.body).toBe(shell);
+    }
+
+    const missingApi = await app.inject({ method: 'GET', url: '/api/not-real' });
+    const runtimeConfig = await app.inject({ method: 'GET', url: '/runtime-config.js' });
+    const missingAsset = await app.inject({ method: 'GET', url: '/assets/not-real.js' });
+    expect(missingApi.statusCode).toBe(404);
+    expect(missingApi.body).not.toBe(shell);
+    expect(runtimeConfig.statusCode).toBe(200);
+    expect(runtimeConfig.headers['content-type']).toContain('application/javascript');
+    expect(runtimeConfig.body).not.toBe(shell);
+    expect(missingAsset.statusCode).toBe(404);
+    expect(missingAsset.body).not.toBe(shell);
+    await app.close();
+  });
+
   it('rejects every write without the exact token or exact board origin', async () => {
     const { app } = await setup();
     const writes = [
