@@ -1,5 +1,7 @@
 import { constants } from 'node:fs';
-import { dirname } from 'node:path';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -87,12 +89,26 @@ function makeTask(overrides: Partial<Task> = {}): Task {
 function makeContext(): ContextBundle {
   return {
     taskId: 'task-driver-001',
-    blocks: [{
-      label: 'project',
-      kind: 'project',
-      content: 'Only use the official public documentation.',
-      sha256: 'a'.repeat(64),
-    }],
+    blocks: [
+      {
+        label: 'task',
+        kind: 'task',
+        content: [
+          'Objective:',
+          'Compare the documented public product limits.',
+          '',
+          'Acceptance Criteria:',
+          '- Cite an official source.',
+        ].join('\n'),
+        sha256: 'a'.repeat(64),
+      },
+      {
+        label: 'project',
+        kind: 'project',
+        content: 'Only use the official public documentation.',
+        sha256: 'b'.repeat(64),
+      },
+    ],
   };
 }
 
@@ -109,9 +125,15 @@ function processResult(overrides: Partial<ProcessResult> = {}): ProcessResult {
 function fakeFileSystem(
   overrides: Partial<ClaudeDriverFileSystem> = {},
 ): ClaudeDriverFileSystem {
+  const metadata = () => ({
+    dev: 41,
+    ino: 73,
+    isFile: () => true,
+  });
   return {
     realpath: vi.fn(async (path: string) => path),
-    stat: vi.fn(async () => ({ isFile: () => true })),
+    stat: vi.fn(async () => metadata()),
+    lstat: vi.fn(async () => metadata()),
     access: vi.fn(async () => undefined),
     mkdtemp: vi.fn(async () => RUN_DIRECTORY),
     rm: vi.fn(async () => undefined),
@@ -129,6 +151,7 @@ async function createDriver(options: {
   executor?: ProcessExecutor;
   fileSystem?: ClaudeDriverFileSystem;
   environment?: NodeJS.ProcessEnv;
+  maxProcessOutputBytes?: number;
 } = {}) {
   return createClaudeResearchDriver({
     executor: options.executor ?? fakeExecutor(async (execution) => {
@@ -141,7 +164,45 @@ async function createDriver(options: {
     }),
     fileSystem: options.fileSystem ?? fakeFileSystem(),
     environment: options.environment ?? { ATL_CLAUDE_BIN: CLAUDE_BIN },
+    ...(options.maxProcessOutputBytes === undefined
+      ? {}
+      : { maxProcessOutputBytes: options.maxProcessOutputBytes }),
   });
+}
+
+async function createTestExecutable(source: string): Promise<{
+  executable: string;
+  cleanup(): Promise<void>;
+}> {
+  const directory = await mkdtemp(join(tmpdir(), 'atl-claude-executable-'));
+  const executable = join(directory, 'claude-test.mjs');
+  await writeFile(executable, `#!/usr/bin/env node\n${source}`, 'utf8');
+  await chmod(executable, 0o700);
+  return {
+    executable,
+    cleanup: async () => rm(directory, { recursive: true, force: true }),
+  };
+}
+
+function floodingExecutableSource(
+  phase: 'help' | 'execution',
+  stream: 'stdout' | 'stderr',
+): string {
+  const validEnvelope = JSON.stringify({ structured_output: validResult });
+  return [
+    `const help = ${JSON.stringify(REQUIRED_HELP)};`,
+    `const validEnvelope = ${JSON.stringify(validEnvelope)};`,
+    `const phase = ${JSON.stringify(phase)};`,
+    `const stream = ${JSON.stringify(stream)};`,
+    'const isHelp = process.argv.includes("--help");',
+    'if (isHelp) {',
+    '  process.stdout.write(help);',
+    '  if (phase === "help") process[stream].write("x".repeat(2048));',
+    '} else {',
+    '  if (phase === "execution") process[stream].write("x".repeat(2048));',
+    '  if (stream !== "stdout") process.stdout.write(validEnvelope);',
+    '}',
+  ].join('\n');
 }
 
 describe('createClaudeResearchDriver', () => {
@@ -155,6 +216,9 @@ describe('createClaudeResearchDriver', () => {
     expect(driver.name).toBe('claude-code');
     expect(fileSystem.realpath).toHaveBeenCalledWith(CLAUDE_BIN);
     expect(fileSystem.stat).toHaveBeenCalledWith('/private/opt/testing/bin/claude');
+    expect(fileSystem.lstat).toHaveBeenCalledWith(
+      '/private/opt/testing/bin/claude',
+    );
     expect(fileSystem.access).toHaveBeenCalledWith(
       '/private/opt/testing/bin/claude',
       constants.X_OK,
@@ -179,7 +243,11 @@ describe('createClaudeResearchDriver', () => {
       }),
     });
     const nonRegular = fakeFileSystem({
-      stat: vi.fn(async () => ({ isFile: () => false })),
+      stat: vi.fn(async () => ({
+        dev: 41,
+        ino: 73,
+        isFile: () => false,
+      })),
     });
     const nonExecutable = fakeFileSystem({
       access: vi.fn(async () => {
@@ -197,6 +265,149 @@ describe('createClaudeResearchDriver', () => {
 });
 
 describe('ClaudeResearchDriver.execute', () => {
+  it.each(['stdout', 'stderr'] as const)(
+    'caps help %s and maps overflow to unsupported_claude_cli',
+    async (stream) => {
+      const fixture = await createTestExecutable(
+        floodingExecutableSource('help', stream),
+      );
+      try {
+        const driver = await createClaudeResearchDriver({
+          environment: { ATL_CLAUDE_BIN: fixture.executable },
+          maxProcessOutputBytes: 512,
+        });
+
+        await expect(driver.execute({
+          task: makeTask(),
+          context: makeContext(),
+          timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
+        })).rejects.toMatchObject({
+          name: 'ClaudeDriverError',
+          code: 'unsupported_claude_cli',
+        });
+      } finally {
+        await fixture.cleanup();
+      }
+    },
+  );
+
+  it.each(['stdout', 'stderr'] as const)(
+    'caps execution %s and maps overflow to claude_process_failed',
+    async (stream) => {
+      const fixture = await createTestExecutable(
+        floodingExecutableSource('execution', stream),
+      );
+      try {
+        const driver = await createClaudeResearchDriver({
+          environment: { ATL_CLAUDE_BIN: fixture.executable },
+          maxProcessOutputBytes: 512,
+        });
+
+        await expect(driver.execute({
+          task: makeTask(),
+          context: makeContext(),
+          timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
+        })).rejects.toMatchObject({
+          name: 'ClaudeDriverError',
+          code: 'claude_process_failed',
+        });
+      } finally {
+        await fixture.cleanup();
+      }
+    },
+  );
+
+  it('maps an early child exit during stdin write to claude_process_failed', async () => {
+    const fixture = await createTestExecutable([
+      `const help = ${JSON.stringify(REQUIRED_HELP)};`,
+      'if (process.argv.includes("--help")) {',
+      '  process.stdout.write(help);',
+      '} else {',
+      '  process.exit(0);',
+      '}',
+    ].join('\n'));
+    try {
+      const driver = await createClaudeResearchDriver({
+        environment: { ATL_CLAUDE_BIN: fixture.executable },
+      });
+
+      await expect(driver.execute({
+        task: makeTask(),
+        context: {
+          taskId: 'task-driver-001',
+          blocks: [{
+            label: 'task',
+            kind: 'task',
+            content: 'x'.repeat(2 * 1024 * 1024),
+            sha256: 'd'.repeat(64),
+          }],
+        },
+        timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
+      })).rejects.toMatchObject({
+        name: 'ClaudeDriverError',
+        code: 'claude_process_failed',
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it('revalidates the executable identity immediately before help', async () => {
+    let ino = 73;
+    const metadata = () => ({ dev: 41, ino, isFile: () => true });
+    const fileSystem = fakeFileSystem({
+      stat: vi.fn(async () => metadata()),
+      lstat: vi.fn(async () => metadata()),
+    });
+    const executor = fakeExecutor(async () => processResult({
+      stdout: REQUIRED_HELP,
+    }));
+    const driver = await createDriver({ executor, fileSystem });
+    ino = 74;
+
+    await expect(driver.execute({
+      task: makeTask(),
+      context: makeContext(),
+      timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
+    })).rejects.toMatchObject({
+      name: 'ClaudeDriverError',
+      code: 'invalid_claude_binary',
+    });
+    expect(executor.execute).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the executable is replaced after help', async () => {
+    let ino = 73;
+    const metadata = () => ({ dev: 41, ino, isFile: () => true });
+    const fileSystem = fakeFileSystem({
+      stat: vi.fn(async () => metadata()),
+      lstat: vi.fn(async () => metadata()),
+    });
+    const calls: ProcessExecution[] = [];
+    const executor = fakeExecutor(async (execution) => {
+      calls.push(execution);
+      if (execution.args[0] === '--help') {
+        ino = 74;
+        return processResult({ stdout: REQUIRED_HELP });
+      }
+      return processResult({
+        stdout: JSON.stringify({ structured_output: validResult }),
+      });
+    });
+    const driver = await createDriver({ executor, fileSystem });
+
+    await expect(driver.execute({
+      task: makeTask(),
+      context: makeContext(),
+      timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
+    })).rejects.toMatchObject({
+      name: 'ClaudeDriverError',
+      code: 'invalid_claude_binary',
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.input).toBeUndefined();
+  });
+
   it('rejects a cross-task context bundle before creating a run directory', async () => {
     const executor = fakeExecutor(async () => processResult());
     const fileSystem = fakeFileSystem();
@@ -333,6 +544,51 @@ describe('ClaudeResearchDriver.execute', () => {
       recursive: true,
       force: true,
     });
+  });
+
+  it('builds stdin only from the already-redacted context bundle', async () => {
+    const rawObjectiveToken = 'sk-objective-provider-token-123456';
+    const rawCriterionToken = 'ghp_123456789012345678901234567890';
+    const executions: ProcessExecution[] = [];
+    const executor = fakeExecutor(async (execution) => {
+      executions.push(execution);
+      if (execution.args[0] === '--help') {
+        return processResult({ stdout: REQUIRED_HELP });
+      }
+      return processResult({
+        stdout: JSON.stringify({ structured_output: validResult }),
+      });
+    });
+    const driver = await createDriver({ executor });
+
+    await driver.execute({
+      task: makeTask({
+        objective: `Research ${rawObjectiveToken}`,
+        acceptanceCriteria: [`Do not expose ${rawCriterionToken}`],
+      }),
+      context: {
+        taskId: 'task-driver-001',
+        blocks: [{
+          label: 'task',
+          kind: 'task',
+          content: [
+            'Objective:',
+            'Research [REDACTED]',
+            '',
+            'Acceptance Criteria:',
+            '- Do not expose [REDACTED]',
+          ].join('\n'),
+          sha256: 'c'.repeat(64),
+        }],
+      },
+      timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
+    });
+
+    const prompt = executions[1]?.input ?? '';
+    expect(prompt).toContain('Research [REDACTED]');
+    expect(prompt).toContain('Do not expose [REDACTED]');
+    expect(prompt).not.toContain(rawObjectiveToken);
+    expect(prompt).not.toContain(rawCriterionToken);
   });
 
   it.each([

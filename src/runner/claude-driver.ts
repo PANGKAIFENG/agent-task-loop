@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
 import {
   access,
+  lstat,
   mkdtemp,
   realpath,
   rm,
@@ -10,7 +11,6 @@ import {
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join } from 'node:path';
 
-import type { Task } from '../domain/task.js';
 import type { ContextBundle } from './context-bundle.js';
 import type {
   ResearchDriver,
@@ -25,6 +25,7 @@ import {
 export const CLAUDE_RESEARCH_TIMEOUT_MS = 30 * 60 * 1000;
 
 const HELP_TIMEOUT_MS = 10_000;
+const DEFAULT_PROCESS_OUTPUT_LIMIT_BYTES = 8 * 1024 * 1024;
 const REQUIRED_HELP_MARKERS = [
   '--print',
   '--safe-mode',
@@ -77,12 +78,15 @@ export interface ProcessExecutor {
 }
 
 interface FileMetadata {
+  readonly dev: number;
+  readonly ino: number;
   isFile(): boolean;
 }
 
 export interface ClaudeDriverFileSystem {
   realpath(path: string): Promise<string>;
   stat(path: string): Promise<FileMetadata>;
+  lstat(path: string): Promise<FileMetadata>;
   access(path: string, mode: number): Promise<void>;
   mkdtemp(prefix: string): Promise<string>;
   rm(
@@ -95,58 +99,128 @@ export interface CreateClaudeResearchDriverOptions {
   environment?: NodeJS.ProcessEnv;
   executor?: ProcessExecutor;
   fileSystem?: ClaudeDriverFileSystem;
+  maxProcessOutputBytes?: number;
 }
 
 const defaultFileSystem: ClaudeDriverFileSystem = {
   realpath,
   stat,
+  lstat,
   access,
   mkdtemp,
   rm,
 };
 
-const defaultExecutor: ProcessExecutor = {
-  async execute(execution) {
-    return new Promise((resolve, reject) => {
-      const child = spawn(execution.command, [...execution.args], {
-        cwd: execution.cwd,
-        env: execution.environment,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-      const stdout: Buffer[] = [];
-      const stderr: Buffer[] = [];
-      let timedOut = false;
-      let settled = false;
-
-      const timer = setTimeout(() => {
-        timedOut = true;
-        child.kill('SIGKILL');
-      }, execution.timeoutMs);
-
-      child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
-      child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
-      child.once('error', (error) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        reject(error);
-      });
-      child.once('close', (exitCode) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve({
-          stdout: Buffer.concat(stdout).toString('utf8'),
-          stderr: Buffer.concat(stderr).toString('utf8'),
-          exitCode: exitCode ?? 1,
-          timedOut,
+function createDefaultExecutor(maxOutputBytes: number): ProcessExecutor {
+  return {
+    async execute(execution) {
+      return new Promise((resolve, reject) => {
+        const child = spawn(execution.command, [...execution.args], {
+          cwd: execution.cwd,
+          env: execution.environment,
+          stdio: ['pipe', 'pipe', 'pipe'],
         });
-      });
+        const stdout: Buffer[] = [];
+        const stderr: Buffer[] = [];
+        let stdoutBytes = 0;
+        let stderrBytes = 0;
+        let timedOut = false;
+        let settled = false;
+        let stdinComplete = false;
+        let processFailure: Error | undefined;
+        let closeResult: { exitCode: number } | undefined;
 
-      child.stdin.end(execution.input);
-    });
-  },
-};
+        const finish = () => {
+          if (
+            settled
+            || closeResult === undefined
+            || (!stdinComplete && processFailure === undefined)
+          ) {
+            return;
+          }
+          settled = true;
+          clearTimeout(timer);
+          if (processFailure !== undefined) {
+            reject(processFailure);
+            return;
+          }
+          resolve({
+            stdout: Buffer.concat(stdout).toString('utf8'),
+            stderr: Buffer.concat(stderr).toString('utf8'),
+            exitCode: closeResult.exitCode,
+            timedOut,
+          });
+        };
+
+        const stopForProcessFailure = (message: string) => {
+          if (processFailure === undefined && !timedOut) {
+            processFailure = new Error(message);
+          }
+          child.kill('SIGKILL');
+          finish();
+        };
+
+        const collect = (
+          chunks: Buffer[],
+          chunk: Buffer,
+          currentBytes: number,
+        ): number => {
+          if (processFailure !== undefined) return currentBytes;
+          const nextBytes = currentBytes + chunk.byteLength;
+          if (nextBytes > maxOutputBytes) {
+            stopForProcessFailure('Process output exceeded its byte limit');
+            return currentBytes;
+          }
+          chunks.push(chunk);
+          return nextBytes;
+        };
+
+        const timer = setTimeout(() => {
+          timedOut = true;
+          child.kill('SIGKILL');
+        }, execution.timeoutMs);
+
+        child.stdout.on('data', (chunk: Buffer) => {
+          stdoutBytes = collect(stdout, chunk, stdoutBytes);
+        });
+        child.stderr.on('data', (chunk: Buffer) => {
+          stderrBytes = collect(stderr, chunk, stderrBytes);
+        });
+        child.once('error', (error) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(error);
+        });
+        child.once('close', (exitCode) => {
+          closeResult = { exitCode: exitCode ?? 1 };
+          finish();
+        });
+
+        child.stdin.once('error', () => {
+          stdinComplete = true;
+          stopForProcessFailure('Process stdin write failed');
+        });
+        child.stdin.once('finish', () => {
+          stdinComplete = true;
+          finish();
+        });
+        child.stdin.once('close', () => {
+          if (!stdinComplete) {
+            stdinComplete = true;
+            stopForProcessFailure('Process stdin closed before input');
+          }
+        });
+        try {
+          child.stdin.end(execution.input);
+        } catch {
+          stdinComplete = true;
+          stopForProcessFailure('Process stdin write failed');
+        }
+      });
+    },
+  };
+}
 
 function allowedEnvironment(
   source: NodeJS.ProcessEnv,
@@ -177,15 +251,9 @@ function allowedEnvironment(
   return environment;
 }
 
-function buildPrompt(task: Task, context: ContextBundle): string {
+function buildPrompt(context: ContextBundle): string {
   return [
     'You are executing a restricted read-only research task.',
-    '',
-    'Task objective:',
-    task.objective ?? '',
-    '',
-    'Acceptance criteria:',
-    ...task.acceptanceCriteria.map((criterion) => `- ${criterion}`),
     '',
     'Allowed context bundle:',
     JSON.stringify(context),
@@ -436,19 +504,56 @@ function isCompatibleHelp(help: string): boolean {
 async function resolveExecutable(
   environment: NodeJS.ProcessEnv,
   fileSystem: ClaudeDriverFileSystem,
-): Promise<string> {
+): Promise<{ path: string; dev: number; ino: number }> {
   const configured = environment.ATL_CLAUDE_BIN;
   if (configured === undefined || !isAbsolute(configured)) {
     throw new ClaudeDriverError('invalid_claude_binary');
   }
   try {
     const executable = await fileSystem.realpath(configured);
-    const metadata = await fileSystem.stat(executable);
-    if (!isAbsolute(executable) || !metadata.isFile()) {
+    const [metadata, referencedMetadata] = await Promise.all([
+      fileSystem.stat(executable),
+      fileSystem.lstat(executable),
+    ]);
+    if (
+      !isAbsolute(executable)
+      || !metadata.isFile()
+      || !referencedMetadata.isFile()
+      || metadata.dev !== referencedMetadata.dev
+      || metadata.ino !== referencedMetadata.ino
+    ) {
       throw new Error('Unsafe executable');
     }
     await fileSystem.access(executable, constants.X_OK);
-    return executable;
+    return { path: executable, dev: metadata.dev, ino: metadata.ino };
+  } catch {
+    throw new ClaudeDriverError('invalid_claude_binary');
+  }
+}
+
+async function verifyExecutable(
+  executable: { path: string; dev: number; ino: number },
+  fileSystem: ClaudeDriverFileSystem,
+): Promise<void> {
+  try {
+    const canonical = await fileSystem.realpath(executable.path);
+    const [metadata, referencedMetadata] = await Promise.all([
+      fileSystem.stat(executable.path),
+      fileSystem.lstat(executable.path),
+    ]);
+    if (
+      canonical !== executable.path
+      || !isAbsolute(canonical)
+      || !metadata.isFile()
+      || !referencedMetadata.isFile()
+      || metadata.dev !== executable.dev
+      || metadata.ino !== executable.ino
+      || referencedMetadata.dev !== executable.dev
+      || referencedMetadata.ino !== executable.ino
+    ) {
+      throw new Error('Executable identity changed');
+    }
+    await fileSystem.access(executable.path, constants.X_OK);
   } catch {
     throw new ClaudeDriverError('invalid_claude_binary');
   }
@@ -458,7 +563,7 @@ class ClaudeResearchDriver implements ResearchDriver {
   readonly name = 'claude-code';
 
   constructor(
-    private readonly executable: string,
+    private readonly executable: { path: string; dev: number; ino: number },
     private readonly environment: NodeJS.ProcessEnv,
     private readonly executor: ProcessExecutor,
     private readonly fileSystem: ClaudeDriverFileSystem,
@@ -478,7 +583,7 @@ class ClaudeResearchDriver implements ResearchDriver {
     const environment = allowedEnvironment(
       this.environment,
       runDirectory,
-      this.executable,
+      this.executable.path,
     );
     let outcome:
       | { success: true; value: ResearchResult }
@@ -511,10 +616,11 @@ class ClaudeResearchDriver implements ResearchDriver {
     runDirectory: string,
     environment: NodeJS.ProcessEnv,
   ): Promise<ResearchResult> {
+    await verifyExecutable(this.executable, this.fileSystem);
     let help: ProcessResult;
     try {
       help = await this.executor.execute({
-        command: this.executable,
+        command: this.executable.path,
         args: ['--help'],
         cwd: runDirectory,
         environment,
@@ -550,14 +656,15 @@ class ClaudeResearchDriver implements ResearchDriver {
       args.push('--strict-mcp-config');
     }
 
+    await verifyExecutable(this.executable, this.fileSystem);
     let result: ProcessResult;
     try {
       result = await this.executor.execute({
-        command: this.executable,
+        command: this.executable.path,
         args,
         cwd: runDirectory,
         environment,
-        input: buildPrompt(input.task, input.context),
+        input: buildPrompt(input.context),
         timeoutMs: Math.min(
           input.timeoutMs,
           CLAUDE_RESEARCH_TIMEOUT_MS,
@@ -582,10 +689,18 @@ export async function createClaudeResearchDriver(
   const environment = options.environment ?? process.env;
   const fileSystem = options.fileSystem ?? defaultFileSystem;
   const executable = await resolveExecutable(environment, fileSystem);
+  const maxProcessOutputBytes = options.maxProcessOutputBytes
+    ?? DEFAULT_PROCESS_OUTPUT_LIMIT_BYTES;
+  if (
+    !Number.isSafeInteger(maxProcessOutputBytes)
+    || maxProcessOutputBytes <= 0
+  ) {
+    throw new ClaudeDriverError('invalid_driver_input');
+  }
   return new ClaudeResearchDriver(
     executable,
     environment,
-    options.executor ?? defaultExecutor,
+    options.executor ?? createDefaultExecutor(maxProcessOutputBytes),
     fileSystem,
   );
 }
