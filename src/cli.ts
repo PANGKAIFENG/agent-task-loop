@@ -15,6 +15,11 @@ import {
   createRunnerController,
   getRunnerStatus,
 } from './runner/runner-controller.js';
+import {
+  inspectLaunchAgent,
+  installLaunchAgent,
+  uninstallLaunchAgent,
+} from './scheduler/launch-agent.js';
 import { captureTask } from './services/capture-task.js';
 import { claimTask } from './services/claim-task.js';
 import { confirmTask } from './services/confirm-task.js';
@@ -115,6 +120,18 @@ function humanLine(value: unknown): string {
   }
   if (value !== null && typeof value === 'object') {
     const record = value as Record<string, unknown>;
+    if (
+      typeof record.installed === 'boolean'
+      && typeof record.managed === 'boolean'
+      && typeof record.path === 'string'
+    ) {
+      if (!record.installed) {
+        return `Scheduler is not installed: ${record.path}`;
+      }
+      return record.managed
+        ? `Scheduler is installed: ${record.path}`
+        : `Scheduler file is not managed: ${record.path}`;
+    }
     if (typeof record.taskId === 'string') {
       return `${record.taskId} [${String(record.status)}] ${String(record.title)}`;
     }
@@ -148,6 +165,12 @@ function output(value: unknown, options: OutputOptions): void {
   process.stdout.write(options.json
     ? `${JSON.stringify(value)}\n`
     : `${humanLine(value)}\n`);
+}
+
+function schedulerHome(): { homeDirectory?: string } {
+  return process.env.HOME === undefined
+    ? {}
+    : { homeDirectory: process.env.HOME };
 }
 
 function reviewInput(options: {
@@ -468,6 +491,30 @@ function buildProgram(): Command {
       output(await getRunnerStatus(ctx, {
         dailyLimit: config.dailyLimit,
       }), options);
+    });
+
+  const scheduler = program.command('scheduler');
+  scheduler
+    .command('install')
+    .option('--json')
+    .action(async (options: { json?: boolean }) => {
+      output(await installLaunchAgent({
+        ...schedulerHome(),
+      }), options);
+    });
+
+  scheduler
+    .command('status')
+    .option('--json')
+    .action(async (options: { json?: boolean }) => {
+      output(await inspectLaunchAgent(schedulerHome()), options);
+    });
+
+  scheduler
+    .command('uninstall')
+    .option('--json')
+    .action(async (options: { json?: boolean }) => {
+      output(await uninstallLaunchAgent(schedulerHome()), options);
     });
 
   program

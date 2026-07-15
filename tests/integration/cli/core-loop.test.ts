@@ -3,6 +3,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rm,
   stat,
   writeFile,
@@ -138,6 +139,33 @@ afterEach(async () => {
 });
 
 describe('atl CLI core loop', () => {
+  it('exposes scheduler commands and keeps scheduler status read-only', async () => {
+    const root = await makeVault();
+    const home = await makeVault('atl-cli-home-');
+    const help = await runCli(root, ['scheduler', '--help'], { HOME: home });
+    expect(help.exitCode, help.stderr).toBe(0);
+    expect(help.stdout).toContain('install');
+    expect(help.stdout).toContain('status');
+    expect(help.stdout).toContain('uninstall');
+
+    const status = await runCli(root, ['scheduler', 'status', '--json'], {
+      HOME: home,
+    });
+    expect(json(status)).toMatchObject({
+      installed: false,
+      managed: false,
+      label: null,
+      path: join(
+        await realpath(home),
+        'Library',
+        'LaunchAgents',
+        'ai.agent-task-loop.runner.plist',
+      ),
+    });
+    await expect(stat(join(home, 'Library')))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('exposes bounded runner commands and keeps status read-only', async () => {
     const root = await makeVault();
     const help = await runCli(root, ['runner', '--help']);
