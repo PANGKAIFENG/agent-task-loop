@@ -1,0 +1,990 @@
+import { randomUUID } from 'node:crypto';
+import { constants } from 'node:fs';
+import type { Stats } from 'node:fs';
+import {
+  link,
+  lstat,
+  mkdir,
+  open,
+  realpath,
+  rename,
+  unlink,
+  type FileHandle,
+} from 'node:fs/promises';
+import {
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from 'node:path';
+
+import fastGlob from 'fast-glob';
+
+export class InvalidStorageEntryError extends Error {
+  readonly code = 'invalid_storage_entry';
+
+  constructor() {
+    super('Invalid storage entry');
+    this.name = 'InvalidStorageEntryError';
+  }
+}
+
+export interface StorageReadBoundary {
+  vaultRoot: string;
+  tasksRoot: string;
+  subtree: string;
+}
+
+export type StorageMoveBoundary = Pick<
+  StorageReadBoundary,
+  'vaultRoot' | 'tasksRoot'
+>;
+
+interface PathIdentity {
+  path: string;
+  dev: number | bigint;
+  ino: number | bigint;
+}
+
+function isWithin(parent: string, target: string): boolean {
+  const difference = relative(parent, target);
+  return difference === ''
+    || (!difference.startsWith('..') && !isAbsolute(difference));
+}
+
+function isStrictlyWithin(parent: string, target: string): boolean {
+  return parent !== target && isWithin(parent, target);
+}
+
+function sameIdentity(
+  left: { dev: number | bigint; ino: number | bigint },
+  right: { dev: number | bigint; ino: number | bigint },
+): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function isUnsafePathError(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && (error.code === 'ENOENT' || error.code === 'ELOOP' || error.code === 'ENOTDIR');
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && error.code === 'ENOENT';
+}
+
+function isAlreadyExistsError(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && error.code === 'EEXIST';
+}
+
+export interface SafeFileLock {
+  release(): Promise<void>;
+}
+
+interface SafeFileLockMetadata {
+  ownerToken: string;
+  ownerPid: number;
+  acquiredAt: string;
+  leaseExpiresAt: string;
+}
+
+interface SafeFileLockOptions {
+  acquiredAt: Date;
+  leaseMs: number;
+}
+
+interface InspectedSafeFileLock {
+  identity: { dev: number | bigint; ino: number | bigint };
+  metadata: SafeFileLockMetadata;
+}
+
+const SAFE_FILE_LOCK_MAX_BYTES = 1024;
+const SAFE_FILE_LOCK_MAX_PID = 2_147_483_647;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export async function listSafeRegularFiles(
+  boundary: StorageReadBoundary,
+  pattern: string,
+): Promise<string[]> {
+  if (await canonicalStorageSubtree(boundary) === null) {
+    return [];
+  }
+  const entries = await fastGlob(pattern, {
+    cwd: boundary.subtree,
+    followSymbolicLinks: false,
+    objectMode: true,
+    onlyFiles: true,
+  });
+  // Relative object-mode paths preserve literal POSIX backslashes. Absolute
+  // fast-glob output normalizes them into separators.
+  const candidates = entries.map((entry) => join(boundary.subtree, entry.path));
+  const checked = await Promise.all(candidates.sort().map(async (path) => (
+    await isSafeRegularFile(path, boundary) ? path : null
+  )));
+  return checked.filter((path): path is string => path !== null);
+}
+
+export async function readSafeTextFile(
+  path: string,
+  boundary: StorageReadBoundary,
+): Promise<string | null> {
+  let handle: FileHandle | undefined;
+  try {
+    const canonicalSubtree = await canonicalStorageSubtree(boundary);
+    if (canonicalSubtree === null) {
+      return null;
+    }
+    const pathStat = await lstat(path);
+    if (pathStat.isSymbolicLink() || !pathStat.isFile()) {
+      return null;
+    }
+    const canonicalPath = await realpath(path);
+    if (!isWithin(canonicalSubtree, canonicalPath)) {
+      return null;
+    }
+
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const openedStat = await handle.stat();
+    if (!openedStat.isFile() || !sameIdentity(pathStat, openedStat)) {
+      return null;
+    }
+    return await handle.readFile('utf8');
+  } catch (error) {
+    if (isUnsafePathError(error)) {
+      return null;
+    }
+    throw new InvalidStorageEntryError();
+  } finally {
+    await handle?.close();
+  }
+}
+
+export async function atomicWriteTextFile(
+  targetPath: string,
+  content: string,
+): Promise<void> {
+  await mkdir(dirname(targetPath), { recursive: true });
+  const temporaryPath = `${targetPath}.${randomUUID()}.tmp`;
+  const canonicalParent = await realpath(dirname(targetPath));
+  let handle: FileHandle | undefined;
+  let createdIdentity: { dev: number | bigint; ino: number | bigint } | undefined;
+
+  try {
+    handle = await open(
+      temporaryPath,
+      constants.O_WRONLY
+        | constants.O_CREAT
+        | constants.O_EXCL
+        | constants.O_NOFOLLOW,
+      0o600,
+    );
+    const openedStat = await handle.stat();
+    if (!openedStat.isFile()) {
+      throw new InvalidStorageEntryError();
+    }
+    createdIdentity = { dev: openedStat.dev, ino: openedStat.ino };
+    await handle.writeFile(content, 'utf8');
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+
+    const [pathStat, canonicalTemporaryPath] = await Promise.all([
+      lstat(temporaryPath),
+      realpath(temporaryPath),
+    ]);
+    if (
+      pathStat.isSymbolicLink()
+      || !pathStat.isFile()
+      || !sameIdentity(createdIdentity, pathStat)
+      || !isWithin(canonicalParent, canonicalTemporaryPath)
+    ) {
+      throw new InvalidStorageEntryError();
+    }
+    await rename(temporaryPath, targetPath);
+    createdIdentity = undefined;
+  } catch (error) {
+    await handle?.close();
+    if (createdIdentity !== undefined) {
+      await unlinkCreatedFile(temporaryPath, createdIdentity);
+    }
+    throw error;
+  }
+}
+
+export async function atomicCreateTextFile(
+  targetPath: string,
+  content: string,
+  boundary: StorageReadBoundary,
+): Promise<boolean> {
+  const temporaryPath = `${targetPath}.${randomUUID()}.tmp`;
+  let handle: FileHandle | undefined;
+  let createdIdentity: { dev: number | bigint; ino: number | bigint } | undefined;
+  let published = false;
+
+  try {
+    const { canonicalSubtree, directoryIdentities } = await prepareSafeWritableSubtree(
+      boundary,
+    );
+    if (resolve(dirname(targetPath)) !== resolve(boundary.subtree)) {
+      throw new InvalidStorageEntryError();
+    }
+    handle = await open(
+      temporaryPath,
+      constants.O_WRONLY
+        | constants.O_CREAT
+        | constants.O_EXCL
+        | constants.O_NOFOLLOW,
+      0o600,
+    );
+    const openedStat = await handle.stat();
+    if (!openedStat.isFile() || openedStat.nlink !== 1) {
+      throw new InvalidStorageEntryError();
+    }
+    createdIdentity = { dev: openedStat.dev, ino: openedStat.ino };
+    await handle.writeFile(content, 'utf8');
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+
+    const [temporaryStat, canonicalTemporaryPath] = await Promise.all([
+      lstat(temporaryPath),
+      realpath(temporaryPath),
+    ]);
+    if (
+      temporaryStat.isSymbolicLink()
+      || !temporaryStat.isFile()
+      || temporaryStat.nlink !== 1
+      || !sameIdentity(createdIdentity, temporaryStat)
+      || !isStrictlyWithin(canonicalSubtree, canonicalTemporaryPath)
+      || !(await directoryChainMatches(directoryIdentities))
+    ) {
+      throw new InvalidStorageEntryError();
+    }
+
+    try {
+      await link(temporaryPath, targetPath);
+      published = true;
+    } catch (error) {
+      if (isAlreadyExistsError(error)) {
+        return false;
+      }
+      throw error;
+    }
+
+    const [targetStat, canonicalTargetPath] = await Promise.all([
+      lstat(targetPath),
+      realpath(targetPath),
+    ]);
+    if (
+      targetStat.isSymbolicLink()
+      || !targetStat.isFile()
+      || targetStat.nlink !== 2
+      || !sameIdentity(createdIdentity, targetStat)
+      || !isStrictlyWithin(canonicalSubtree, canonicalTargetPath)
+      || !(await directoryChainMatches(directoryIdentities))
+    ) {
+      throw new InvalidStorageEntryError();
+    }
+
+    await unlinkCreatedFile(temporaryPath, createdIdentity);
+    const finalTargetStat = await lstat(targetPath);
+    if (
+      finalTargetStat.isSymbolicLink()
+      || !finalTargetStat.isFile()
+      || finalTargetStat.nlink !== 1
+      || !sameIdentity(createdIdentity, finalTargetStat)
+    ) {
+      throw new InvalidStorageEntryError();
+    }
+    createdIdentity = undefined;
+    return true;
+  } catch {
+    if (published && createdIdentity !== undefined) {
+      await unlinkCreatedFile(targetPath, createdIdentity);
+    }
+    throw new InvalidStorageEntryError();
+  } finally {
+    await handle?.close();
+    if (createdIdentity !== undefined) {
+      await unlinkCreatedFile(temporaryPath, createdIdentity);
+    }
+  }
+}
+
+export async function acquireSafeFileLock(
+  lockPath: string,
+  boundary: StorageReadBoundary,
+  options: SafeFileLockOptions,
+): Promise<SafeFileLock | null> {
+  let handle: FileHandle | undefined;
+  let createdIdentity: { dev: number | bigint; ino: number | bigint } | undefined;
+  const ownerToken = randomUUID();
+  const acquiredAtMs = options.acquiredAt.getTime();
+  const leaseExpiresAtMs = acquiredAtMs + options.leaseMs;
+  if (
+    !Number.isFinite(acquiredAtMs)
+    || !Number.isSafeInteger(options.leaseMs)
+    || options.leaseMs <= 0
+    || !Number.isFinite(leaseExpiresAtMs)
+  ) {
+    throw new InvalidStorageEntryError();
+  }
+  const metadata: SafeFileLockMetadata = {
+    ownerToken,
+    ownerPid: process.pid,
+    acquiredAt: new Date(acquiredAtMs).toISOString(),
+    leaseExpiresAt: new Date(leaseExpiresAtMs).toISOString(),
+  };
+
+  try {
+    const { canonicalSubtree, directoryIdentities } = await prepareSafeWritableSubtree(
+      boundary,
+    );
+    if (resolve(dirname(lockPath)) !== resolve(boundary.subtree)) {
+      throw new InvalidStorageEntryError();
+    }
+    try {
+      handle = await open(
+        lockPath,
+        constants.O_WRONLY
+          | constants.O_CREAT
+          | constants.O_EXCL
+          | constants.O_NOFOLLOW,
+        0o600,
+      );
+    } catch (error) {
+      if (isAlreadyExistsError(error)) {
+        return null;
+      }
+      throw error;
+    }
+
+    const openedStat = await handle.stat();
+    if (!openedStat.isFile() || openedStat.nlink !== 1) {
+      throw new InvalidStorageEntryError();
+    }
+    createdIdentity = { dev: openedStat.dev, ino: openedStat.ino };
+    await handle.writeFile(`${JSON.stringify(metadata)}\n`, 'utf8');
+    await handle.chmod(0o600);
+    await handle.sync();
+
+    const [lockStat, canonicalLockPath] = await Promise.all([
+      lstat(lockPath),
+      realpath(lockPath),
+    ]);
+    if (
+      lockStat.isSymbolicLink()
+      || !lockStat.isFile()
+      || lockStat.nlink !== 1
+      || !sameIdentity(createdIdentity, lockStat)
+      || !isStrictlyWithin(canonicalSubtree, canonicalLockPath)
+      || !(await directoryChainMatches(directoryIdentities))
+    ) {
+      throw new InvalidStorageEntryError();
+    }
+    await handle.close();
+    handle = undefined;
+
+    const identity = createdIdentity;
+    createdIdentity = undefined;
+    let released = false;
+    return {
+      release: async () => {
+        if (!released) {
+          await unlinkOwnedSafeFileLock(
+            lockPath,
+            boundary,
+            identity,
+            ownerToken,
+          );
+          released = true;
+        }
+      },
+    };
+  } catch {
+    throw new InvalidStorageEntryError();
+  } finally {
+    await handle?.close();
+    if (createdIdentity !== undefined) {
+      await unlinkCreatedFile(lockPath, createdIdentity);
+    }
+  }
+}
+
+export async function reclaimExpiredSafeFileLock(
+  lockPath: string,
+  boundary: StorageReadBoundary,
+  now: Date,
+): Promise<boolean> {
+  const nowMs = now.getTime();
+  if (!Number.isFinite(nowMs)) {
+    return false;
+  }
+  const inspected = await inspectSafeFileLock(lockPath, boundary);
+  if (
+    inspected === null
+    || Date.parse(inspected.metadata.leaseExpiresAt) > nowMs
+    || !isOwnerProcessConfirmedAbsent(inspected.metadata.ownerPid)
+  ) {
+    return false;
+  }
+
+  return unlinkOwnedSafeFileLock(
+    lockPath,
+    boundary,
+    inspected.identity,
+    inspected.metadata.ownerToken,
+  );
+}
+
+export async function appendSafeTextFile(
+  targetPath: string,
+  content: Buffer,
+  boundary: StorageReadBoundary,
+): Promise<void> {
+  let handle: FileHandle | undefined;
+  try {
+    const [canonicalVaultRoot, canonicalTasksRoot] = await Promise.all([
+      realpath(boundary.vaultRoot),
+      realpath(boundary.tasksRoot),
+    ]);
+    const [vaultStat, tasksStat, tasksPathStat] = await Promise.all([
+      lstat(canonicalVaultRoot),
+      lstat(canonicalTasksRoot),
+      lstat(boundary.tasksRoot),
+    ]);
+    if (
+      !vaultStat.isDirectory()
+      || !tasksStat.isDirectory()
+      || tasksPathStat.isSymbolicLink()
+      || !tasksPathStat.isDirectory()
+      || !sameIdentity(tasksStat, tasksPathStat)
+      || !isStrictlyWithin(canonicalVaultRoot, canonicalTasksRoot)
+    ) {
+      throw new InvalidStorageEntryError();
+    }
+
+    await mkdir(boundary.subtree, { recursive: true, mode: 0o700 });
+    const [canonicalSubtree, subtreePathStat] = await Promise.all([
+      realpath(boundary.subtree),
+      lstat(boundary.subtree),
+    ]);
+    const canonicalSubtreeStat = await lstat(canonicalSubtree);
+    if (
+      subtreePathStat.isSymbolicLink()
+      || !subtreePathStat.isDirectory()
+      || !canonicalSubtreeStat.isDirectory()
+      || !sameIdentity(canonicalSubtreeStat, subtreePathStat)
+      || !isStrictlyWithin(canonicalTasksRoot, canonicalSubtree)
+      || resolve(dirname(targetPath)) !== resolve(boundary.subtree)
+    ) {
+      throw new InvalidStorageEntryError();
+    }
+
+    let initialIdentity: { dev: number | bigint; ino: number | bigint } | undefined;
+    try {
+      const targetStat = await lstat(targetPath);
+      if (
+        targetStat.isSymbolicLink()
+        || !targetStat.isFile()
+        || targetStat.nlink !== 1
+      ) {
+        throw new InvalidStorageEntryError();
+      }
+      initialIdentity = { dev: targetStat.dev, ino: targetStat.ino };
+    } catch (error) {
+      if (!isUnsafePathError(error)) {
+        throw error;
+      }
+    }
+
+    handle = await open(
+      targetPath,
+      constants.O_APPEND
+        | constants.O_CREAT
+        | constants.O_WRONLY
+        | constants.O_NOFOLLOW,
+      0o600,
+    );
+    const openedStat = await handle.stat();
+    if (
+      !openedStat.isFile()
+      || openedStat.nlink !== 1
+      || (initialIdentity !== undefined && !sameIdentity(initialIdentity, openedStat))
+    ) {
+      throw new InvalidStorageEntryError();
+    }
+
+    const [
+      finalPathStat,
+      canonicalTarget,
+      finalTasksPathStat,
+      finalSubtreePathStat,
+    ] = await Promise.all([
+      lstat(targetPath),
+      realpath(targetPath),
+      lstat(boundary.tasksRoot),
+      lstat(boundary.subtree),
+    ]);
+    if (
+      finalPathStat.isSymbolicLink()
+      || !finalPathStat.isFile()
+      || finalPathStat.nlink !== 1
+      || !sameIdentity(openedStat, finalPathStat)
+      || !sameIdentity(tasksStat, finalTasksPathStat)
+      || !sameIdentity(canonicalSubtreeStat, finalSubtreePathStat)
+      || !isStrictlyWithin(canonicalSubtree, canonicalTarget)
+    ) {
+      throw new InvalidStorageEntryError();
+    }
+
+    await handle.chmod(0o600);
+    const { bytesWritten } = await handle.write(content, 0, content.length, null);
+    if (bytesWritten !== content.length) {
+      throw new InvalidStorageEntryError();
+    }
+    await handle.sync();
+  } catch {
+    throw new InvalidStorageEntryError();
+  } finally {
+    await handle?.close();
+  }
+}
+
+export async function moveSafeRegularFile(
+  sourcePath: string,
+  targetPath: string,
+  expectedContent: string,
+  boundary: StorageMoveBoundary,
+): Promise<void> {
+  let handle: FileHandle | undefined;
+  try {
+    const [canonicalVaultRoot, canonicalTasksRoot] = await Promise.all([
+      realpath(boundary.vaultRoot),
+      realpath(boundary.tasksRoot),
+    ]);
+    const [vaultStat, tasksStat, tasksPathStat] = await Promise.all([
+      lstat(canonicalVaultRoot),
+      lstat(canonicalTasksRoot),
+      lstat(boundary.tasksRoot),
+    ]);
+    if (
+      !vaultStat.isDirectory()
+      || !tasksStat.isDirectory()
+      || tasksPathStat.isSymbolicLink()
+      || !tasksPathStat.isDirectory()
+      || !sameIdentity(tasksStat, tasksPathStat)
+      || !isStrictlyWithin(canonicalVaultRoot, canonicalTasksRoot)
+      || !isStrictlyWithin(resolve(boundary.tasksRoot), resolve(sourcePath))
+      || !isStrictlyWithin(resolve(boundary.tasksRoot), resolve(targetPath))
+    ) {
+      throw new InvalidStorageEntryError();
+    }
+    const sourceDirectories = await safeDirectoryChain(
+      boundary.tasksRoot,
+      dirname(sourcePath),
+      false,
+    );
+    const targetDirectories = await safeDirectoryChain(
+      boundary.tasksRoot,
+      dirname(targetPath),
+      true,
+    );
+
+    const sourceStat = await lstat(sourcePath);
+    if (sourceStat.isSymbolicLink() || !sourceStat.isFile()) {
+      throw new InvalidStorageEntryError();
+    }
+    handle = await open(sourcePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const openedStat = await handle.stat();
+    if (!openedStat.isFile() || !sameIdentity(sourceStat, openedStat)) {
+      throw new InvalidStorageEntryError();
+    }
+    try {
+      await lstat(targetPath);
+      throw new InvalidStorageEntryError();
+    } catch (error) {
+      if (!isMissingPathError(error)) {
+        throw error;
+      }
+    }
+    if (
+      !sameIdentity(tasksStat, await lstat(boundary.tasksRoot))
+      || !(await directoryChainMatches(sourceDirectories))
+      || !(await directoryChainMatches(targetDirectories))
+    ) {
+      throw new InvalidStorageEntryError();
+    }
+    try {
+      await lstat(targetPath);
+      throw new InvalidStorageEntryError();
+    } catch (error) {
+      if (!isMissingPathError(error)) {
+        throw error;
+      }
+    }
+    if (await handle.readFile('utf8') !== expectedContent) {
+      throw new InvalidStorageEntryError();
+    }
+    const finalSourceStat = await lstat(sourcePath);
+    if (
+      finalSourceStat.isSymbolicLink()
+      || !finalSourceStat.isFile()
+      || !sameIdentity(openedStat, finalSourceStat)
+    ) {
+      throw new InvalidStorageEntryError();
+    }
+    await handle.close();
+    handle = undefined;
+    // Node has no portable no-replace rename. A target created after the final
+    // absence check can still be replaced in this narrow race window.
+    await rename(sourcePath, targetPath);
+    // V0.1 syncs file content before rename; directory fsync remains a local limitation.
+  } catch {
+    throw new InvalidStorageEntryError();
+  } finally {
+    await handle?.close();
+  }
+}
+
+async function safeDirectoryChain(
+  root: string,
+  directory: string,
+  createMissing: boolean,
+): Promise<PathIdentity[]> {
+  const resolvedRoot = resolve(root);
+  const resolvedDirectory = resolve(directory);
+  if (!isWithin(resolvedRoot, resolvedDirectory)) {
+    throw new InvalidStorageEntryError();
+  }
+  const difference = relative(resolvedRoot, resolvedDirectory);
+  const segments = difference === '' ? [] : difference.split(sep);
+  const identities: PathIdentity[] = [];
+  let current = resolvedRoot;
+  for (const segment of segments) {
+    current = join(current, segment);
+    let currentStat: Stats;
+    try {
+      currentStat = await lstat(current);
+    } catch (error) {
+      if (!createMissing || !isMissingPathError(error)) {
+        throw error;
+      }
+      try {
+        await mkdir(current, { mode: 0o700 });
+      } catch (mkdirError) {
+        if (!isAlreadyExistsError(mkdirError)) {
+          throw mkdirError;
+        }
+      }
+      currentStat = await lstat(current);
+    }
+    if (currentStat.isSymbolicLink() || !currentStat.isDirectory()) {
+      throw new InvalidStorageEntryError();
+    }
+    identities.push({
+      path: current,
+      dev: currentStat.dev,
+      ino: currentStat.ino,
+    });
+  }
+  return identities;
+}
+
+async function prepareSafeWritableSubtree(
+  boundary: StorageReadBoundary,
+): Promise<{
+  canonicalSubtree: string;
+  directoryIdentities: PathIdentity[];
+}> {
+  const resolvedVaultRoot = resolve(boundary.vaultRoot);
+  const resolvedTasksRoot = resolve(boundary.tasksRoot);
+  const resolvedSubtree = resolve(boundary.subtree);
+  if (
+    !isStrictlyWithin(resolvedVaultRoot, resolvedTasksRoot)
+    || !isStrictlyWithin(resolvedTasksRoot, resolvedSubtree)
+  ) {
+    throw new InvalidStorageEntryError();
+  }
+  const directoryIdentities = await safeDirectoryChain(
+    boundary.vaultRoot,
+    boundary.subtree,
+    true,
+  );
+  const [canonicalVaultRoot, canonicalTasksRoot, canonicalSubtree] = await Promise.all([
+    realpath(boundary.vaultRoot),
+    realpath(boundary.tasksRoot),
+    realpath(boundary.subtree),
+  ]);
+  const [tasksStat, tasksPathStat, subtreeStat, subtreePathStat] = await Promise.all([
+    lstat(canonicalTasksRoot),
+    lstat(boundary.tasksRoot),
+    lstat(canonicalSubtree),
+    lstat(boundary.subtree),
+  ]);
+  if (
+    tasksPathStat.isSymbolicLink()
+    || !tasksPathStat.isDirectory()
+    || !sameIdentity(tasksStat, tasksPathStat)
+    || subtreePathStat.isSymbolicLink()
+    || !subtreePathStat.isDirectory()
+    || !sameIdentity(subtreeStat, subtreePathStat)
+    || !isStrictlyWithin(canonicalVaultRoot, canonicalTasksRoot)
+    || !isStrictlyWithin(canonicalTasksRoot, canonicalSubtree)
+    || !(await directoryChainMatches(directoryIdentities))
+  ) {
+    throw new InvalidStorageEntryError();
+  }
+  return { canonicalSubtree, directoryIdentities };
+}
+
+async function directoryChainMatches(
+  identities: PathIdentity[],
+): Promise<boolean> {
+  try {
+    for (const identity of identities) {
+      const current = await lstat(identity.path);
+      if (
+        current.isSymbolicLink()
+        || !current.isDirectory()
+        || !sameIdentity(identity, current)
+      ) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function canonicalStorageSubtree(
+  boundary: StorageReadBoundary,
+): Promise<string | null> {
+  try {
+    const [canonicalVaultRoot, canonicalTasksRoot, canonicalSubtree] = await Promise.all([
+      realpath(boundary.vaultRoot),
+      realpath(boundary.tasksRoot),
+      realpath(boundary.subtree),
+    ]);
+    if (
+      !isStrictlyWithin(canonicalVaultRoot, canonicalTasksRoot)
+      || !isStrictlyWithin(canonicalTasksRoot, canonicalSubtree)
+    ) {
+      return null;
+    }
+    const directoryStats = await Promise.all([
+      lstat(canonicalVaultRoot),
+      lstat(canonicalTasksRoot),
+      lstat(canonicalSubtree),
+    ]);
+    return directoryStats.every((stats) => stats.isDirectory())
+      ? canonicalSubtree
+      : null;
+  } catch (error) {
+    if (isUnsafePathError(error)) {
+      return null;
+    }
+    throw new InvalidStorageEntryError();
+  }
+}
+
+async function isSafeRegularFile(
+  path: string,
+  boundary: StorageReadBoundary,
+): Promise<boolean> {
+  try {
+    const canonicalSubtree = await canonicalStorageSubtree(boundary);
+    if (canonicalSubtree === null) {
+      return false;
+    }
+    const pathStat = await lstat(path);
+    if (pathStat.isSymbolicLink() || !pathStat.isFile()) {
+      return false;
+    }
+    return isWithin(canonicalSubtree, await realpath(path));
+  } catch (error) {
+    if (isUnsafePathError(error)) {
+      return false;
+    }
+    throw new InvalidStorageEntryError();
+  }
+}
+
+function parseSafeFileLockMetadata(content: string): SafeFileLockMetadata | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(content);
+  } catch {
+    return null;
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  if (
+    keys.length !== 4
+    || keys[0] !== 'acquiredAt'
+    || keys[1] !== 'leaseExpiresAt'
+    || keys[2] !== 'ownerPid'
+    || keys[3] !== 'ownerToken'
+    || typeof record.ownerToken !== 'string'
+    || !UUID_PATTERN.test(record.ownerToken)
+    || typeof record.ownerPid !== 'number'
+    || !Number.isSafeInteger(record.ownerPid)
+    || record.ownerPid <= 0
+    || record.ownerPid > SAFE_FILE_LOCK_MAX_PID
+    || typeof record.acquiredAt !== 'string'
+    || typeof record.leaseExpiresAt !== 'string'
+  ) {
+    return null;
+  }
+  const acquiredAtMs = Date.parse(record.acquiredAt);
+  const leaseExpiresAtMs = Date.parse(record.leaseExpiresAt);
+  if (
+    !Number.isFinite(acquiredAtMs)
+    || !Number.isFinite(leaseExpiresAtMs)
+    || new Date(acquiredAtMs).toISOString() !== record.acquiredAt
+    || new Date(leaseExpiresAtMs).toISOString() !== record.leaseExpiresAt
+    || leaseExpiresAtMs < acquiredAtMs
+  ) {
+    return null;
+  }
+  return {
+    ownerToken: record.ownerToken,
+    ownerPid: record.ownerPid,
+    acquiredAt: record.acquiredAt,
+    leaseExpiresAt: record.leaseExpiresAt,
+  };
+}
+
+function isOwnerProcessConfirmedAbsent(ownerPid: number): boolean {
+  try {
+    process.kill(ownerPid, 0);
+    return false;
+  } catch (error) {
+    // PID reuse after a reboot can delay recovery until that process exits.
+    // Cross-boot process identity is intentionally deferred beyond the local MVP.
+    return typeof error === 'object'
+      && error !== null
+      && 'code' in error
+      && error.code === 'ESRCH';
+  }
+}
+
+async function inspectSafeFileLock(
+  lockPath: string,
+  boundary: StorageReadBoundary,
+): Promise<InspectedSafeFileLock | null> {
+  let handle: FileHandle | undefined;
+  try {
+    const { canonicalSubtree, directoryIdentities } = await prepareSafeWritableSubtree(
+      boundary,
+    );
+    if (resolve(dirname(lockPath)) !== resolve(boundary.subtree)) {
+      return null;
+    }
+    const pathStat = await lstat(lockPath);
+    if (
+      pathStat.isSymbolicLink()
+      || !pathStat.isFile()
+      || pathStat.nlink !== 1
+      || pathStat.size > SAFE_FILE_LOCK_MAX_BYTES
+    ) {
+      return null;
+    }
+    const canonicalLockPath = await realpath(lockPath);
+    if (!isStrictlyWithin(canonicalSubtree, canonicalLockPath)) {
+      return null;
+    }
+    handle = await open(lockPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const openedStat = await handle.stat();
+    if (
+      !openedStat.isFile()
+      || openedStat.nlink !== 1
+      || openedStat.size > SAFE_FILE_LOCK_MAX_BYTES
+      || !sameIdentity(pathStat, openedStat)
+      || !(await directoryChainMatches(directoryIdentities))
+    ) {
+      return null;
+    }
+    const metadata = parseSafeFileLockMetadata(await handle.readFile('utf8'));
+    if (metadata === null) {
+      return null;
+    }
+    const finalPathStat = await lstat(lockPath);
+    if (
+      finalPathStat.isSymbolicLink()
+      || !finalPathStat.isFile()
+      || finalPathStat.nlink !== 1
+      || !sameIdentity(openedStat, finalPathStat)
+    ) {
+      return null;
+    }
+    return {
+      identity: { dev: openedStat.dev, ino: openedStat.ino },
+      metadata,
+    };
+  } catch {
+    return null;
+  } finally {
+    await handle?.close();
+  }
+}
+
+async function unlinkOwnedSafeFileLock(
+  lockPath: string,
+  boundary: StorageReadBoundary,
+  expectedIdentity: { dev: number | bigint; ino: number | bigint },
+  expectedOwnerToken: string,
+): Promise<boolean> {
+  const inspected = await inspectSafeFileLock(lockPath, boundary);
+  if (
+    inspected === null
+    || !sameIdentity(expectedIdentity, inspected.identity)
+    || inspected.metadata.ownerToken !== expectedOwnerToken
+  ) {
+    return false;
+  }
+  try {
+    // Node has no portable inode-conditional unlink. The identity and owner
+    // token are checked immediately before this narrow path race window.
+    await unlink(lockPath);
+    return true;
+  } catch (error) {
+    if (isUnsafePathError(error)) {
+      return false;
+    }
+    throw new InvalidStorageEntryError();
+  }
+}
+
+async function unlinkCreatedFile(
+  path: string,
+  identity: { dev: number | bigint; ino: number | bigint },
+): Promise<void> {
+  try {
+    const pathStat = await lstat(path);
+    if (
+      !pathStat.isSymbolicLink()
+      && pathStat.isFile()
+      && sameIdentity(identity, pathStat)
+    ) {
+      await unlink(path);
+    }
+  } catch (error) {
+    if (!isUnsafePathError(error)) {
+      throw new InvalidStorageEntryError();
+    }
+  }
+}

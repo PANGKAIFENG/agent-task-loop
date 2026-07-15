@@ -2,9 +2,12 @@ node_modules/
 build/
 coverage/
 .env
+.env.*
+!.env.example
 .atl-runtime/
 .worktrees/
 playwright-report/
 test-results/
 .DS_Store
 docs/superpowers/plans/
+*.tsbuildinfo
