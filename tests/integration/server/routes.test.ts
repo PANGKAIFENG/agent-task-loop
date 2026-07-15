@@ -11,6 +11,10 @@ import { createProject } from '../../../src/services/create-project.js';
 import { createApp } from '../../../src/server/app.js';
 import { findBoardStaticRoot, startServer } from '../../../src/server/start.js';
 import {
+  TaskConflictError,
+  TaskIntegrityError,
+} from '../../../src/storage/markdown-task-repository.js';
+import {
   createTestServiceContext,
   type TestServiceContext,
 } from '../../helpers/service-context.js';
@@ -278,6 +282,100 @@ describe('local task board routes', () => {
     await app.close();
   });
 
+  it('returns stable client errors for malformed JSON and non-object review bodies', async () => {
+    const { app } = await setup();
+    const malformed = await app.inject({
+      method: 'POST',
+      url: '/api/tasks',
+      headers: {
+        ...writeHeaders(),
+        'content-type': 'application/json',
+      },
+      payload: '{"title":',
+    });
+    const reviewBodies = ['"invalid"', 'null'];
+
+    expect(malformed.statusCode).toBe(400);
+    expect(malformed.json()).toEqual({
+      code: 'invalid_request_body',
+      message: 'Invalid request body',
+      details: null,
+    });
+    for (const payload of reviewBodies) {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/tasks/task-review-input/review',
+        headers: {
+          ...writeHeaders(),
+          'content-type': 'application/json',
+        },
+        payload,
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        code: 'invalid_review_task_input',
+        message: 'Invalid task review input',
+        details: null,
+      });
+    }
+    await app.close();
+  });
+
+  it('hides internal repository errors on reads and writes', async () => {
+    const { app, context } = await setup();
+    const internalError = new TaskIntegrityError();
+    vi.spyOn(context.ctx.tasks, 'list').mockRejectedValueOnce(internalError);
+    const read = await app.inject({ method: 'GET', url: '/api/inbox' });
+    vi.spyOn(context.ctx.tasks, 'findBySourceKey').mockRejectedValueOnce(internalError);
+    const create = await app.inject({
+      method: 'POST',
+      url: '/api/tasks',
+      headers: writeHeaders(),
+      payload: { title: 'Internal failure', sourceKey: 'board:internal-failure' },
+    });
+    vi.spyOn(context.ctx.tasks, 'get').mockRejectedValueOnce(internalError);
+    const run = await app.inject({
+      method: 'POST',
+      url: '/api/tasks/task-internal-failure/run',
+      headers: writeHeaders(),
+      payload: {},
+    });
+
+    for (const response of [read, create, run]) {
+      expect(response.statusCode).toBe(500);
+      expect(response.json()).toEqual({
+        code: 'internal_error',
+        message: 'Internal server error',
+        details: null,
+      });
+      expect(response.body).not.toContain(internalError.code);
+      expect(response.body).not.toContain(internalError.message);
+    }
+    await app.close();
+  });
+
+  it('maps a task write conflict to a stable 409 response', async () => {
+    const { app, context } = await setup();
+    const conflict = new TaskConflictError();
+    vi.spyOn(context.ctx.tasks, 'findBySourceKey').mockRejectedValueOnce(conflict);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/tasks',
+      headers: writeHeaders(),
+      payload: { title: 'Conflicting task', sourceKey: 'board:conflict' },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      code: 'task_conflict',
+      message: 'Task conflict',
+      details: null,
+    });
+    expect(response.body).not.toContain(conflict.message);
+    await app.close();
+  });
+
   it('routes confirm, stop, unblock, reopen, and review through domain services', async () => {
     const { app, context } = await setup();
     const ready = await createReadyTask(context);
@@ -405,10 +503,10 @@ describe('local task board routes', () => {
     expect(accepted.statusCode).toBe(202);
     expect(accepted.json()).toEqual({ taskId: ready.taskId, runId: 'run-board-001' });
     expect(start).toHaveBeenCalledWith({ taskId: ready.taskId, mode: 'manual' });
-    expect(invalid.statusCode).toBe(400);
+    expect(invalid.statusCode).toBe(404);
     expect(invalid.json()).toEqual({
-      code: 'task_not_eligible_for_run',
-      message: 'Task must be Ready to run',
+      code: 'task_not_found',
+      message: 'Task not found',
       details: null,
     });
     expect(conflicted.statusCode).toBe(409);
