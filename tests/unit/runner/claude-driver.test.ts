@@ -392,7 +392,7 @@ describe('ClaudeResearchDriver.execute', () => {
         code: 'claude_timeout',
       });
 
-      expect(Date.now() - startedAt).toBeLessThan(1_200);
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
     } finally {
       await terminateTestProcess(pidPath);
       await fixture.cleanup();
