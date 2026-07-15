@@ -1,7 +1,8 @@
 import { constants } from 'node:fs';
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -205,6 +206,57 @@ function floodingExecutableSource(
   ].join('\n');
 }
 
+function inheritedPipeExecutableSource(
+  mode: 'timeout' | 'overflow' | 'watchdog',
+): string {
+  return [
+    'import { spawn } from "node:child_process";',
+    'import { writeFileSync } from "node:fs";',
+    'import { fileURLToPath } from "node:url";',
+    `const help = ${JSON.stringify(REQUIRED_HELP)};`,
+    `const mode = ${JSON.stringify(mode)};`,
+    'if (process.argv.includes("--help")) {',
+    '  process.stdout.write(help);',
+    '} else {',
+    '  const grandchildOptions = { stdio: ["ignore", "inherit", "inherit"] };',
+    '  if (mode === "watchdog") grandchildOptions.detached = true;',
+    '  const grandchild = spawn(process.execPath, [',
+    '    "-e",',
+    '    "setTimeout(() => {}, 2000)",',
+    '  ], grandchildOptions);',
+    '  const pidPath = fileURLToPath(new URL("./grandchild.pid", import.meta.url));',
+    '  writeFileSync(pidPath, String(grandchild.pid));',
+    '  if (mode === "overflow") process.stdout.write("x".repeat(2048));',
+    '  setInterval(() => {}, 1000);',
+    '}',
+  ].join('\n');
+}
+
+async function expectProcessGone(pidPath: string): Promise<void> {
+  const pid = Number(await readFile(pidPath, 'utf8'));
+  const deadline = Date.now() + 750;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return;
+      throw error;
+    }
+    await delay(20);
+  }
+  throw new Error('Grandchild process survived driver termination');
+}
+
+async function terminateTestProcess(pidPath: string): Promise<void> {
+  const pid = Number(await readFile(pidPath, 'utf8'));
+  try {
+    process.kill(process.platform === 'win32' ? pid : -pid, 'SIGKILL');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+  }
+  await expectProcessGone(pidPath);
+}
+
 describe('createClaudeResearchDriver', () => {
   it('resolves an absolute regular executable at startup', async () => {
     const fileSystem = fakeFileSystem({
@@ -265,6 +317,88 @@ describe('createClaudeResearchDriver', () => {
 });
 
 describe('ClaudeResearchDriver.execute', () => {
+  it('enforces a hard timeout across descendants that inherit stdio', async () => {
+    const fixture = await createTestExecutable(
+      inheritedPipeExecutableSource('timeout'),
+    );
+    const pidPath = join(dirname(fixture.executable), 'grandchild.pid');
+    try {
+      const driver = await createClaudeResearchDriver({
+        environment: { ATL_CLAUDE_BIN: fixture.executable },
+      });
+      const startedAt = Date.now();
+
+      await expect(driver.execute({
+        task: makeTask(),
+        context: makeContext(),
+        timeoutMs: 100,
+      })).rejects.toMatchObject({
+        name: 'ClaudeDriverError',
+        code: 'claude_timeout',
+      });
+
+      expect(Date.now() - startedAt).toBeLessThan(1_200);
+      await expectProcessGone(pidPath);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it('terminates the process group when output exceeds its limit', async () => {
+    const fixture = await createTestExecutable(
+      inheritedPipeExecutableSource('overflow'),
+    );
+    const pidPath = join(dirname(fixture.executable), 'grandchild.pid');
+    try {
+      const driver = await createClaudeResearchDriver({
+        environment: { ATL_CLAUDE_BIN: fixture.executable },
+        maxProcessOutputBytes: 512,
+      });
+      const startedAt = Date.now();
+
+      await expect(driver.execute({
+        task: makeTask(),
+        context: makeContext(),
+        timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
+      })).rejects.toMatchObject({
+        name: 'ClaudeDriverError',
+        code: 'claude_process_failed',
+      });
+
+      expect(Date.now() - startedAt).toBeLessThan(1_200);
+      await expectProcessGone(pidPath);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it('settles timeout when a process outside the group keeps pipes open', async () => {
+    const fixture = await createTestExecutable(
+      inheritedPipeExecutableSource('watchdog'),
+    );
+    const pidPath = join(dirname(fixture.executable), 'grandchild.pid');
+    try {
+      const driver = await createClaudeResearchDriver({
+        environment: { ATL_CLAUDE_BIN: fixture.executable },
+      });
+      const startedAt = Date.now();
+
+      await expect(driver.execute({
+        task: makeTask(),
+        context: makeContext(),
+        timeoutMs: 500,
+      })).rejects.toMatchObject({
+        name: 'ClaudeDriverError',
+        code: 'claude_timeout',
+      });
+
+      expect(Date.now() - startedAt).toBeLessThan(1_200);
+    } finally {
+      await terminateTestProcess(pidPath);
+      await fixture.cleanup();
+    }
+  });
+
   it.each(['stdout', 'stderr'] as const)(
     'caps help %s and maps overflow to unsupported_claude_cli',
     async (stream) => {

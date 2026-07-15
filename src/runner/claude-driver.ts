@@ -26,6 +26,7 @@ export const CLAUDE_RESEARCH_TIMEOUT_MS = 30 * 60 * 1000;
 
 const HELP_TIMEOUT_MS = 10_000;
 const DEFAULT_PROCESS_OUTPUT_LIMIT_BYTES = 8 * 1024 * 1024;
+const PROCESS_TERMINATION_SETTLE_MS = 250;
 const REQUIRED_HELP_MARKERS = [
   '--print',
   '--safe-mode',
@@ -117,6 +118,7 @@ function createDefaultExecutor(maxOutputBytes: number): ProcessExecutor {
       return new Promise((resolve, reject) => {
         const child = spawn(execution.command, [...execution.args], {
           cwd: execution.cwd,
+          detached: process.platform !== 'win32',
           env: execution.environment,
           stdio: ['pipe', 'pipe', 'pipe'],
         });
@@ -129,6 +131,7 @@ function createDefaultExecutor(maxOutputBytes: number): ProcessExecutor {
         let stdinComplete = false;
         let processFailure: Error | undefined;
         let closeResult: { exitCode: number } | undefined;
+        let terminationWatchdog: NodeJS.Timeout | undefined;
 
         const finish = () => {
           if (
@@ -140,6 +143,7 @@ function createDefaultExecutor(maxOutputBytes: number): ProcessExecutor {
           }
           settled = true;
           clearTimeout(timer);
+          clearTimeout(terminationWatchdog);
           if (processFailure !== undefined) {
             reject(processFailure);
             return;
@@ -152,12 +156,46 @@ function createDefaultExecutor(maxOutputBytes: number): ProcessExecutor {
           });
         };
 
+        const killProcessTree = () => {
+          let killedProcessGroup = false;
+          if (process.platform !== 'win32' && child.pid !== undefined) {
+            try {
+              process.kill(-child.pid, 'SIGKILL');
+              killedProcessGroup = true;
+            } catch {
+              // Fall back to the direct child when no process group exists.
+            }
+          }
+          if (!killedProcessGroup) {
+            child.kill('SIGKILL');
+          }
+        };
+
+        const terminate = (failureMessage?: string) => {
+          if (
+            failureMessage !== undefined
+            && processFailure === undefined
+            && !timedOut
+          ) {
+            processFailure = new Error(failureMessage);
+          }
+          killProcessTree();
+          terminationWatchdog ??= setTimeout(() => {
+            stdinComplete = true;
+            child.stdin.destroy();
+            child.stdout.destroy();
+            child.stderr.destroy();
+            closeResult ??= { exitCode: 1 };
+            finish();
+          }, PROCESS_TERMINATION_SETTLE_MS);
+          finish();
+        };
+
         const stopForProcessFailure = (message: string) => {
           if (processFailure === undefined && !timedOut) {
             processFailure = new Error(message);
           }
-          child.kill('SIGKILL');
-          finish();
+          terminate();
         };
 
         const collect = (
@@ -177,7 +215,7 @@ function createDefaultExecutor(maxOutputBytes: number): ProcessExecutor {
 
         const timer = setTimeout(() => {
           timedOut = true;
-          child.kill('SIGKILL');
+          terminate();
         }, execution.timeoutMs);
 
         child.stdout.on('data', (chunk: Buffer) => {
@@ -190,6 +228,7 @@ function createDefaultExecutor(maxOutputBytes: number): ProcessExecutor {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
+          clearTimeout(terminationWatchdog);
           reject(error);
         });
         child.once('close', (exitCode) => {
