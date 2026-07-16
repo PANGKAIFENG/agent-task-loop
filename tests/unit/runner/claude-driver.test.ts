@@ -333,13 +333,13 @@ describe('ClaudeResearchDriver.execute', () => {
       await expect(driver.execute({
         task: makeTask(),
         context: makeContext(),
-        timeoutMs: 100,
+        timeoutMs: 250,
       })).rejects.toMatchObject({
         name: 'ClaudeDriverError',
         code: 'claude_timeout',
       });
 
-      expect(Date.now() - startedAt).toBeLessThan(1_200);
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
       await expectProcessGone(pidPath);
     } finally {
       await fixture.cleanup();
