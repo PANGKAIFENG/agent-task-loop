@@ -171,7 +171,7 @@ describe('BackgroundRuntimeController', () => {
     });
   });
 
-  it('enables the scheduler with canonical source roots and fixed ATL environment', async () => {
+  it('enables the scheduler with canonical roots and inherited Claude configuration', async () => {
     const paths = await fixture();
     const deps = dependencies(paths);
     const controller = new BackgroundRuntimeController(deps);
@@ -188,10 +188,48 @@ describe('BackgroundRuntimeController', () => {
         ATL_CLAUDE_BIN: '/resolved/claude',
         ATL_CLAUDE_CONFIG_DIR: await realpath(paths.claudeConfigDirectory),
         ATL_ALLOWED_LOCAL_ROOTS: await realpath(paths.sourceRoot),
-        ATL_CLAUDE_MODEL: 'claude-sonnet-4-5',
         ATL_DAILY_LIMIT: '3',
       }),
     }));
+    const environment = vi.mocked(deps.installScheduler).mock.calls[0]?.[0].environment;
+    expect(environment).not.toHaveProperty('ATL_CLAUDE_MODEL');
+    expect(environment).not.toHaveProperty('ANTHROPIC_BASE_URL');
+  });
+
+  it('enables an ATL-specific model and Base URL without persisting credentials', async () => {
+    const paths = await fixture();
+    const deps = dependencies(paths);
+    const controller = new BackgroundRuntimeController(deps);
+
+    await controller.enable({
+      ...settings(paths),
+      modelServiceMode: 'custom',
+      model: 'glm-4-flash',
+      baseUrl: 'https://api.example.com/anthropic',
+    });
+
+    expect(deps.installScheduler).toHaveBeenCalledWith(expect.objectContaining({
+      environment: expect.objectContaining({
+        ATL_CLAUDE_MODEL: 'glm-4-flash',
+        ANTHROPIC_BASE_URL: 'https://api.example.com/anthropic',
+      }),
+    }));
+    const environment = vi.mocked(deps.installScheduler).mock.calls[0]?.[0].environment;
+    expect(environment).not.toHaveProperty('ANTHROPIC_API_KEY');
+    expect(environment).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
+  });
+
+  it('rejects incomplete custom model settings before changing the scheduler', async () => {
+    const paths = await fixture();
+    const deps = dependencies(paths);
+    const controller = new BackgroundRuntimeController(deps);
+
+    await expect(controller.enable({
+      ...settings(paths),
+      modelServiceMode: 'custom',
+      baseUrl: 'not-a-url',
+    })).rejects.toThrow('模型服务配置无效，请检查 Model 和 Base URL。');
+    expect(deps.installScheduler).not.toHaveBeenCalled();
   });
 
   it('delegates manual run and refuses to disable a conflicting scheduler', async () => {

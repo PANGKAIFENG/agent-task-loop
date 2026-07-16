@@ -18,6 +18,7 @@ import {
   type DetectRuntimeOptions,
   type RuntimeDetectionResult,
 } from './runtime-detection.js';
+import { modelServiceConfiguration } from './settings.js';
 
 export interface BackgroundSettings {
   nodeExecutable: string;
@@ -221,6 +222,12 @@ export class BackgroundRuntimeController {
     if (existing.installed && !existing.managed) {
       throw new BackgroundRuntimeError(SCHEDULER_CONFLICT);
     }
+    const modelService = modelServiceConfiguration(settings);
+    if (!modelService.valid) {
+      throw new BackgroundRuntimeError(
+        '模型服务配置无效，请检查 Model 和 Base URL。',
+      );
+    }
     const [vaultRoot, claudeConfigDirectory, ...allowedLocalRoots] = await Promise.all([
       canonicalDirectory(this.dependencies.vaultRoot, '当前 Vault'),
       canonicalDirectory(settings.claudeConfigDirectory, 'Claude 配置文件夹'),
@@ -236,7 +243,12 @@ export class BackgroundRuntimeController {
         ATL_AGENT_DRIVER: 'claude',
         ATL_CLAUDE_BIN: runtime.claude.path,
         ATL_CLAUDE_CONFIG_DIR: claudeConfigDirectory,
-        ATL_CLAUDE_MODEL: settings.model,
+        ...(modelService.model === undefined
+          ? {}
+          : { ATL_CLAUDE_MODEL: modelService.model }),
+        ...(modelService.baseUrl === undefined
+          ? {}
+          : { ANTHROPIC_BASE_URL: modelService.baseUrl }),
         ATL_ALLOWED_LOCAL_ROOTS: allowedLocalRoots.join(delimiter),
         ATL_DAILY_LIMIT: String(settings.dailyLimit),
       },
