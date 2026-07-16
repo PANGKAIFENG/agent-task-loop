@@ -77,7 +77,7 @@ interface CaptureState {
 
 1. 每日复盘继续读取昨天来源、更新每日整理文件并判断最多 3-5 条候选。
 2. 生成任务前，先通过 ATL 查询全部 Inbox、Active 和 Archive 任务，而不是只扫描最近 14 天的 Inbox 文件。
-3. 每条候选通过打包后的 `atl-runner.mjs task capture` 提交，传入标题、正文、来源日期、来源笔记、来源引用、来源键和优先级。
+3. 每条候选通过打包后的 `atl-runner.mjs task capture --stdin-json` 提交；候选 JSON 走标准输入，避免把正文或来源引用拼进 shell 命令。
 4. `captureTask` 在同一事务边界内执行精确来源匹配、跨通道证据匹配、软相似度提示、任务创建、索引更新和审计记录。
 5. 返回已有任务时，每日复盘把它记录为“已存在候选/正式任务”，不直接覆写已有任务。
 
