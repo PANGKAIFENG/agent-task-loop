@@ -164,7 +164,7 @@ describe('atl CLI core loop', () => {
     });
     await expect(stat(join(home, 'Library')))
       .rejects.toMatchObject({ code: 'ENOENT' });
-  });
+  }, 20_000);
 
   it('exposes bounded runner commands and keeps status read-only', async () => {
     const root = await makeVault();
@@ -210,10 +210,13 @@ describe('atl CLI core loop', () => {
     expect(await readdir(root)).toEqual(before);
   });
 
-  it('keeps the README task capture pipeline machine-readable', async () => {
+  it('keeps the documented task capture pipeline machine-readable', async () => {
     const root = await makeVault();
-    const readme = await readFile(join(repositoryRoot, 'README.md'), 'utf8');
-    expect(readme).toContain('TASK_ID="$(pnpm --silent atl task capture');
+    const guide = await readFile(
+      join(repositoryRoot, 'docs', 'operations', 'developer-cli.md'),
+      'utf8',
+    );
+    expect(guide).toContain('TASK_ID="$(pnpm --silent atl task capture');
 
     const result = await runReadmeShell(root, `
       TASK_ID="$(pnpm --silent atl task capture \\

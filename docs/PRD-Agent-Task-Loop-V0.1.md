@@ -203,8 +203,8 @@ flowchart LR
 - 只有任务明确引用的本地资料允许被读取，不允许无边界扫描整个个人知识库。
 - 用户验收反馈会进入下一次执行上下文，但不会覆盖历史 Artifact。
 - 已验收 Artifact 可以被后续任务显式引用；未验收结果不能自动沉淀为长期结论。
-- 原始个人日志、会话、客户数据和真实任务只保存在本地 Obsidian/ClawVault，不进入 GitHub 仓库。
-- private GitHub repo 只保存产品规格、实现代码、测试、规则和脱敏 fixtures。
+- 原始个人日志、会话、客户数据和真实任务只保存在本地 Obsidian Vault，不进入 GitHub 仓库。
+- GitHub repo 只保存产品规格、实现代码、测试、规则和脱敏 fixtures。
 
 ## 11. 模块拆解与输入输出
 

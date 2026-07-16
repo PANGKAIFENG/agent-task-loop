@@ -1,0 +1,68 @@
+name: Release Obsidian plugin
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify repository
+        run: |
+          pnpm typecheck
+          pnpm lint
+          pnpm test
+          pnpm build
+
+      - name: Verify release metadata
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          plugin_version="$(node -p "JSON.parse(require('fs').readFileSync('manifest.json', 'utf8')).version")"
+          test "$RELEASE_TAG" = "v$plugin_version"
+          cmp manifest.json src/obsidian-plugin/manifest.json
+          test -f build/obsidian-plugin/main.js
+          test -f build/obsidian-plugin/manifest.json
+          test -f build/obsidian-plugin/styles.css
+
+      - name: Package plugin
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          cd build/obsidian-plugin
+          zip "agent-task-loop-${RELEASE_TAG}.zip" main.js manifest.json styles.css
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            "build/obsidian-plugin/main.js#main.js" \
+            "build/obsidian-plugin/manifest.json#manifest.json" \
+            "build/obsidian-plugin/styles.css#styles.css" \
+            "build/obsidian-plugin/agent-task-loop-${RELEASE_TAG}.zip#agent-task-loop-${RELEASE_TAG}.zip" \
+            --title "Agent Task Loop ${RELEASE_TAG}" \
+            --generate-notes
