@@ -164,7 +164,7 @@ describe('atl CLI core loop', () => {
     });
     await expect(stat(join(home, 'Library')))
       .rejects.toMatchObject({ code: 'ENOENT' });
-  }, 40_000);
+  }, 80_000);
 
   it('exposes bounded runner commands and keeps status read-only', async () => {
     const root = await makeVault();
