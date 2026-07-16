@@ -15,6 +15,9 @@ import {
 
 import './styles.css';
 
+import { createClaudeStructuredExecutor } from '../runner/claude-driver.js';
+import { captureTask } from '../services/capture-task.js';
+import type { ServiceContext } from '../services/service-context.js';
 import { createVaultWriteAuthorization } from '../storage/task-paths.js';
 import {
   BackgroundRuntimeController,
@@ -25,16 +28,23 @@ import {
   BoardAppearanceController,
   type BoardPresetStatus,
 } from './board-appearance-controller.js';
+import { extractTaskCandidates } from './candidate-extractor.js';
+import { CaptureCandidatesModal } from './capture-candidates-modal.js';
+import { CaptureController } from './capture-controller.js';
 import { ConfirmationController } from './confirmation-controller.js';
 import { TaskConfirmationModal } from './confirmation-modal.js';
+import { QuickCaptureModal } from './quick-capture-modal.js';
 import { createObsidianServiceContext } from './service-context.js';
 import {
   backgroundActionState,
   DEFAULT_SETTINGS,
   modelServiceFieldState,
+  modelServiceConfiguration,
   normalizeSettings,
+  type CaptureState,
   type AtlPluginSettings,
 } from './settings.js';
+import { readSyncSourceRecords } from './sync-source-reader.js';
 import { isAtlInboxTaskPath, taskIdFromPath } from './task-eligibility.js';
 
 const CARD_THEME_CLASS = 'atl-task-card-theme';
@@ -83,6 +93,7 @@ function errorMessage(error: unknown, fallback: string): string {
 export default class AgentTaskLoopPlugin extends Plugin {
   settings: AtlPluginSettings = DEFAULT_SETTINGS;
   readonly boardAppearance = new BoardAppearanceController();
+  private syncScanInFlight: Promise<void> | null = null;
 
   override async onload(): Promise<void> {
     this.settings = normalizeSettings(await this.loadData());
@@ -91,6 +102,26 @@ export default class AgentTaskLoopPlugin extends Plugin {
     }
     this.applyTaskCardTheme();
     this.register(() => document.body.classList.remove(CARD_THEME_CLASS));
+
+    this.addRibbonIcon('square-pen', 'ATL：新建任务', () => {
+      this.openQuickCapture();
+    });
+    this.addRibbonIcon('list-restart', 'ATL：从同步助手获取待办', () => {
+      void this.scanSyncAssistant();
+    });
+
+    this.addCommand({
+      id: 'quick-capture-task',
+      name: '新建任务',
+      callback: () => this.openQuickCapture(),
+    });
+    this.addCommand({
+      id: 'capture-from-sync-assistant',
+      name: '从同步助手获取待办',
+      callback: () => {
+        void this.scanSyncAssistant();
+      },
+    });
 
     this.registerEvent(this.app.workspace.on(
       'file-menu',
@@ -157,6 +188,161 @@ export default class AgentTaskLoopPlugin extends Plugin {
       CARD_THEME_CLASS,
       this.settings.taskCardThemeEnabled,
     );
+  }
+
+  private authorizedServiceContext(): {
+    adapter: FileSystemAdapter;
+    context: ServiceContext;
+  } | null {
+    if (!this.settings.allowVaultManagement) {
+      new Notice('请先在“设置 → Agent Task Loop”中允许 ATL 管理此 Vault');
+      return null;
+    }
+    const adapter = this.app.vault.adapter;
+    if (!(adapter instanceof FileSystemAdapter)) {
+      new Notice('Agent Task Loop 仅支持桌面版本地 Vault');
+      return null;
+    }
+    const root = adapter.getBasePath();
+    return {
+      adapter,
+      context: createObsidianServiceContext(
+        root,
+        createVaultWriteAuthorization(root),
+      ),
+    };
+  }
+
+  private openQuickCapture(): void {
+    const authorized = this.authorizedServiceContext();
+    if (authorized === null) return;
+    new QuickCaptureModal(this.app, async (input) => {
+      await captureTask(authorized.context, input);
+      new Notice('任务已加入 Inbox');
+    }).open();
+  }
+
+  private scanSyncAssistant(): Promise<void> {
+    if (this.syncScanInFlight !== null) {
+      new Notice('ATL 正在扫描同步助手，请稍候');
+      return this.syncScanInFlight;
+    }
+    const scan = this.performSyncAssistantScan().finally(() => {
+      if (this.syncScanInFlight === scan) this.syncScanInFlight = null;
+    });
+    this.syncScanInFlight = scan;
+    return scan;
+  }
+
+  private async performSyncAssistantScan(): Promise<void> {
+    const authorized = this.authorizedServiceContext();
+    if (authorized === null) return;
+    const { adapter, context } = authorized;
+    if (!(await adapter.exists('笔记同步助手'))) {
+      new Notice('尚未检测到“笔记同步助手”目录');
+      return;
+    }
+
+    try {
+      await this.ensureClaudeExecutable();
+      const background = this.settings.background;
+      const modelService = modelServiceConfiguration(background);
+      if (!modelService.valid) {
+        new Notice('模型配置无效，请在 ATL 设置中检查 Model 和 Base URL');
+        return;
+      }
+      const environment: NodeJS.ProcessEnv = { ...process.env };
+      delete environment.ATL_CLAUDE_BIN;
+      delete environment.ATL_CLAUDE_CONFIG_DIR;
+      delete environment.ATL_CLAUDE_MODEL;
+      environment.ATL_CLAUDE_BIN = background.claudeExecutable;
+      environment.ATL_CLAUDE_CONFIG_DIR = background.claudeConfigDirectory;
+      if (modelService.model !== undefined) {
+        environment.ATL_CLAUDE_MODEL = modelService.model;
+      }
+      if (modelService.baseUrl !== undefined) {
+        environment.ANTHROPIC_BASE_URL = modelService.baseUrl;
+      }
+      const executor = await createClaudeStructuredExecutor({ environment });
+      const fileSystem = {
+        listMarkdownFiles: async (relativeDirectory: string) => (
+          (await adapter.list(relativeDirectory)).files
+        ),
+        read: async (relativePath: string) => adapter.read(relativePath),
+      };
+      const controller = new CaptureController({
+        context,
+        readSources: async ({ now, lastSuccessfulScanAt }) => (
+          readSyncSourceRecords({
+            fileSystem,
+            now,
+            lastSuccessfulScanAt,
+          })
+        ),
+        extractCandidates: async (records) => extractTaskCandidates({
+          records,
+          executor,
+        }),
+        getState: () => ({
+          lastSuccessfulScanAt: this.settings.capture.lastSuccessfulScanAt,
+          reviewedFingerprints: [...this.settings.capture.reviewedFingerprints],
+        }),
+        saveState: async (state: CaptureState) => {
+          this.settings.capture = {
+            lastSuccessfulScanAt: state.lastSuccessfulScanAt,
+            reviewedFingerprints: [...state.reviewedFingerprints],
+          };
+          await this.saveSettings();
+        },
+      });
+
+      new Notice('ATL 正在从同步助手提取待办候选...');
+      const prepared = await controller.scan();
+      if (prepared.recordsConsidered === 0) {
+        await controller.commit(prepared, []);
+        new Notice('同步助手中没有需要扫描的新记录');
+        return;
+      }
+      if (prepared.candidates.length === 0) {
+        await controller.commit(prepared, []);
+        new Notice('本次没有发现新的待办候选');
+        return;
+      }
+
+      new CaptureCandidatesModal(this.app, prepared, async (selectedIds) => {
+        const result = await controller.commit(prepared, selectedIds);
+        const accepted = result.createdTaskIds.length + result.existingTaskIds.length;
+        new Notice(accepted === 0
+          ? '已忽略本次待办候选'
+          : `已处理 ${accepted} 个待办候选`);
+      }).open();
+    } catch (error) {
+      new Notice(errorMessage(
+        error,
+        '同步助手扫描失败，任务和扫描进度均未修改',
+      ));
+    }
+  }
+
+  private async ensureClaudeExecutable(): Promise<void> {
+    if (this.settings.background.claudeExecutable !== '') return;
+    const controller = this.createBackgroundController();
+    if (controller === null) {
+      throw new Error('当前 Obsidian 无法检测 Claude Code');
+    }
+    const inspection = await controller.inspect(this.settings.background);
+    if (inspection.detected.nodeExecutable !== '') {
+      this.settings.background.nodeExecutable = inspection.detected.nodeExecutable;
+    }
+    if (inspection.detected.claudeExecutable !== '') {
+      this.settings.background.claudeExecutable = inspection.detected.claudeExecutable;
+    }
+    await this.saveSettings();
+    if (inspection.checks.claude !== 'ok') {
+      throw new Error(
+        inspection.errorMessage ?? 'Claude Code 尚未就绪，请先在 ATL 设置中检测环境',
+      );
+    }
   }
 
   private async openConfirmation(file: TFile): Promise<void> {
