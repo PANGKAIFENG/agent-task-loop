@@ -122,21 +122,23 @@ describe('confirmTask', () => {
     await expect(context.ctx.audit.listForTask(task.taskId)).resolves.toHaveLength(1);
   });
 
-  it('rejects confirmation when autoExecutable is false', async () => {
+  it('confirms a complete task without enabling automatic execution', async () => {
     const context = await makeContext();
     await createSyntheticProject(context);
     const task = await captureSyntheticTask(context);
 
-    await expect(confirmTask(
+    const confirmed = await confirmTask(
       context.ctx,
       task.taskId,
       confirmInput({ autoExecutable: false }),
-    )).rejects.toThrow(
-      'Task is not ready: autoExecutable must be explicitly enabled',
     );
 
-    await expect(context.ctx.tasks.get(task.taskId)).resolves.toEqual(task);
-    await expect(context.ctx.audit.listForTask(task.taskId)).resolves.toHaveLength(1);
+    expect(confirmed).toMatchObject({
+      status: 'ready',
+      reviewState: 'confirmed',
+      autoExecutable: false,
+    });
+    await expect(context.ctx.audit.listForTask(task.taskId)).resolves.toHaveLength(2);
   });
 
   it('rejects an unknown project with a sanitized error', async () => {

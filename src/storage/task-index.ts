@@ -12,6 +12,7 @@ import {
   assertVaultWriteAllowed,
   isTaskMarkdownPath,
   taskStorageRoot,
+  type VaultWriteAuthorization,
 } from './task-paths.js';
 
 interface IndexEntry {
@@ -118,8 +119,9 @@ async function readIndexEntry(
 export async function rebuildTaskIndex(
   root: string,
   generatedAt = new Date().toISOString(),
+  writeAuthorization?: VaultWriteAuthorization,
 ): Promise<void> {
-  assertVaultWriteAllowed(root);
+  assertVaultWriteAllowed(root, writeAuthorization);
   const tasksRoot = taskStorageRoot(root);
   const candidates = (await Promise.all(
     ['Inbox', 'Active', 'Archive'].map(async (directory) => {

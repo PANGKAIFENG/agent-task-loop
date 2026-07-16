@@ -8,5 +8,5 @@
     "sourceMap": true
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["src/ui"]
+  "exclude": ["src/ui", "src/obsidian-plugin"]
 }

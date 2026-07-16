@@ -113,9 +113,5 @@ export function readinessErrors(task: Task): string[] {
   if (task.permissionProfile !== 'read_only_research') {
     errors.push('permissionProfile must be read_only_research');
   }
-  if (!task.autoExecutable) {
-    errors.push('autoExecutable must be explicitly enabled');
-  }
-
   return errors;
 }

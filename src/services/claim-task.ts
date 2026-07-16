@@ -92,6 +92,7 @@ export function resolveClaimTaskOptions(
 export function isClaimEligible(task: Task): boolean {
   return task.status === 'ready'
     && task.reviewState === 'confirmed'
+    && task.autoExecutable
     && readinessErrors(task).length === 0;
 }
 
