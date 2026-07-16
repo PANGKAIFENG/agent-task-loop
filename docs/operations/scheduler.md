@@ -1,99 +1,107 @@
-# 本地研究任务调度
+# ATL 后台执行与维护
 
-Agent Task Loop 使用 macOS LaunchAgent 在 `Asia/Shanghai` 每小时运行一次，时段为
-08:00 至 22:00，共 15 个触发点。每次触发只执行一个有界命令：
+普通用户通过“Obsidian 设置 → Agent Task Loop → 后台执行”完成检测、启用、试跑、更新和停用，不需要使用本页的终端命令。本页后半部分只面向开发和深度排障。
 
-```text
-<absolute-node> <absolute-repo>/build/server/cli.js runner run-once --driver claude
-```
+## 用户可见行为
 
-LaunchAgent 不通过 shell 启动，也不保存 API token、任务正文或其他 secret。它只保存
-runner 所需的 ATL 路径、写入开关、driver、模型名、每日限额、`HOME` 和固定的最小
-`PATH`。
+ATL 使用 macOS LaunchAgent，在 `Asia/Shanghai` 时区每天 `08:00` 至 `22:00` 的每个整点检查一次任务队列，共 15 个触发点。
 
-## 安装前检查
+每次检查最多领取一个符合条件的 Ready 调研任务。没有合格任务时正常结束；调度器不会自动确认 Inbox 任务。
 
-1. 确认 macOS 系统时区是 `Asia/Shanghai`。其他时区会被安装命令拒绝。
-2. 使用 Node.js 24，并在仓库根目录完成构建：
+插件设置提供：
 
-   ```bash
-   node --version
-   pnpm build
-   ```
+- 自动检测 ATL Runner、Node.js 24+、Claude Code 登录和后台任务；
+- 用系统文件夹选择器授权本地资料来源；
+- 启用或更新 ATL 管理的后台任务；
+- “立即试跑”一次队列检查；
+- 停用 ATL 管理的后台任务。
 
-3. 设置绝对且已存在的路径。`ATL_ALLOWED_LOCAL_ROOTS` 使用系统 path delimiter
-   分隔多个路径；macOS 上是冒号。
+LaunchAgent 不通过 shell 启动，也不保存 API token 或任务正文。它只保存 Runner 所需的固定程序路径、Vault 路径、Claude 配置目录、模型名、每日限额和已授权资料目录。
 
-   ```bash
-   export ATL_VAULT_ROOT=/absolute/path/to/vault
-   export ATL_CLAUDE_BIN=/absolute/path/to/claude
-   export ATL_CLAUDE_CONFIG_DIR=/absolute/path/to/claude-config
-   export ATL_CLAUDE_MODEL=glm-4-flash
-   export ATL_ALLOWED_LOCAL_ROOTS=/absolute/path/to/allowed-sources
-   export ATL_DAILY_LIMIT=3
-   ```
+## 安全更新
 
-4. `ATL_CLAUDE_CONFIG_DIR` 指向 Claude CLI 已有的配置目录。它让受限子进程读取登录状态
-   和 provider 配置，同时继续使用隔离的临时 `HOME`。plist 只保存该目录路径，不复制
-   配置内容或 token。
-5. `ATL_CLAUDE_MODEL` 必须显式设置为已经在当前 provider 验证可用的模型。更换模型后，
-   应先在一次性 vault 中重新执行完整 smoke test，再更新调度器。
-6. 在安装前确认该 Claude CLI 已完成交互式登录，并用其官方 auth status 命令核对当前
-   身份。不要把 token 放进 ATL 环境变量或 plist。
-
-安装命令必须从仓库根目录运行：
-
-```bash
-node build/server/cli.js scheduler install
-node build/server/cli.js scheduler status
-```
-
-安装文件固定为：
+后台配置固定保存在：
 
 ```text
 ~/Library/LaunchAgents/ai.agent-task-loop.runner.plist
 ```
 
-安装流程会先安全写入 plist，再用 `/usr/bin/plutil -lint` 校验，最后 bootstrap 到当前
-用户的 `gui/$UID` domain。不同 Label 的同名文件不会被覆盖。
+ATL 只管理 Label 为 `ai.agent-task-loop.runner` 的配置。若同一路径存在不同 Label，插件会报告冲突并停止，不会覆盖或删除。
 
-## 日志与手动运行
+更新已运行的服务时，ATL 会：
 
-标准输出和错误日志分别位于：
+1. 原子写入并校验新 plist；
+2. 卸载旧服务；
+3. 加载新服务；
+4. 若加载失败，恢复旧 plist 并重新加载旧服务。
+
+## 日志
+
+标准输出和错误日志位于：
 
 ```text
 ~/.local/state/agent-task-loop/runner.stdout.log
 ~/.local/state/agent-task-loop/runner.stderr.log
 ```
 
-查看最近输出：
+日志用于排查任务是否被领取、运行失败原因和有界执行结果。ATL 不应把 token、完整登录配置或未授权笔记写入日志。
+
+## 开发者：构建与手动安装
+
+以下命令只用于开发或深度维护。普通用户应使用 Obsidian 设置页面。
+
+```bash
+node --version
+pnpm build
+```
+
+发布构建会在 `build/obsidian-plugin/` 生成：
+
+```text
+main.js
+manifest.json
+styles.css
+atl-runner.mjs
+```
+
+Runner 的实际启动形式是：
+
+```text
+<absolute-node> <plugin-directory>/atl-runner.mjs runner run-once --driver claude
+```
+
+需要使用 CLI 手动验证时，先设置绝对且存在的路径：
+
+```bash
+export ATL_VAULT_ROOT=/absolute/path/to/vault
+export ATL_CLAUDE_BIN=/absolute/path/to/claude
+export ATL_CLAUDE_CONFIG_DIR=/absolute/path/to/claude-config
+export ATL_CLAUDE_MODEL=claude-sonnet-4-5
+export ATL_ALLOWED_LOCAL_ROOTS=/absolute/path/to/allowed-sources
+export ATL_DAILY_LIMIT=3
+```
+
+`ATL_ALLOWED_LOCAL_ROOTS` 使用系统 path delimiter 分隔多个路径；macOS 上是冒号。不要把 token 放进 ATL 环境变量或 plist。
+
+仓库模式的维护命令：
+
+```bash
+node build/server/cli.js scheduler install
+node build/server/cli.js scheduler status
+node build/server/cli.js runner run-once --driver claude
+node build/server/cli.js scheduler uninstall
+```
+
+`scheduler status` 始终只读。`scheduler uninstall` 先从当前用户 domain 卸载服务，再只删除固定路径下、Label 匹配且执行期间未变化的 managed plist。
+
+查看最近日志：
 
 ```bash
 tail -n 100 ~/.local/state/agent-task-loop/runner.stdout.log
 tail -n 100 ~/.local/state/agent-task-loop/runner.stderr.log
 ```
 
-使用与调度器相同的环境变量手动执行一次：
-
-```bash
-node build/server/cli.js runner run-once --driver claude
-```
-
-`run-once` 在没有符合条件的 Ready task 时会结束，不应通过创建或自动确认任务来强行
-验证调度器。
-
-## 停用与恢复任务
-
-停用 schedule：
-
-```bash
-node build/server/cli.js scheduler uninstall
-```
-
-该命令先从当前用户 domain bootout，再只删除固定路径下、Label 匹配且执行期间未变化的
-managed plist。`scheduler status` 始终只读。
-
-恢复一个经人工检查后可继续的 blocked task：
+恢复一个经人工检查后可继续的 Blocked 任务：
 
 ```bash
 node build/server/cli.js task unblock \
@@ -101,14 +109,10 @@ node build/server/cli.js task unblock \
   --feedback "说明阻塞已如何解除"
 ```
 
-恢复后仍应检查任务的 acceptance criteria、权限边界和 `autoExecutable`，不要绕过人工确认。
+恢复后仍需检查任务的验收标准、权限边界和 `auto_executable`，不得绕过人工确认。
 
-## 当前 checkpoint 边界
+## 质量观察边界
 
-V0.1 的技术门禁包含一次性 vault 中的真实 Claude research run，以及真实 vault 的只读
-storage doctor 和队列检查。通过这些门禁只代表运行时和存储兼容性已经验证，不代表真实
-个人任务已经经过长期运行观察。
+`v0.2.0` 的技术门禁包含临时 Vault 中的 Runner 验证，以及真实 Vault 的受控只读检查。安装成功或一次试跑成功，只代表运行环境和存储兼容性通过，不代表真实调研质量已经通过长期观察。
 
-两周观察期从用户确认第一个真实 Ready task 后开始。观察期内每个结果仍必须进入 Review，
-由用户核对事实、证据和每条 acceptance criterion；不得把 scheduler 安装成功或一次性
-smoke test 等同于真实任务质量验收。
+真实结果仍必须进入 Review，由用户核对事实、证据和每条验收标准；不得把调度器安装成功等同于任务完成。

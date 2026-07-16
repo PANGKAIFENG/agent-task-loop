@@ -18,6 +18,6 @@ describe('packaged ATL runner', () => {
 
     const result = await execa(process.execPath, [runnerPath, '--version']);
 
-    expect(result.stdout).toBe('0.1.0');
+    expect(result.stdout).toBe('0.2.0');
   });
 });

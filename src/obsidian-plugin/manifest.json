@@ -1,7 +1,7 @@
 {
   "id": "agent-task-loop",
   "name": "Agent Task Loop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "minAppVersion": "1.8.0",
   "description": "Confirm Inbox tasks and move them into the Agent Task Loop from Obsidian.",
   "author": "PANGKAIFENG",
