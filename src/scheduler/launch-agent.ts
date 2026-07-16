@@ -643,8 +643,23 @@ export async function installLaunchAgent(
   });
   await atomicWrite(rendered.path, rendered.plist, previous === null);
   const commands = options.commandAdapter ?? defaultCommandAdapter;
+  let previousServiceWasLoaded = false;
   try {
     await commands.execute('/usr/bin/plutil', ['-lint', rendered.path]);
+    if (previous !== null) {
+      try {
+        await commands.execute('/bin/launchctl', [
+          'bootout',
+          domain,
+          rendered.path,
+        ]);
+        previousServiceWasLoaded = true;
+      } catch (error) {
+        if (!missingLaunchAgentService(error)) {
+          throw error;
+        }
+      }
+    }
     await commands.execute('/bin/launchctl', [
       'bootstrap',
       domain,
@@ -652,6 +667,25 @@ export async function installLaunchAgent(
     ]);
   } catch (error) {
     await restoreAfterFailedInstall(rendered, previous);
+    if (previous !== null && previousServiceWasLoaded) {
+      try {
+        await commands.execute('/bin/launchctl', [
+          'bootstrap',
+          domain,
+          rendered.path,
+        ]);
+      } catch (rollbackError) {
+        const installMessage = error instanceof Error
+          ? error.message
+          : 'LaunchAgent update failed';
+        const rollbackMessage = rollbackError instanceof Error
+          ? rollbackError.message
+          : 'previous service reload failed';
+        throw new LaunchAgentError(
+          `${installMessage}; rollback failed: ${rollbackMessage}`,
+        );
+      }
+    }
     throw error;
   }
   return {

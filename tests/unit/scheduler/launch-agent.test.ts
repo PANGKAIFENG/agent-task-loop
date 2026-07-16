@@ -379,6 +379,52 @@ describe('LaunchAgent lifecycle', () => {
     expect(await readFile(path, 'utf8')).toBe(previous);
   });
 
+  it('restores and reloads the previous managed service when an update fails', async () => {
+    const paths = await fixture();
+    const launchAgents = join(paths.home, 'Library', 'LaunchAgents');
+    const path = join(launchAgents, `${LAUNCH_AGENT_LABEL}.plist`);
+    const previous = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<plist version="1.0"><dict>',
+      `<key>Label</key><string>${LAUNCH_AGENT_LABEL}</string>`,
+      '<key>Previous</key><true/>',
+      '</dict></plist>',
+    ].join('\n');
+    const calls: Array<{ command: string; args: readonly string[] }> = [];
+    let bootstrapAttempts = 0;
+    const adapter: LaunchAgentCommandAdapter = {
+      async execute(command, args) {
+        calls.push({ command, args });
+        if (args[0] === 'bootstrap' && bootstrapAttempts++ === 0) {
+          throw new Error('new bootstrap failed');
+        }
+        return { stdout: '', stderr: '' };
+      },
+    };
+    await mkdir(launchAgents, { recursive: true });
+    await writeFile(path, previous, { mode: 0o600 });
+
+    await expect(installLaunchAgent({
+      ...renderOptions(paths),
+      commandAdapter: adapter,
+      uid: 501,
+    })).rejects.toThrow('new bootstrap failed');
+
+    expect(await readFile(path, 'utf8')).toBe(previous);
+    const expectedPath = join(
+      await realpath(paths.home),
+      'Library',
+      'LaunchAgents',
+      `${LAUNCH_AGENT_LABEL}.plist`,
+    );
+    expect(calls).toEqual([
+      { command: '/usr/bin/plutil', args: ['-lint', expectedPath] },
+      { command: '/bin/launchctl', args: ['bootout', 'gui/501', expectedPath] },
+      { command: '/bin/launchctl', args: ['bootstrap', 'gui/501', expectedPath] },
+      { command: '/bin/launchctl', args: ['bootstrap', 'gui/501', expectedPath] },
+    ]);
+  });
+
   it('inspects without creating the LaunchAgents directory or invoking commands', async () => {
     const paths = await fixture();
 
