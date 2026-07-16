@@ -109,7 +109,8 @@ afterEach(async () => {
 describe('renderLaunchAgent', () => {
   it('omits model service overrides when Claude Code configuration is inherited', async () => {
     const paths = await fixture();
-    const { ATL_CLAUDE_MODEL: _model, ...environment } = renderOptions(paths).environment;
+    const environment: NodeJS.ProcessEnv = { ...renderOptions(paths).environment };
+    delete environment.ATL_CLAUDE_MODEL;
     const rendered = await renderLaunchAgent({
       ...renderOptions(paths),
       environment,
