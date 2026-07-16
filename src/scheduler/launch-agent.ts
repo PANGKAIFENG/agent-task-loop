@@ -89,7 +89,8 @@ export interface RenderedLaunchAgent {
     ATL_AGENT_DRIVER: 'claude';
     ATL_CLAUDE_BIN: string;
     ATL_CLAUDE_CONFIG_DIR: string;
-    ATL_CLAUDE_MODEL: string;
+    ATL_CLAUDE_MODEL?: string;
+    ANTHROPIC_BASE_URL?: string;
     ATL_ALLOWED_LOCAL_ROOTS: string;
     ATL_DAILY_LIMIT: string;
     HOME: string;
@@ -292,11 +293,34 @@ function positiveInteger(value: string | undefined): string {
   return candidate;
 }
 
-function modelName(value: string | undefined): string {
-  if (value === undefined || !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(value)) {
+function modelName(value: string | undefined): string | undefined {
+  if (value === undefined || value === '') return undefined;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(value)) {
     throw new LaunchAgentError('ATL_CLAUDE_MODEL must be a valid model name');
   }
   return value;
+}
+
+function baseUrl(value: string | undefined): string | undefined {
+  if (value === undefined || value === '') return undefined;
+  try {
+    const parsed = new URL(value);
+    if (
+      (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
+      || parsed.hostname === ''
+      || parsed.username !== ''
+      || parsed.password !== ''
+      || parsed.search !== ''
+      || parsed.hash !== ''
+    ) {
+      throw new Error('Unsafe URL');
+    }
+    return value;
+  } catch {
+    throw new LaunchAgentError(
+      'ANTHROPIC_BASE_URL must be a safe http or https URL',
+    );
+  }
 }
 
 function plistArray(values: readonly string[], indent: string): string[] {
@@ -402,6 +426,8 @@ export async function renderLaunchAgent(
     'state',
     'agent-task-loop',
   );
+  const model = modelName(environment.ATL_CLAUDE_MODEL);
+  const anthropicBaseUrl = baseUrl(environment.ANTHROPIC_BASE_URL);
   const result = {
     label: LAUNCH_AGENT_LABEL,
     programArguments: [
@@ -418,7 +444,10 @@ export async function renderLaunchAgent(
       ATL_AGENT_DRIVER: 'claude',
       ATL_CLAUDE_BIN: claudeBinary,
       ATL_CLAUDE_CONFIG_DIR: claudeConfigDirectory,
-      ATL_CLAUDE_MODEL: modelName(environment.ATL_CLAUDE_MODEL),
+      ...(model === undefined ? {} : { ATL_CLAUDE_MODEL: model }),
+      ...(anthropicBaseUrl === undefined
+        ? {}
+        : { ANTHROPIC_BASE_URL: anthropicBaseUrl }),
       ATL_ALLOWED_LOCAL_ROOTS: await allowedLocalRoots(
         environment.ATL_ALLOWED_LOCAL_ROOTS,
       ),

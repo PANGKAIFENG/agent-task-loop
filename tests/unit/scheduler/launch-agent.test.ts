@@ -107,6 +107,60 @@ afterEach(async () => {
 });
 
 describe('renderLaunchAgent', () => {
+  it('omits model service overrides when Claude Code configuration is inherited', async () => {
+    const paths = await fixture();
+    const { ATL_CLAUDE_MODEL: _model, ...environment } = renderOptions(paths).environment;
+    const rendered = await renderLaunchAgent({
+      ...renderOptions(paths),
+      environment,
+    });
+
+    expect(rendered.environmentVariables).not.toHaveProperty('ATL_CLAUDE_MODEL');
+    expect(rendered.environmentVariables).not.toHaveProperty('ANTHROPIC_BASE_URL');
+    expect(rendered.plist).not.toContain('ATL_CLAUDE_MODEL');
+    expect(rendered.plist).not.toContain('ANTHROPIC_BASE_URL');
+  });
+
+  it('serializes only validated non-secret custom model service overrides', async () => {
+    const paths = await fixture();
+    const rendered = await renderLaunchAgent({
+      ...renderOptions(paths),
+      environment: {
+        ...renderOptions(paths).environment,
+        ANTHROPIC_BASE_URL: 'https://api.example.com/anthropic/a&b',
+        ANTHROPIC_API_KEY: 'SECRET_API_KEY_SENTINEL',
+        ANTHROPIC_AUTH_TOKEN: 'SECRET_AUTH_TOKEN_SENTINEL',
+      },
+    });
+
+    expect(rendered.environmentVariables).toMatchObject({
+      ATL_CLAUDE_MODEL: 'glm-4-flash',
+      ANTHROPIC_BASE_URL: 'https://api.example.com/anthropic/a&b',
+    });
+    expect(rendered.plist).toContain('https://api.example.com/anthropic/a&amp;b');
+    expect(rendered.plist).not.toContain('ANTHROPIC_API_KEY');
+    expect(rendered.plist).not.toContain('ANTHROPIC_AUTH_TOKEN');
+    expect(rendered.plist).not.toContain('SECRET_API_KEY_SENTINEL');
+    expect(rendered.plist).not.toContain('SECRET_AUTH_TOKEN_SENTINEL');
+  });
+
+  it.each([
+    'file:///etc/passwd',
+    'https://user:secret@example.com/anthropic',
+    'https://api.example.com/anthropic?token=secret',
+    'https://api.example.com/anthropic#credentials',
+    'not-a-url',
+  ])('rejects an unsafe Base URL override: %s', async (baseUrl) => {
+    const paths = await fixture();
+    await expect(renderLaunchAgent({
+      ...renderOptions(paths),
+      environment: {
+        ...renderOptions(paths).environment,
+        ANTHROPIC_BASE_URL: baseUrl,
+      },
+    })).rejects.toThrow('ANTHROPIC_BASE_URL must be a safe http or https URL');
+  });
+
   it('renders one bounded secret-free Asia/Shanghai runner schedule', async () => {
     const paths = await fixture();
     const rendered = await renderLaunchAgent({
