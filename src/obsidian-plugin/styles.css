@@ -110,3 +110,229 @@
     min-width: 100%;
   }
 }
+
+.atl-settings > h2 {
+  border-bottom: 1px solid var(--background-modifier-border);
+  font-size: var(--font-ui-medium);
+  letter-spacing: 0;
+  margin: 28px 0 0;
+  padding-bottom: 8px;
+}
+
+.atl-settings > h2:first-child {
+  margin-top: 8px;
+}
+
+.atl-settings-note {
+  margin: 8px 0 0;
+}
+
+.atl-status-badge {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  letter-spacing: 0;
+  line-height: 1;
+  padding: 6px 8px;
+  white-space: nowrap;
+}
+
+.atl-status-ready,
+.atl-status-installable {
+  border-color: var(--color-green);
+  color: var(--color-green);
+}
+
+.atl-status-running {
+  border-color: var(--interactive-accent);
+  color: var(--interactive-accent);
+}
+
+.atl-status-error {
+  border-color: var(--color-red);
+  color: var(--color-red);
+}
+
+.atl-runtime-checks {
+  display: grid;
+  gap: 1px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 8px 0 14px;
+  overflow: hidden;
+}
+
+.atl-runtime-check {
+  align-items: center;
+  background: var(--background-secondary);
+  display: flex;
+  font-size: var(--font-ui-small);
+  justify-content: space-between;
+  min-height: 34px;
+  padding: 0 10px;
+}
+
+.atl-check-value {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.atl-check-ok,
+.atl-check-installed,
+.atl-check-running {
+  color: var(--color-green);
+}
+
+.atl-check-invalid,
+.atl-check-conflict,
+.atl-check-logged_out {
+  color: var(--color-red);
+}
+
+.atl-source-list {
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding-bottom: 8px;
+}
+
+.atl-source-list > .setting-item {
+  border-top: 0;
+  padding: 7px 0;
+}
+
+.atl-source-list > .setting-item .setting-item-name {
+  font-size: var(--font-ui-small);
+}
+
+.atl-source-list > .setting-item .setting-item-description {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.atl-technical-details {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin: 8px 0 22px;
+}
+
+.atl-technical-details summary {
+  cursor: pointer;
+}
+
+.atl-technical-details p {
+  font-family: var(--font-monospace);
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+}
+
+body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact {
+  --atl-priority-color: var(--current-priority-color, var(--color-blue));
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-inline-start: 4px solid var(--atl-priority-color);
+  border-radius: 6px;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+  margin: 0 0 8px;
+  padding: 11px 12px 10px 14px;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact[data-priority='urgent'] {
+  --atl-priority-color: var(--color-red);
+}
+
+body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact[data-priority='high'],
+body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact[data-priority='medium'] {
+  --atl-priority-color: var(--color-orange);
+}
+
+body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact[data-priority='normal'] {
+  --atl-priority-color: var(--color-blue);
+}
+
+body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact[data-priority='low'] {
+  --atl-priority-color: var(--text-faint);
+}
+
+body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact:hover {
+  background: var(--background-primary-alt);
+  border-color: var(--background-modifier-border-hover);
+  box-shadow: 0 2px 5px rgb(0 0 0 / 10%);
+}
+
+body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact:focus-visible {
+  outline: 2px solid var(--background-modifier-border-focus);
+  outline-offset: 2px;
+}
+
+body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact .task-card__main-row {
+  align-items: flex-start;
+  gap: 6px;
+}
+
+body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact .task-card__content {
+  gap: 7px;
+}
+
+body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact .task-card__title {
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-semibold);
+  letter-spacing: 0;
+  line-height: 1.38;
+}
+
+body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact .task-card__title-text {
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact .task-card__metadata {
+  color: var(--text-muted);
+  column-gap: 10px;
+  font-size: var(--font-ui-smaller);
+  letter-spacing: 0;
+  line-height: 1.25;
+  row-gap: 4px;
+}
+
+body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact .task-card__metadata-property,
+body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact .task-card__metadata-value {
+  gap: 3px;
+  max-width: 100%;
+}
+
+body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact .task-card__priority-dot {
+  display: none;
+}
+
+body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact .task-card__context-menu {
+  height: 26px;
+  min-width: 26px;
+  opacity: 0.55;
+  width: 26px;
+}
+
+body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact:hover .task-card__context-menu,
+body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact .task-card__context-menu:focus-visible {
+  opacity: 1;
+}
+
+@media (max-width: 560px) {
+  .atl-runtime-checks {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact {
+    transition: none;
+  }
+}
