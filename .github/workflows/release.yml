@@ -46,13 +46,14 @@ jobs:
           test -f build/obsidian-plugin/main.js
           test -f build/obsidian-plugin/manifest.json
           test -f build/obsidian-plugin/styles.css
+          test -f build/obsidian-plugin/atl-runner.mjs
 
       - name: Package plugin
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           cd build/obsidian-plugin
-          zip "agent-task-loop-${RELEASE_TAG}.zip" main.js manifest.json styles.css
+          zip "agent-task-loop-${RELEASE_TAG}.zip" main.js manifest.json styles.css atl-runner.mjs
 
       - name: Create GitHub Release
         env:
@@ -63,6 +64,7 @@ jobs:
             "build/obsidian-plugin/main.js#main.js" \
             "build/obsidian-plugin/manifest.json#manifest.json" \
             "build/obsidian-plugin/styles.css#styles.css" \
+            "build/obsidian-plugin/atl-runner.mjs#atl-runner.mjs" \
             "build/obsidian-plugin/agent-task-loop-${RELEASE_TAG}.zip#agent-task-loop-${RELEASE_TAG}.zip" \
             --title "Agent Task Loop ${RELEASE_TAG}" \
             --generate-notes
