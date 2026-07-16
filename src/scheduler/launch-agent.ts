@@ -36,6 +36,7 @@ export interface RenderLaunchAgentOptions {
   homeDirectory?: string;
   nodeExecutable?: string;
   repositoryRoot?: string;
+  runnerEntry?: string;
   systemTimeZone?: () => string | Promise<string>;
 }
 
@@ -58,6 +59,16 @@ export interface InspectLaunchAgentOptions {
 export interface UninstallLaunchAgentOptions extends InspectLaunchAgentOptions {
   commandAdapter?: LaunchAgentCommandAdapter;
   uid?: number;
+}
+
+export interface LaunchAgentProcessOptions extends InspectLaunchAgentOptions {
+  commandAdapter?: LaunchAgentCommandAdapter;
+  uid?: number;
+}
+
+export interface LaunchAgentProcessStatus {
+  loaded: boolean;
+  running: boolean;
 }
 
 export interface LaunchAgentStatus {
@@ -351,16 +362,21 @@ export async function renderLaunchAgent(
     options.homeDirectory ?? homedir(),
     'HOME',
   );
-  const repositoryRoot = await existingDirectory(
-    options.repositoryRoot ?? await resolveRepositoryRoot(),
-    'repository root',
-  );
   const nodeExecutable = await existingFile(
     options.nodeExecutable ?? process.execPath,
     'Node executable',
     true,
   );
-  const cliPath = await existingFile(
+  const runnerEntry = options.runnerEntry === undefined
+    ? null
+    : await existingFile(options.runnerEntry, 'packaged runner', false);
+  const repositoryRoot = runnerEntry === null
+    ? await existingDirectory(
+      options.repositoryRoot ?? await resolveRepositoryRoot(),
+      'repository root',
+    )
+    : dirname(runnerEntry);
+  const cliPath = runnerEntry ?? await existingFile(
     join(repositoryRoot, 'build', 'server', 'cli.js'),
     'built CLI',
     false,
@@ -535,6 +551,15 @@ export async function inspectLaunchAgent(
   };
 }
 
+function missingLaunchAgentService(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const details = [
+    error.message,
+    'stderr' in error && typeof error.stderr === 'string' ? error.stderr : '',
+  ].join('\n');
+  return /could not find service|service not found|no such process/iu.test(details);
+}
+
 function targetDomain(uid: number | undefined): string {
   const resolvedUid = uid ?? process.getuid?.();
   if (
@@ -545,6 +570,38 @@ function targetDomain(uid: number | undefined): string {
     throw new LaunchAgentError('A valid user ID is required');
   }
   return `gui/${resolvedUid}`;
+}
+
+export async function inspectLaunchAgentProcess(
+  options: LaunchAgentProcessOptions = {},
+): Promise<LaunchAgentProcessStatus> {
+  const commands = options.commandAdapter ?? defaultCommandAdapter;
+  try {
+    const result = await commands.execute('/bin/launchctl', [
+      'print',
+      `${targetDomain(options.uid)}/${LAUNCH_AGENT_LABEL}`,
+    ]);
+    return {
+      loaded: true,
+      running: /^\s*state\s*=\s*running\s*$/imu.test(result.stdout),
+    };
+  } catch (error) {
+    if (missingLaunchAgentService(error)) {
+      return { loaded: false, running: false };
+    }
+    throw error;
+  }
+}
+
+export async function kickstartLaunchAgent(
+  options: LaunchAgentProcessOptions = {},
+): Promise<LaunchAgentProcessStatus> {
+  const commands = options.commandAdapter ?? defaultCommandAdapter;
+  await commands.execute('/bin/launchctl', [
+    'kickstart',
+    `${targetDomain(options.uid)}/${LAUNCH_AGENT_LABEL}`,
+  ]);
+  return { loaded: true, running: true };
 }
 
 async function restoreAfterFailedInstall(

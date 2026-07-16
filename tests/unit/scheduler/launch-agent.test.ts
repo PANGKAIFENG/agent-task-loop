@@ -17,7 +17,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   inspectLaunchAgent,
+  inspectLaunchAgentProcess,
   installLaunchAgent,
+  kickstartLaunchAgent,
   LAUNCH_AGENT_LABEL,
   type LaunchAgentCommandAdapter,
   renderLaunchAgent,
@@ -36,14 +38,17 @@ async function fixture() {
   const claudeConfigDir = join(root, 'claude config');
   const claudeBinary = join(root, "claude's bin");
   const cliPath = join(repositoryRoot, 'build', 'server', 'cli.js');
+  const packagedRunner = join(root, 'plugin', 'atl-runner.mjs');
   await Promise.all([
     mkdir(home, { recursive: true }),
     mkdir(join(repositoryRoot, 'build', 'server'), { recursive: true }),
     mkdir(vaultRoot, { recursive: true }),
     mkdir(allowedRoot, { recursive: true }),
     mkdir(claudeConfigDir, { recursive: true }),
+    mkdir(join(root, 'plugin'), { recursive: true }),
   ]);
   await writeFile(cliPath, '#!/usr/bin/env node\n', 'utf8');
+  await writeFile(packagedRunner, '#!/usr/bin/env node\n', 'utf8');
   await writeFile(claudeBinary, '#!/bin/sh\n', 'utf8');
   await chmod(claudeBinary, 0o700);
   return {
@@ -55,6 +60,7 @@ async function fixture() {
     claudeConfigDir,
     claudeBinary,
     cliPath,
+    packagedRunner,
   };
 }
 
@@ -182,6 +188,84 @@ describe('renderLaunchAgent', () => {
       repositoryRoot: '/missing/repo',
       systemTimeZone: () => 'UTC',
     })).rejects.toThrow('System timezone must be Asia/Shanghai');
+  });
+
+  it('uses a packaged runner without requiring a repository checkout', async () => {
+    const paths = await fixture();
+    const rendered = await renderLaunchAgent({
+      environment: renderOptions(paths).environment,
+      homeDirectory: paths.home,
+      nodeExecutable: process.execPath,
+      runnerEntry: paths.packagedRunner,
+      systemTimeZone: () => 'Asia/Shanghai',
+    });
+
+    expect(rendered.programArguments).toEqual([
+      await realpath(process.execPath),
+      await realpath(paths.packagedRunner),
+      'runner',
+      'run-once',
+      '--driver',
+      'claude',
+    ]);
+    expect(rendered.workingDirectory).toBe(join(await realpath(paths.root), 'plugin'));
+  });
+});
+
+describe('LaunchAgent process lifecycle', () => {
+  it('reports loaded and running state from launchctl print', async () => {
+    const paths = await fixture();
+    const calls: Array<{ command: string; args: readonly string[] }> = [];
+    const adapter: LaunchAgentCommandAdapter = {
+      async execute(command, args) {
+        calls.push({ command, args });
+        return {
+          stdout: 'state = running\nactive count = 1\n',
+          stderr: '',
+        };
+      },
+    };
+
+    await expect(inspectLaunchAgentProcess({
+      homeDirectory: paths.home,
+      commandAdapter: adapter,
+      uid: 501,
+    })).resolves.toEqual({ loaded: true, running: true });
+    expect(calls).toEqual([{
+      command: '/bin/launchctl',
+      args: ['print', `gui/501/${LAUNCH_AGENT_LABEL}`],
+    }]);
+  });
+
+  it('treats a missing launchctl service as not loaded', async () => {
+    const paths = await fixture();
+    const adapter: LaunchAgentCommandAdapter = {
+      async execute() {
+        throw new Error('Could not find service');
+      },
+    };
+
+    await expect(inspectLaunchAgentProcess({
+      homeDirectory: paths.home,
+      commandAdapter: adapter,
+      uid: 501,
+    })).resolves.toEqual({ loaded: false, running: false });
+  });
+
+  it('kickstarts only the fixed managed label', async () => {
+    const paths = await fixture();
+    const commands = commandRecorder();
+
+    await kickstartLaunchAgent({
+      homeDirectory: paths.home,
+      commandAdapter: commands.adapter,
+      uid: 501,
+    });
+
+    expect(commands.calls).toEqual([{
+      command: '/bin/launchctl',
+      args: ['kickstart', `gui/501/${LAUNCH_AGENT_LABEL}`],
+    }]);
   });
 });
 
