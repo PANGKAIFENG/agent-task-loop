@@ -24,7 +24,9 @@ export interface BackgroundSettings {
   claudeExecutable: string;
   claudeConfigDirectory: string;
   allowedLocalRoots: string[];
+  modelServiceMode: 'inherit' | 'custom';
   model: string;
+  baseUrl: string;
   dailyLimit: number;
 }
 

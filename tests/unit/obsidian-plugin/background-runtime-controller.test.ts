@@ -45,7 +45,9 @@ function settings(paths: Awaited<ReturnType<typeof fixture>>): BackgroundSetting
     claudeExecutable: '/resolved/claude',
     claudeConfigDirectory: paths.claudeConfigDirectory,
     allowedLocalRoots: [paths.sourceRoot],
+    modelServiceMode: 'inherit',
     model: 'claude-sonnet-4-5',
+    baseUrl: '',
     dailyLimit: 3,
   };
 }
