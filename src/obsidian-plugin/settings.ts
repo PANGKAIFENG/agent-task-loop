@@ -6,7 +6,21 @@ import type {
 export interface AtlPluginSettings {
   allowVaultManagement: boolean;
   taskCardThemeEnabled: boolean;
+  capture: CaptureState;
   background: BackgroundSettings;
+}
+
+export interface CaptureState {
+  lastSuccessfulScanAt: string | null;
+  reviewedFingerprints: string[];
+}
+
+export const MAX_REVIEWED_FINGERPRINTS = 10_000;
+
+export function compactReviewedFingerprints(values: readonly unknown[]): string[] {
+  return [...new Set(values.filter((value): value is string => (
+    typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
+  )))].slice(-MAX_REVIEWED_FINGERPRINTS);
 }
 
 export const DEFAULT_BACKGROUND_SETTINGS: BackgroundSettings = {
@@ -23,6 +37,10 @@ export const DEFAULT_BACKGROUND_SETTINGS: BackgroundSettings = {
 export const DEFAULT_SETTINGS: AtlPluginSettings = {
   allowVaultManagement: false,
   taskCardThemeEnabled: true,
+  capture: {
+    lastSuccessfulScanAt: null,
+    reviewedFingerprints: [],
+  },
   background: DEFAULT_BACKGROUND_SETTINGS,
 };
 
@@ -61,6 +79,12 @@ function normalizeBaseUrl(value: unknown): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function timestampValue(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
 }
 
 export interface ModelServiceConfiguration {
@@ -129,6 +153,9 @@ export function normalizeSettings(value: unknown): AtlPluginSettings {
     && typeof root.background === 'object'
     ? root.background as Record<string, unknown>
     : {};
+  const rawCapture = root.capture !== null && typeof root.capture === 'object'
+    ? root.capture as Record<string, unknown>
+    : {};
   const roots = Array.isArray(rawBackground.allowedLocalRoots)
     ? rawBackground.allowedLocalRoots.filter((path): path is string => (
       typeof path === 'string' && path.trim() !== ''
@@ -148,6 +175,14 @@ export function normalizeSettings(value: unknown): AtlPluginSettings {
   return {
     allowVaultManagement: root.allowVaultManagement === true,
     taskCardThemeEnabled: root.taskCardThemeEnabled !== false,
+    capture: {
+      lastSuccessfulScanAt: timestampValue(rawCapture.lastSuccessfulScanAt),
+      reviewedFingerprints: compactReviewedFingerprints(
+        Array.isArray(rawCapture.reviewedFingerprints)
+          ? rawCapture.reviewedFingerprints
+          : [],
+      ),
+    },
     background: {
       nodeExecutable: stringValue(rawBackground.nodeExecutable),
       claudeExecutable: stringValue(rawBackground.claudeExecutable),

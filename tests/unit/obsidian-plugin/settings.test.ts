@@ -12,6 +12,10 @@ describe('normalizeSettings', () => {
     expect(normalizeSettings({ allowVaultManagement: true })).toEqual({
       allowVaultManagement: true,
       taskCardThemeEnabled: true,
+      capture: {
+        lastSuccessfulScanAt: null,
+        reviewedFingerprints: [],
+      },
       background: {
         nodeExecutable: '',
         claudeExecutable: '',
@@ -29,6 +33,10 @@ describe('normalizeSettings', () => {
     expect(normalizeSettings({
       allowVaultManagement: 'yes',
       taskCardThemeEnabled: false,
+      capture: {
+        lastSuccessfulScanAt: null,
+        reviewedFingerprints: [],
+      },
       background: {
         nodeExecutable: 24,
         claudeExecutable: '/valid-looking/claude',
@@ -42,6 +50,10 @@ describe('normalizeSettings', () => {
     })).toEqual({
       allowVaultManagement: false,
       taskCardThemeEnabled: false,
+      capture: {
+        lastSuccessfulScanAt: null,
+        reviewedFingerprints: [],
+      },
       background: {
         nodeExecutable: '',
         claudeExecutable: '/valid-looking/claude',
@@ -65,6 +77,23 @@ describe('normalizeSettings', () => {
       modelServiceMode: 'custom',
       model: 'glm-4-flash',
       baseUrl: 'https://api.example.com/anthropic',
+    });
+  });
+
+  it('drops malformed capture state without retaining source-shaped values', () => {
+    expect(normalizeSettings({
+      capture: {
+        lastSuccessfulScanAt: 'yesterday evening',
+        reviewedFingerprints: [
+          'source note content',
+          'A'.repeat(64),
+          'a'.repeat(63),
+          42,
+        ],
+      },
+    }).capture).toEqual({
+      lastSuccessfulScanAt: null,
+      reviewedFingerprints: [],
     });
   });
 });
