@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import {
@@ -14,8 +15,7 @@ import {
 import { homedir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-
-import { execa } from 'execa';
+import { promisify } from 'node:util';
 
 export const LAUNCH_AGENT_LABEL = 'ai.agent-task-loop.runner';
 export const LAUNCH_AGENT_FILE_NAME = `${LAUNCH_AGENT_LABEL}.plist`;
@@ -36,6 +36,7 @@ export interface RenderLaunchAgentOptions {
   homeDirectory?: string;
   nodeExecutable?: string;
   repositoryRoot?: string;
+  runnerEntry?: string;
   systemTimeZone?: () => string | Promise<string>;
 }
 
@@ -60,6 +61,16 @@ export interface UninstallLaunchAgentOptions extends InspectLaunchAgentOptions {
   uid?: number;
 }
 
+export interface LaunchAgentProcessOptions extends InspectLaunchAgentOptions {
+  commandAdapter?: LaunchAgentCommandAdapter;
+  uid?: number;
+}
+
+export interface LaunchAgentProcessStatus {
+  loaded: boolean;
+  running: boolean;
+}
+
 export interface LaunchAgentStatus {
   path: string;
   installed: boolean;
@@ -78,7 +89,8 @@ export interface RenderedLaunchAgent {
     ATL_AGENT_DRIVER: 'claude';
     ATL_CLAUDE_BIN: string;
     ATL_CLAUDE_CONFIG_DIR: string;
-    ATL_CLAUDE_MODEL: string;
+    ATL_CLAUDE_MODEL?: string;
+    ANTHROPIC_BASE_URL?: string;
     ATL_ALLOWED_LOCAL_ROOTS: string;
     ATL_DAILY_LIMIT: string;
     HOME: string;
@@ -91,7 +103,9 @@ export interface RenderedLaunchAgent {
 
 const defaultCommandAdapter: LaunchAgentCommandAdapter = {
   async execute(command, args) {
-    const result = await execa(command, [...args]);
+    const result = await promisify(execFile)(command, [...args], {
+      encoding: 'utf8',
+    });
     return { stdout: result.stdout, stderr: result.stderr };
   },
 };
@@ -279,11 +293,34 @@ function positiveInteger(value: string | undefined): string {
   return candidate;
 }
 
-function modelName(value: string | undefined): string {
-  if (value === undefined || !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(value)) {
+function modelName(value: string | undefined): string | undefined {
+  if (value === undefined || value === '') return undefined;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(value)) {
     throw new LaunchAgentError('ATL_CLAUDE_MODEL must be a valid model name');
   }
   return value;
+}
+
+function baseUrl(value: string | undefined): string | undefined {
+  if (value === undefined || value === '') return undefined;
+  try {
+    const parsed = new URL(value);
+    if (
+      (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
+      || parsed.hostname === ''
+      || parsed.username !== ''
+      || parsed.password !== ''
+      || parsed.search !== ''
+      || parsed.hash !== ''
+    ) {
+      throw new Error('Unsafe URL');
+    }
+    return value;
+  } catch {
+    throw new LaunchAgentError(
+      'ANTHROPIC_BASE_URL must be a safe http or https URL',
+    );
+  }
 }
 
 function plistArray(values: readonly string[], indent: string): string[] {
@@ -351,16 +388,21 @@ export async function renderLaunchAgent(
     options.homeDirectory ?? homedir(),
     'HOME',
   );
-  const repositoryRoot = await existingDirectory(
-    options.repositoryRoot ?? await resolveRepositoryRoot(),
-    'repository root',
-  );
   const nodeExecutable = await existingFile(
     options.nodeExecutable ?? process.execPath,
     'Node executable',
     true,
   );
-  const cliPath = await existingFile(
+  const runnerEntry = options.runnerEntry === undefined
+    ? null
+    : await existingFile(options.runnerEntry, 'packaged runner', false);
+  const repositoryRoot = runnerEntry === null
+    ? await existingDirectory(
+      options.repositoryRoot ?? await resolveRepositoryRoot(),
+      'repository root',
+    )
+    : dirname(runnerEntry);
+  const cliPath = runnerEntry ?? await existingFile(
     join(repositoryRoot, 'build', 'server', 'cli.js'),
     'built CLI',
     false,
@@ -384,6 +426,8 @@ export async function renderLaunchAgent(
     'state',
     'agent-task-loop',
   );
+  const model = modelName(environment.ATL_CLAUDE_MODEL);
+  const anthropicBaseUrl = baseUrl(environment.ANTHROPIC_BASE_URL);
   const result = {
     label: LAUNCH_AGENT_LABEL,
     programArguments: [
@@ -400,7 +444,10 @@ export async function renderLaunchAgent(
       ATL_AGENT_DRIVER: 'claude',
       ATL_CLAUDE_BIN: claudeBinary,
       ATL_CLAUDE_CONFIG_DIR: claudeConfigDirectory,
-      ATL_CLAUDE_MODEL: modelName(environment.ATL_CLAUDE_MODEL),
+      ...(model === undefined ? {} : { ATL_CLAUDE_MODEL: model }),
+      ...(anthropicBaseUrl === undefined
+        ? {}
+        : { ANTHROPIC_BASE_URL: anthropicBaseUrl }),
       ATL_ALLOWED_LOCAL_ROOTS: await allowedLocalRoots(
         environment.ATL_ALLOWED_LOCAL_ROOTS,
       ),
@@ -535,6 +582,15 @@ export async function inspectLaunchAgent(
   };
 }
 
+function missingLaunchAgentService(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const details = [
+    error.message,
+    'stderr' in error && typeof error.stderr === 'string' ? error.stderr : '',
+  ].join('\n');
+  return /could not find service|service not found|no such process/iu.test(details);
+}
+
 function targetDomain(uid: number | undefined): string {
   const resolvedUid = uid ?? process.getuid?.();
   if (
@@ -545,6 +601,38 @@ function targetDomain(uid: number | undefined): string {
     throw new LaunchAgentError('A valid user ID is required');
   }
   return `gui/${resolvedUid}`;
+}
+
+export async function inspectLaunchAgentProcess(
+  options: LaunchAgentProcessOptions = {},
+): Promise<LaunchAgentProcessStatus> {
+  const commands = options.commandAdapter ?? defaultCommandAdapter;
+  try {
+    const result = await commands.execute('/bin/launchctl', [
+      'print',
+      `${targetDomain(options.uid)}/${LAUNCH_AGENT_LABEL}`,
+    ]);
+    return {
+      loaded: true,
+      running: /^\s*state\s*=\s*running\s*$/imu.test(result.stdout),
+    };
+  } catch (error) {
+    if (missingLaunchAgentService(error)) {
+      return { loaded: false, running: false };
+    }
+    throw error;
+  }
+}
+
+export async function kickstartLaunchAgent(
+  options: LaunchAgentProcessOptions = {},
+): Promise<LaunchAgentProcessStatus> {
+  const commands = options.commandAdapter ?? defaultCommandAdapter;
+  await commands.execute('/bin/launchctl', [
+    'kickstart',
+    `${targetDomain(options.uid)}/${LAUNCH_AGENT_LABEL}`,
+  ]);
+  return { loaded: true, running: true };
 }
 
 async function restoreAfterFailedInstall(
@@ -584,8 +672,23 @@ export async function installLaunchAgent(
   });
   await atomicWrite(rendered.path, rendered.plist, previous === null);
   const commands = options.commandAdapter ?? defaultCommandAdapter;
+  let previousServiceWasLoaded = false;
   try {
     await commands.execute('/usr/bin/plutil', ['-lint', rendered.path]);
+    if (previous !== null) {
+      try {
+        await commands.execute('/bin/launchctl', [
+          'bootout',
+          domain,
+          rendered.path,
+        ]);
+        previousServiceWasLoaded = true;
+      } catch (error) {
+        if (!missingLaunchAgentService(error)) {
+          throw error;
+        }
+      }
+    }
     await commands.execute('/bin/launchctl', [
       'bootstrap',
       domain,
@@ -593,6 +696,25 @@ export async function installLaunchAgent(
     ]);
   } catch (error) {
     await restoreAfterFailedInstall(rendered, previous);
+    if (previous !== null && previousServiceWasLoaded) {
+      try {
+        await commands.execute('/bin/launchctl', [
+          'bootstrap',
+          domain,
+          rendered.path,
+        ]);
+      } catch (rollbackError) {
+        const installMessage = error instanceof Error
+          ? error.message
+          : 'LaunchAgent update failed';
+        const rollbackMessage = rollbackError instanceof Error
+          ? rollbackError.message
+          : 'previous service reload failed';
+        throw new LaunchAgentError(
+          `${installMessage}; rollback failed: ${rollbackMessage}`,
+        );
+      }
+    }
     throw error;
   }
   return {

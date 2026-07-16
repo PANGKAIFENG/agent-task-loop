@@ -17,7 +17,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   inspectLaunchAgent,
+  inspectLaunchAgentProcess,
   installLaunchAgent,
+  kickstartLaunchAgent,
   LAUNCH_AGENT_LABEL,
   type LaunchAgentCommandAdapter,
   renderLaunchAgent,
@@ -36,14 +38,17 @@ async function fixture() {
   const claudeConfigDir = join(root, 'claude config');
   const claudeBinary = join(root, "claude's bin");
   const cliPath = join(repositoryRoot, 'build', 'server', 'cli.js');
+  const packagedRunner = join(root, 'plugin', 'atl-runner.mjs');
   await Promise.all([
     mkdir(home, { recursive: true }),
     mkdir(join(repositoryRoot, 'build', 'server'), { recursive: true }),
     mkdir(vaultRoot, { recursive: true }),
     mkdir(allowedRoot, { recursive: true }),
     mkdir(claudeConfigDir, { recursive: true }),
+    mkdir(join(root, 'plugin'), { recursive: true }),
   ]);
   await writeFile(cliPath, '#!/usr/bin/env node\n', 'utf8');
+  await writeFile(packagedRunner, '#!/usr/bin/env node\n', 'utf8');
   await writeFile(claudeBinary, '#!/bin/sh\n', 'utf8');
   await chmod(claudeBinary, 0o700);
   return {
@@ -55,6 +60,7 @@ async function fixture() {
     claudeConfigDir,
     claudeBinary,
     cliPath,
+    packagedRunner,
   };
 }
 
@@ -101,6 +107,61 @@ afterEach(async () => {
 });
 
 describe('renderLaunchAgent', () => {
+  it('omits model service overrides when Claude Code configuration is inherited', async () => {
+    const paths = await fixture();
+    const environment: NodeJS.ProcessEnv = { ...renderOptions(paths).environment };
+    delete environment.ATL_CLAUDE_MODEL;
+    const rendered = await renderLaunchAgent({
+      ...renderOptions(paths),
+      environment,
+    });
+
+    expect(rendered.environmentVariables).not.toHaveProperty('ATL_CLAUDE_MODEL');
+    expect(rendered.environmentVariables).not.toHaveProperty('ANTHROPIC_BASE_URL');
+    expect(rendered.plist).not.toContain('ATL_CLAUDE_MODEL');
+    expect(rendered.plist).not.toContain('ANTHROPIC_BASE_URL');
+  });
+
+  it('serializes only validated non-secret custom model service overrides', async () => {
+    const paths = await fixture();
+    const rendered = await renderLaunchAgent({
+      ...renderOptions(paths),
+      environment: {
+        ...renderOptions(paths).environment,
+        ANTHROPIC_BASE_URL: 'https://api.example.com/anthropic/a&b',
+        ANTHROPIC_API_KEY: 'SECRET_API_KEY_SENTINEL',
+        ANTHROPIC_AUTH_TOKEN: 'SECRET_AUTH_TOKEN_SENTINEL',
+      },
+    });
+
+    expect(rendered.environmentVariables).toMatchObject({
+      ATL_CLAUDE_MODEL: 'glm-4-flash',
+      ANTHROPIC_BASE_URL: 'https://api.example.com/anthropic/a&b',
+    });
+    expect(rendered.plist).toContain('https://api.example.com/anthropic/a&amp;b');
+    expect(rendered.plist).not.toContain('ANTHROPIC_API_KEY');
+    expect(rendered.plist).not.toContain('ANTHROPIC_AUTH_TOKEN');
+    expect(rendered.plist).not.toContain('SECRET_API_KEY_SENTINEL');
+    expect(rendered.plist).not.toContain('SECRET_AUTH_TOKEN_SENTINEL');
+  });
+
+  it.each([
+    'file:///etc/passwd',
+    'https://user:secret@example.com/anthropic',
+    'https://api.example.com/anthropic?token=secret',
+    'https://api.example.com/anthropic#credentials',
+    'not-a-url',
+  ])('rejects an unsafe Base URL override: %s', async (baseUrl) => {
+    const paths = await fixture();
+    await expect(renderLaunchAgent({
+      ...renderOptions(paths),
+      environment: {
+        ...renderOptions(paths).environment,
+        ANTHROPIC_BASE_URL: baseUrl,
+      },
+    })).rejects.toThrow('ANTHROPIC_BASE_URL must be a safe http or https URL');
+  });
+
   it('renders one bounded secret-free Asia/Shanghai runner schedule', async () => {
     const paths = await fixture();
     const rendered = await renderLaunchAgent({
@@ -182,6 +243,84 @@ describe('renderLaunchAgent', () => {
       repositoryRoot: '/missing/repo',
       systemTimeZone: () => 'UTC',
     })).rejects.toThrow('System timezone must be Asia/Shanghai');
+  });
+
+  it('uses a packaged runner without requiring a repository checkout', async () => {
+    const paths = await fixture();
+    const rendered = await renderLaunchAgent({
+      environment: renderOptions(paths).environment,
+      homeDirectory: paths.home,
+      nodeExecutable: process.execPath,
+      runnerEntry: paths.packagedRunner,
+      systemTimeZone: () => 'Asia/Shanghai',
+    });
+
+    expect(rendered.programArguments).toEqual([
+      await realpath(process.execPath),
+      await realpath(paths.packagedRunner),
+      'runner',
+      'run-once',
+      '--driver',
+      'claude',
+    ]);
+    expect(rendered.workingDirectory).toBe(join(await realpath(paths.root), 'plugin'));
+  });
+});
+
+describe('LaunchAgent process lifecycle', () => {
+  it('reports loaded and running state from launchctl print', async () => {
+    const paths = await fixture();
+    const calls: Array<{ command: string; args: readonly string[] }> = [];
+    const adapter: LaunchAgentCommandAdapter = {
+      async execute(command, args) {
+        calls.push({ command, args });
+        return {
+          stdout: 'state = running\nactive count = 1\n',
+          stderr: '',
+        };
+      },
+    };
+
+    await expect(inspectLaunchAgentProcess({
+      homeDirectory: paths.home,
+      commandAdapter: adapter,
+      uid: 501,
+    })).resolves.toEqual({ loaded: true, running: true });
+    expect(calls).toEqual([{
+      command: '/bin/launchctl',
+      args: ['print', `gui/501/${LAUNCH_AGENT_LABEL}`],
+    }]);
+  });
+
+  it('treats a missing launchctl service as not loaded', async () => {
+    const paths = await fixture();
+    const adapter: LaunchAgentCommandAdapter = {
+      async execute() {
+        throw new Error('Could not find service');
+      },
+    };
+
+    await expect(inspectLaunchAgentProcess({
+      homeDirectory: paths.home,
+      commandAdapter: adapter,
+      uid: 501,
+    })).resolves.toEqual({ loaded: false, running: false });
+  });
+
+  it('kickstarts only the fixed managed label', async () => {
+    const paths = await fixture();
+    const commands = commandRecorder();
+
+    await kickstartLaunchAgent({
+      homeDirectory: paths.home,
+      commandAdapter: commands.adapter,
+      uid: 501,
+    });
+
+    expect(commands.calls).toEqual([{
+      command: '/bin/launchctl',
+      args: ['kickstart', `gui/501/${LAUNCH_AGENT_LABEL}`],
+    }]);
   });
 });
 
@@ -293,6 +432,52 @@ describe('LaunchAgent lifecycle', () => {
     })).rejects.toThrow('bootstrap failed');
 
     expect(await readFile(path, 'utf8')).toBe(previous);
+  });
+
+  it('restores and reloads the previous managed service when an update fails', async () => {
+    const paths = await fixture();
+    const launchAgents = join(paths.home, 'Library', 'LaunchAgents');
+    const path = join(launchAgents, `${LAUNCH_AGENT_LABEL}.plist`);
+    const previous = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<plist version="1.0"><dict>',
+      `<key>Label</key><string>${LAUNCH_AGENT_LABEL}</string>`,
+      '<key>Previous</key><true/>',
+      '</dict></plist>',
+    ].join('\n');
+    const calls: Array<{ command: string; args: readonly string[] }> = [];
+    let bootstrapAttempts = 0;
+    const adapter: LaunchAgentCommandAdapter = {
+      async execute(command, args) {
+        calls.push({ command, args });
+        if (args[0] === 'bootstrap' && bootstrapAttempts++ === 0) {
+          throw new Error('new bootstrap failed');
+        }
+        return { stdout: '', stderr: '' };
+      },
+    };
+    await mkdir(launchAgents, { recursive: true });
+    await writeFile(path, previous, { mode: 0o600 });
+
+    await expect(installLaunchAgent({
+      ...renderOptions(paths),
+      commandAdapter: adapter,
+      uid: 501,
+    })).rejects.toThrow('new bootstrap failed');
+
+    expect(await readFile(path, 'utf8')).toBe(previous);
+    const expectedPath = join(
+      await realpath(paths.home),
+      'Library',
+      'LaunchAgents',
+      `${LAUNCH_AGENT_LABEL}.plist`,
+    );
+    expect(calls).toEqual([
+      { command: '/usr/bin/plutil', args: ['-lint', expectedPath] },
+      { command: '/bin/launchctl', args: ['bootout', 'gui/501', expectedPath] },
+      { command: '/bin/launchctl', args: ['bootstrap', 'gui/501', expectedPath] },
+      { command: '/bin/launchctl', args: ['bootstrap', 'gui/501', expectedPath] },
+    ]);
   });
 
   it('inspects without creating the LaunchAgents directory or invoking commands', async () => {
