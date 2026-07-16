@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import {
@@ -14,8 +15,7 @@ import {
 import { homedir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-
-import { execa } from 'execa';
+import { promisify } from 'node:util';
 
 export const LAUNCH_AGENT_LABEL = 'ai.agent-task-loop.runner';
 export const LAUNCH_AGENT_FILE_NAME = `${LAUNCH_AGENT_LABEL}.plist`;
@@ -102,7 +102,9 @@ export interface RenderedLaunchAgent {
 
 const defaultCommandAdapter: LaunchAgentCommandAdapter = {
   async execute(command, args) {
-    const result = await execa(command, [...args]);
+    const result = await promisify(execFile)(command, [...args], {
+      encoding: 'utf8',
+    });
     return { stdout: result.stdout, stderr: result.stderr };
   },
 };

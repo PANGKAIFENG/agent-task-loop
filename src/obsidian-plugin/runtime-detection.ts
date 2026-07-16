@@ -1,7 +1,8 @@
+import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
 import { access, realpath, stat } from 'node:fs/promises';
+import { promisify } from 'node:util';
 
-import { execa } from 'execa';
 import fastGlob from 'fast-glob';
 
 export type RuntimeHealthState = 'healthy' | 'missing' | 'invalid' | 'logged_out';
@@ -59,15 +60,24 @@ export interface DetectRuntimeOptions {
 
 const defaultCommands: RuntimeCommandExecutor = {
   async execute(command, args) {
-    const result = await execa(command, [...args], {
-      reject: false,
-      timeout: 10_000,
-    });
-    return {
-      stdout: result.stdout,
-      stderr: result.stderr,
-      exitCode: result.exitCode ?? 1,
-    };
+    try {
+      const result = await promisify(execFile)(command, [...args], {
+        encoding: 'utf8',
+        timeout: 10_000,
+      });
+      return { stdout: result.stdout, stderr: result.stderr, exitCode: 0 };
+    } catch (error) {
+      const failed = error as {
+        code?: unknown;
+        stdout?: unknown;
+        stderr?: unknown;
+      };
+      return {
+        stdout: typeof failed.stdout === 'string' ? failed.stdout : '',
+        stderr: typeof failed.stderr === 'string' ? failed.stderr : '',
+        exitCode: typeof failed.code === 'number' ? failed.code : 1,
+      };
+    }
   },
 };
 
