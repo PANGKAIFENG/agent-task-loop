@@ -116,6 +116,39 @@ describe('captureTask', () => {
     })).resolves.toBe(1);
   });
 
+  it('atomically deduplicates concurrent daily and real-time capture', async () => {
+    const context = await makeContext();
+    const realTime = context.createIndependentContext({
+      ids: ['task-20260714-00000002'],
+    });
+    const common = {
+      sourceNote: '/vault/笔记同步助手/2026-07-17/同步助手_2026-07-17.md',
+      sourceQuote: '我想实时从同步助手获取待办，下午就让 AI 先跑掉。',
+    };
+
+    const [dailyTask, realTimeTask] = await Promise.all([
+      captureTask(context.ctx, captureInput({
+        ...common,
+        title: '调研实时同步助手待办方案',
+        origin: 'explicit_wechat_todo',
+        sourceKey: 'daily-review:concurrent-source',
+      })),
+      captureTask(realTime, captureInput({
+        ...common,
+        title: '实时获取同步助手里的待办方案调研',
+        origin: 'obsidian_sync',
+        sourceKey: 'obsidian-sync:concurrent-source',
+      })),
+    ]);
+
+    expect(realTimeTask.taskId).toBe(dailyTask.taskId);
+    expect(await context.ctx.tasks.list()).toHaveLength(1);
+    await expect(context.ctx.audit.count({
+      event: 'task.captured',
+      localDate: '2026-07-14',
+    })).resolves.toBe(1);
+  });
+
   it('does not reclaim an expired source lock while its owner process is alive', async () => {
     const context = await makeContext();
     const input = captureInput({

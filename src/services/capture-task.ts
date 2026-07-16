@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { z } from 'zod';
 
 import {
@@ -48,15 +50,18 @@ function markdownBody(body: string): string {
   return body.startsWith('\n') || body.startsWith('\r\n') ? body : `\n${body}`;
 }
 
-export async function captureTask(
+function captureLockId(input: CaptureTaskInput): string {
+  const scope = input.sourceNote === null
+    ? `source-key:${input.sourceKey}`
+    : `source-note:${input.sourceNote.normalize('NFKC').trim()}`;
+  const digest = createHash('sha256').update(scope).digest('hex');
+  return `capture-${digest}`;
+}
+
+async function captureValidatedTask(
   ctx: ServiceContext,
-  input: CaptureTaskInput,
+  validInput: CaptureTaskInput,
 ): Promise<Task> {
-  const parsed = captureTaskInputSchema.safeParse(input);
-  if (!parsed.success) {
-    throw new InvalidCaptureTaskInputError();
-  }
-  const validInput = parsed.data;
   const existing = await ctx.tasks.findBySourceKey(validInput.sourceKey);
   if (existing !== null) {
     return existing;
@@ -115,4 +120,19 @@ export async function captureTask(
     },
   });
   return saved;
+}
+
+export async function captureTask(
+  ctx: ServiceContext,
+  input: CaptureTaskInput,
+): Promise<Task> {
+  const parsed = captureTaskInputSchema.safeParse(input);
+  if (!parsed.success) {
+    throw new InvalidCaptureTaskInputError();
+  }
+  const validInput = parsed.data;
+  return ctx.tasks.withTaskLock(
+    captureLockId(validInput),
+    () => captureValidatedTask(ctx, validInput),
+  );
 }
