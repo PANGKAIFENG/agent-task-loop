@@ -5,12 +5,14 @@ import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 import type { Task } from '../../../src/domain/task.js';
 import {
   CLAUDE_RESEARCH_TIMEOUT_MS,
   ClaudeDriverError,
   createClaudeResearchDriver,
+  createClaudeStructuredExecutor,
   type ClaudeDriverFileSystem,
   type ProcessExecution,
   type ProcessExecutor,
@@ -258,6 +260,93 @@ async function terminateTestProcess(pidPath: string): Promise<void> {
   }
   await expectProcessGone(pidPath);
 }
+
+describe('createClaudeStructuredExecutor', () => {
+  const schema = z.object({ candidates: z.array(z.string()) }).strict();
+  const jsonSchema = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['candidates'],
+    properties: {
+      candidates: { type: 'array', items: { type: 'string' } },
+    },
+  };
+
+  it('executes structured conversion with no Claude tools enabled', async () => {
+    const executions: ProcessExecution[] = [];
+    const executor = fakeExecutor(async (execution) => {
+      executions.push(execution);
+      return execution.args[0] === '--help'
+        ? processResult({ stdout: REQUIRED_HELP })
+        : processResult({
+          stdout: JSON.stringify({ structured_output: { candidates: ['one'] } }),
+        });
+    });
+    const structured = await createClaudeStructuredExecutor({
+      executor,
+      fileSystem: fakeFileSystem(),
+      environment: {
+        ATL_CLAUDE_BIN: CLAUDE_BIN,
+        ATL_CLAUDE_MODEL: CLAUDE_MODEL,
+        ANTHROPIC_BASE_URL: 'https://api.example.com/anthropic',
+      },
+    });
+
+    await expect(structured.execute({
+      prompt: 'Convert these local records to candidates.',
+      jsonSchema,
+      schema,
+      timeoutMs: 30_000,
+    })).resolves.toEqual({ candidates: ['one'] });
+
+    expect(executions).toHaveLength(2);
+    expect(executions[1]?.args).toEqual([
+      '--print',
+      '--safe-mode',
+      '--no-session-persistence',
+      '--permission-mode',
+      'dontAsk',
+      '--tools',
+      '',
+      '--output-format',
+      'json',
+      '--json-schema',
+      JSON.stringify(jsonSchema),
+      '--max-budget-usd',
+      '2',
+      '--model',
+      CLAUDE_MODEL,
+    ]);
+    expect(executions[1]?.input).toBe('Convert these local records to candidates.');
+    expect(executions[1]?.environment.ANTHROPIC_BASE_URL)
+      .toBe('https://api.example.com/anthropic');
+  });
+
+  it('rejects non-JSON and schema-invalid output', async () => {
+    for (const stdout of [
+      'not json',
+      JSON.stringify({ structured_output: { candidates: [42] } }),
+    ]) {
+      const executor = fakeExecutor(async (execution) => (
+        execution.args[0] === '--help'
+          ? processResult({ stdout: REQUIRED_HELP })
+          : processResult({ stdout })
+      ));
+      const structured = await createClaudeStructuredExecutor({
+        executor,
+        fileSystem: fakeFileSystem(),
+        environment: { ATL_CLAUDE_BIN: CLAUDE_BIN },
+      });
+
+      await expect(structured.execute({
+        prompt: 'prompt',
+        jsonSchema,
+        schema,
+        timeoutMs: 30_000,
+      })).rejects.toBeInstanceOf(ClaudeDriverError);
+    }
+  });
+});
 
 describe('createClaudeResearchDriver', () => {
   it('resolves an absolute regular executable at startup', async () => {
