@@ -10,6 +10,7 @@ import {
   Setting,
   TFile,
   type TAbstractFile,
+  type ButtonComponent,
 } from 'obsidian';
 
 import './styles.css';
@@ -30,6 +31,7 @@ import { createObsidianServiceContext } from './service-context.js';
 import {
   backgroundActionState,
   DEFAULT_SETTINGS,
+  modelServiceFieldState,
   normalizeSettings,
   type AtlPluginSettings,
 } from './settings.js';
@@ -265,6 +267,67 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
       this.renderCheck(checks, '后台任务', inspection.checks.scheduler);
     }
 
+    const background = this.atlPlugin.settings.background;
+    let applyConfigButton: ButtonComponent | null = null;
+    const updateApplyAvailability = () => {
+      applyConfigButton?.setDisabled(
+        !this.atlPlugin.settings.allowVaultManagement
+        || !modelServiceFieldState(background).canApply,
+      );
+    };
+    new Setting(containerEl)
+      .setName('模型服务')
+      .setDesc('沿用 Claude Code 当前配置，或为 ATL 单独指定模型服务。')
+      .addDropdown((dropdown) => dropdown
+        .addOption('inherit', '沿用 Claude Code 当前配置')
+        .addOption('custom', '自定义服务')
+        .setValue(background.modelServiceMode)
+        .onChange(async (value) => {
+          background.modelServiceMode = value === 'custom' ? 'custom' : 'inherit';
+          await this.atlPlugin.saveSettings();
+          this.display();
+        }));
+
+    const modelFields = modelServiceFieldState(background);
+    if (modelFields.showCustomFields) {
+      const modelSetting = new Setting(containerEl)
+        .setName('Model')
+        .setDesc(modelFields.modelError ?? '填写服务支持的模型标识。');
+      modelSetting.addText((input) => input
+        .setPlaceholder('例如 glm-4-flash')
+        .setValue(background.model)
+        .onChange(async (value) => {
+          background.model = value;
+          await this.atlPlugin.saveSettings();
+          const state = modelServiceFieldState(background);
+          modelSetting.setDesc(state.modelError ?? '填写服务支持的模型标识。');
+          updateApplyAvailability();
+        }));
+
+      const baseUrlSetting = new Setting(containerEl)
+        .setName('Base URL')
+        .setDesc(modelFields.baseUrlError ?? '填写完整的 http 或 https 服务地址。');
+      baseUrlSetting.addText((input) => {
+        input.inputEl.type = 'url';
+        input
+          .setPlaceholder('https://api.example.com/anthropic')
+          .setValue(background.baseUrl)
+          .onChange(async (value) => {
+            background.baseUrl = value;
+            await this.atlPlugin.saveSettings();
+            const state = modelServiceFieldState(background);
+            baseUrlSetting.setDesc(
+              state.baseUrlError ?? '填写完整的 http 或 https 服务地址。',
+            );
+            updateApplyAvailability();
+          });
+      });
+      containerEl.createEl('p', {
+        cls: 'setting-item-description atl-settings-note',
+        text: 'Agent 调研时会把任务目标和已授权资料发送到该服务。API Key 仍由 Claude Code 或系统环境管理，ATL 不会保存。',
+      });
+    }
+
     new Setting(containerEl)
       .setName('资料来源文件夹')
       .setDesc('Agent 只能读取你在这里选择的本地文件夹。')
@@ -307,11 +370,17 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
     if (inspection?.state === 'installable'
       || inspection?.state === 'ready'
       || inspection?.state === 'running') {
-      actions.addButton((button) => button
-        .setCta()
-        .setButtonText(actionState.primaryLabel)
-        .setDisabled(!this.atlPlugin.settings.allowVaultManagement)
-        .onClick(() => this.enableBackground()));
+      actions.addButton((button) => {
+        applyConfigButton = button;
+        button
+          .setCta()
+          .setButtonText(actionState.primaryLabel)
+          .setDisabled(
+            !this.atlPlugin.settings.allowVaultManagement
+            || !modelServiceFieldState(background).canApply,
+          )
+          .onClick(() => this.enableBackground());
+      });
     } else {
       actions.addButton((button) => button
         .setButtonText(actionState.primaryLabel)

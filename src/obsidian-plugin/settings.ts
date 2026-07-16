@@ -102,6 +102,25 @@ export function modelServiceConfiguration(
   };
 }
 
+export interface ModelServiceFieldState {
+  showCustomFields: boolean;
+  canApply: boolean;
+  modelError: string | null;
+  baseUrlError: string | null;
+}
+
+export function modelServiceFieldState(
+  input: Pick<BackgroundSettings, 'modelServiceMode' | 'model' | 'baseUrl'>,
+): ModelServiceFieldState {
+  const configuration = modelServiceConfiguration(input);
+  return {
+    showCustomFields: input.modelServiceMode === 'custom',
+    canApply: configuration.valid,
+    modelError: configuration.modelError,
+    baseUrlError: configuration.baseUrlError,
+  };
+}
+
 export function normalizeSettings(value: unknown): AtlPluginSettings {
   const root = value !== null && typeof value === 'object'
     ? value as Record<string, unknown>

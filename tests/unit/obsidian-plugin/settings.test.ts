@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   backgroundActionState,
   modelServiceConfiguration,
+  modelServiceFieldState,
   normalizeSettings,
 } from '../../../src/obsidian-plugin/settings.js';
 
@@ -124,6 +125,34 @@ describe('modelServiceConfiguration', () => {
       valid: false,
       model: undefined,
       modelError: 'Model 格式无效，请检查模型名称。',
+    });
+  });
+});
+
+describe('modelServiceFieldState', () => {
+  it('hides custom fields while inheriting Claude Code configuration', () => {
+    expect(modelServiceFieldState({
+      modelServiceMode: 'inherit',
+      model: '',
+      baseUrl: '',
+    })).toEqual({
+      showCustomFields: false,
+      canApply: true,
+      modelError: null,
+      baseUrlError: null,
+    });
+  });
+
+  it('shows custom fields and prevents applying invalid values', () => {
+    expect(modelServiceFieldState({
+      modelServiceMode: 'custom',
+      model: '',
+      baseUrl: 'not-a-url',
+    })).toEqual({
+      showCustomFields: true,
+      canApply: false,
+      modelError: 'Model 格式无效，请检查模型名称。',
+      baseUrlError: 'Base URL 必须是完整的 http 或 https 地址。',
     });
   });
 });
