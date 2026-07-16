@@ -42,9 +42,14 @@ function commands(
   responses: Record<string, { stdout: string; exitCode: number }>,
 ): RuntimeCommandExecutor {
   return {
-    execute: vi.fn(async (command, args) => responses[
+    execute: vi.fn(async (command, args) => {
+      const response = responses[
       `${command} ${args.join(' ')}`
-    ] ?? { stdout: '', stderr: 'missing synthetic response', exitCode: 1 }),
+      ];
+      return response === undefined
+        ? { stdout: '', stderr: 'missing synthetic response', exitCode: 1 }
+        : { ...response, stderr: '' };
+    }),
   };
 }
 

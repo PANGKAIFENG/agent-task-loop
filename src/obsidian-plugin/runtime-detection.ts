@@ -1,6 +1,5 @@
 import { constants } from 'node:fs';
 import { access, realpath, stat } from 'node:fs/promises';
-import { join } from 'node:path';
 
 import { execa } from 'execa';
 import fastGlob from 'fast-glob';
