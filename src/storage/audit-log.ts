@@ -12,8 +12,14 @@ import {
   assertVaultWriteAllowed,
   auditFilePath,
   taskStorageRoot,
+  type VaultWriteAuthorization,
   vaultRoot,
 } from './task-paths.js';
+
+export interface FileAuditLogOptions {
+  timeZone?: string;
+  writeAuthorization?: VaultWriteAuthorization;
+}
 
 export class InvalidAuditEventError extends Error {
   readonly code = 'invalid_audit_event';
@@ -199,11 +205,13 @@ export class FileAuditLog implements AuditLog {
   readonly tasksRoot: string;
   readonly auditRoot: string;
   readonly dateFormatter: Intl.DateTimeFormat;
+  private readonly writeAuthorization: VaultWriteAuthorization | undefined;
 
-  constructor(root?: string, options: { timeZone?: string } = {}) {
+  constructor(root?: string, options: FileAuditLogOptions = {}) {
     this.root = vaultRoot(root);
     this.tasksRoot = taskStorageRoot(this.root);
     this.auditRoot = join(this.tasksRoot, 'Audit');
+    this.writeAuthorization = options.writeAuthorization;
     try {
       this.dateFormatter = new Intl.DateTimeFormat('en-CA', {
         calendar: 'iso8601',
@@ -220,7 +228,7 @@ export class FileAuditLog implements AuditLog {
   }
 
   async append(event: AuditEvent): Promise<void> {
-    assertVaultWriteAllowed(this.root);
+    assertVaultWriteAllowed(this.root, this.writeAuthorization);
     const validEvent = validateEvent(event);
     const localDate = this.localDate(validEvent.at);
     let path: string;

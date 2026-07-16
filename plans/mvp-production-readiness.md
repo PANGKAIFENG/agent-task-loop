@@ -56,7 +56,8 @@ and submitted for human review with an auditable Artifact.
 ### What to build
 
 Run one sanitized public-research task in a disposable vault through the real
-Claude driver. Inspect the result and storage state without touching ClawVault.
+Claude driver. Inspect the result and storage state without touching a personal
+Vault.
 
 ### Acceptance criteria
 
@@ -67,9 +68,9 @@ Claude driver. Inspect the result and storage state without touching ClawVault.
   uncertainties, recommended actions and acceptance-criterion responses.
 - [x] The disposable vault passes the read-only storage doctor afterward.
 
-Checkpoint evidence: `task-20260715-h0m3n1tr` completed as
-`run-task-20260715-yypw3ky1`, produced `attempt-002.md`, entered Review and left
-the disposable vault with a clean doctor result. Human review found weak
+Checkpoint evidence: a sanitized public-research task completed in a disposable
+vault, produced an Artifact, entered Review and left the disposable vault with
+a clean doctor result. Human review found weak
 acceptance coverage and questionable evidence quality; that remains a tracked
 post-MVP hardening item and is why V0.1 never auto-approves research.
 
@@ -93,8 +94,9 @@ scheduler.
 - [x] No unexpected In Progress task or executable Ready task is present.
 - [x] Real personal content is not copied into repository logs or fixtures.
 
-Checkpoint evidence: the read-only real-vault audit reported 9 Inbox tasks, 0
-In Progress tasks, 0 executable Ready tasks and no storage issues.
+Checkpoint evidence: the read-only audit found no unexpected In Progress or
+executable Ready task and no storage issues. Counts and personal task details
+remain local and are intentionally excluded from this repository.
 
 ---
 
@@ -116,9 +118,9 @@ then inspect the installed job without creating a real task solely for testing.
   documented daily limit.
 - [x] Status and log locations are documented and independently inspectable.
 
-Checkpoint evidence: `ai.agent-task-loop.runner` is loaded in `gui/501`, its
-plist passes `plutil -lint`, contains 15 hourly triggers and a daily limit of 3.
-The final release step must reinstall it from the stable checkout after merge.
+Checkpoint evidence: the scheduler plist passed validation in a disposable
+deployment, contained the expected bounded hourly triggers and daily limit, and
+did not include task content or credentials.
 
 ---
 

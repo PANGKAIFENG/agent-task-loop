@@ -16,6 +16,7 @@ import {
   assertVaultWriteAllowed,
   isSafePathSegment,
   taskStorageRoot,
+  type VaultWriteAuthorization,
   vaultRoot,
 } from './task-paths.js';
 
@@ -196,16 +197,20 @@ function artifactRefParts(ref: string): {
 export class MarkdownArtifactRepository implements ArtifactRepository {
   readonly root: string;
   readonly tasksRoot: string;
+  private readonly writeAuthorization: VaultWriteAuthorization | undefined;
 
-  constructor(root?: string) {
+  constructor(root?: string, options: {
+    writeAuthorization?: VaultWriteAuthorization;
+  } = {}) {
     this.root = vaultRoot(root);
     this.tasksRoot = taskStorageRoot(this.root);
+    this.writeAuthorization = options.writeAuthorization;
   }
 
   async write(
     input: Parameters<ArtifactRepository['write']>[0],
   ): ReturnType<ArtifactRepository['write']> {
-    assertVaultWriteAllowed(this.root);
+    assertVaultWriteAllowed(this.root, this.writeAuthorization);
     const parsed = artifactResultSchema.safeParse(input.result);
     if (
       !parsed.success

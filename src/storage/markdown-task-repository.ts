@@ -26,6 +26,7 @@ import {
   isTaskMarkdownPath,
   lifecycleDirectory,
   taskStorageRoot,
+  type VaultWriteAuthorization,
   vaultRoot,
 } from './task-paths.js';
 
@@ -126,6 +127,7 @@ const TASK_LOCK_RETRY_MS = 10;
 const TASK_LOCK_LEASE_MS = 30_000;
 
 export interface MarkdownTaskRepositoryOptions {
+  writeAuthorization?: VaultWriteAuthorization;
   sourceClaim?: {
     attempts?: number;
     retryMs?: number;
@@ -392,10 +394,12 @@ export class MarkdownTaskRepository implements TaskRepository {
   readonly records = new Map<string, TaskRecord>();
   private readonly sourceClaim: SourceClaimOptions;
   private readonly taskLock: SourceClaimOptions;
+  private readonly writeAuthorization: VaultWriteAuthorization | undefined;
 
   constructor(root?: string, options: MarkdownTaskRepositoryOptions = {}) {
     this.root = vaultRoot(root);
     this.tasksRoot = taskStorageRoot(this.root);
+    this.writeAuthorization = options.writeAuthorization;
     this.sourceClaim = {
       attempts: positiveInteger(
         options.sourceClaim?.attempts,
@@ -432,7 +436,7 @@ export class MarkdownTaskRepository implements TaskRepository {
     taskId: string,
     operation: () => Promise<T>,
   ): Promise<T> {
-    assertVaultWriteAllowed(this.root);
+    assertVaultWriteAllowed(this.root, this.writeAuthorization);
     if (!isSafePathSegment(taskId)) {
       throw new InvalidTaskDataError();
     }
@@ -505,7 +509,7 @@ export class MarkdownTaskRepository implements TaskRepository {
     task: Task;
     created: boolean;
   }> {
-    assertVaultWriteAllowed(this.root);
+    assertVaultWriteAllowed(this.root, this.writeAuthorization);
     const result = taskSchema.safeParse(task);
     if (!result.success || !hasSafeTaskPaths(result.data)) {
       throw new InvalidTaskDataError();
@@ -563,7 +567,7 @@ export class MarkdownTaskRepository implements TaskRepository {
   }
 
   async save(task: Task): Promise<Task> {
-    assertVaultWriteAllowed(this.root);
+    assertVaultWriteAllowed(this.root, this.writeAuthorization);
     const result = taskSchema.safeParse(task);
     if (!result.success) {
       throw new InvalidTaskDataError();
@@ -626,7 +630,7 @@ export class MarkdownTaskRepository implements TaskRepository {
     });
 
     try {
-      await rebuildTaskIndex(this.root);
+      await rebuildTaskIndex(this.root, undefined, this.writeAuthorization);
     } catch (error) {
       throw new TaskSavedIndexStaleError({ cause: error });
     }

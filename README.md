@@ -1,328 +1,179 @@
 # Agent Task Loop
 
-把散落在每日复盘和工作过程中的想法，变成一个可管理、可交给 Agent 做只读调研、最终由你验收的个人任务闭环。
+把每天不断出现的想法和待办收进 Obsidian，整理成 Agent 能安全执行、最终由你验收的个人任务闭环。
 
-Agent Task Loop 使用 Obsidian 兼容的 Markdown 文件保存任务。你拥有任务和数据，Agent 只处理你明确确认并授权的调研任务。
+> 当前版本：`v0.1.0` MVP。适合希望同时管理多个项目、经常与多个 AI 会话并行工作的个人用户。
 
-## 它解决什么问题
+![Agent Task Loop 工作流](docs/diagrams/agent-task-loop-core-flow.drawio.svg)
 
-当你同时推进多个项目和 AI 会话时，新的想法、待办和调研需求会不断出现。Agent Task Loop 帮你把这些内容先收进统一 Inbox，再集中整理和分流：
+## 为什么做这个产品
 
-- 候选想法先收下，不要求当场补全，减少工作中断和遗忘。
-- 按项目和状态查看任务，区分待规划、待办、进行中、待验收和异常任务。
-- 把边界清楚的公开资料调研交给 Agent 自动完成。
-- Agent 提交结论、证据和不确定项后，任务停在待验收，是否完成由你决定。
-- 所有任务、执行结果和审计记录保存在本地 Markdown 文件中。
+工作中最容易丢失的不是正式任务，而是会议后的一个想法、AI 会话里产生的后续动作，以及每日复盘中尚未整理的待办。它们通常散落在笔记、聊天和脑中；当并行事项增加，用户既没有精力立即补全，也很难再回头找到。
 
-## 你现在可以做什么
+Agent Task Loop（ATL）提供一个个人任务中枢：
 
-V0.1 已经支持：
+- 先收集，不要求当场想清楚，避免打断当前工作。
+- 再确认，由用户补齐项目、目标、验收标准和执行权限。
+- 后执行，只把边界明确的只读调研交给 Agent。
+- 最后验收，Agent 提交证据和结果，是否完成仍由用户决定。
 
-- **统一收集任务**：通过 CLI 或上游自动化，把主动记录、每日复盘等来源写入 Inbox，并保留来源信息和去重键。
-- **人工确认再执行**：补齐项目、目标、验收标准和权限后，由你明确确认任务是否进入 Ready。
-- **项目化管理**：在本地看板查看 Inbox、待验收任务、项目列表和七列项目看板，并按状态、来源、优先级和是否允许自动执行筛选。
-- **自动完成简单调研**：Claude Code 在受限环境中完成只读研究，受工具、目录、超时和预算约束。
-- **结构化交付**：每次执行生成独立 Markdown Artifact，包含摘要、发现、证据、不确定项、建议动作和验收标准对照。
-- **人工验收闭环**：你可以通过、退回、阻塞或取消；Agent 不能自行把任务标记为完成。
-- **本地定时扫描**：macOS LaunchAgent 可在 08:00 至 22:00 每小时检查一次 Ready 队列，默认每天最多自动领取 3 个任务。
-- **异常恢复**：支持停止执行、解除阻塞、退回重做和重新打开已完成任务。
+ATL 使用 Obsidian 兼容的 Markdown 文件保存任务。数据留在你的 Vault 中，不依赖云端任务数据库。
 
-## 每天怎么用
+## 产品如何组成
+
+ATL 不是 TaskNotes 的二次开发，也不会修改 TaskNotes。两者通过 Obsidian 的标准插件和 Markdown 文件机制协作：
+
+| 组件 | 用户看到的价值 |
+| --- | --- |
+| TaskNotes | 提供可视化任务卡片、看板、筛选、日历和状态浏览 |
+| ATL Obsidian 插件 | 提供任务确认弹窗、项目创建、目标与验收标准填写、Vault 授权 |
+| ATL Core | 负责状态校验、文件移动、索引、审计、调度和 Agent 执行 |
+
+TaskNotes 负责“看清任务”，ATL 负责“让任务达到可执行标准，并受控地交给 Agent”。
+
+## 当前产品能力
+
+### 1. 统一收集
+
+主动记录、每日复盘或其他自动化产生的候选任务可以进入同一个 Inbox。任务保留来源日期、来源类型和去重标识；同一来源不会被重复导入。
+
+### 2. 在 Obsidian 中确认任务
+
+从 Inbox 任务的文件菜单选择“确认并移到待执行”，会打开 Obsidian 原生风格的居中弹窗。你可以：
+
+- 选择已有项目，或直接新建项目。
+- 写清本次任务真正要达成的目标。
+- 添加至少一条可检查的验收标准。
+- 设置优先级。
+- 决定是否允许 Agent 自动执行。
+
+未经确认的候选任务不会进入自动执行队列。
+
+### 3. 按项目和状态管理
+
+每个任务都处于一个清晰状态：
+
+| 看板状态 | 含义 |
+| --- | --- |
+| 收件箱 / Inbox | 已收集，尚未确认是否执行 |
+| 待执行 / Ready | 信息完整，已获得执行许可 |
+| 执行中 / In Progress | Agent 或人工正在处理 |
+| 待验收 / Review | 已生成结果，等待用户判断 |
+| 已完成 / Done | 用户确认结果满足要求 |
+| 已阻塞 / Blocked | 缺少条件或执行失败，需要处理 |
+| 已取消 / Cancelled | 已停止，不再进入队列 |
+
+### 4. 自动完成简单调研
+
+ATL Core 可以把符合条件的 Ready 任务交给受限 Agent。每次执行都会生成独立 Markdown Artifact，包含：
+
+- 结论摘要和主要发现。
+- 引用证据及访问时间。
+- 尚不确定的信息。
+- 建议的后续动作。
+- 对每条验收标准的完成说明。
+
+### 5. 人工验收与恢复
+
+Agent 的结果只会进入 Review，不会自动变成 Done。用户可以验收通过、带反馈退回、标记阻塞或取消，并可停止执行、解除阻塞或重新打开已完成任务。
+
+## 一天中的使用方式
 
 ```text
-记录想法或复盘待办
-        ↓
-Inbox：集中整理候选任务
-        ↓  你补齐信息并确认
-Ready：等待手动或定时执行
-        ↓
-In Progress：Agent 做有边界的只读调研
-        ↓
-Review：你检查结论和证据
-        ↓
-Done，或带反馈退回 Ready
+工作或复盘中产生想法
+          ↓
+Inbox：先统一收下
+          ↓  用户选择项目、目标和验收标准
+Ready：等待执行
+          ↓  Agent 只读调研
+In Progress：执行中
+          ↓  生成带证据的 Artifact
+Review：用户验收
+          ↓
+Done，或带反馈退回
 ```
 
-任务主链路是 `Inbox → Ready → In Progress → Review → Done`。`Blocked` 表示需要人工处理后才能继续，`Cancelled` 表示不再执行。
+典型的日常操作是：打开 TaskNotes 看板，集中处理 Inbox；把适合调研的任务确认到 Ready；再到 Review 检查 Agent 结果。任务确认过程不需要使用终端。
 
-| 看板状态 | 对你意味着什么 |
-| --- | --- |
-| 待规划 / Inbox | 已经收下，但还没有获得执行许可 |
-| 待办 / Ready | 信息完整、已经确认，可以进入执行队列 |
-| 进行中 / In Progress | Agent 已领取任务，正在执行 |
-| 审核中 / Review | Artifact 已生成，等待你验收 |
-| 已完成 / Done | 你已确认结果满足要求 |
-| 已阻塞 / Blocked | 执行失败或缺少必要条件，需要人工处理 |
-| 已取消 / Cancelled | 任务已停止，不再进入队列 |
+## 安装 Obsidian 插件
 
-## 自动执行的安全边界
+ATL 尚未进入 Obsidian 社区插件市场，目前通过 GitHub Release 安装，全程可以在 Finder 和 Obsidian 中完成：
 
-只有同时满足以下条件的任务才可能被自动执行：
+1. 打开本仓库的 [Releases](https://github.com/PANGKAIFENG/agent-task-loop/releases)，下载最新的 `agent-task-loop-v0.1.0.zip`。
+2. 解压后得到 `main.js`、`manifest.json` 和 `styles.css`。
+3. 在 Finder 中打开你的 Vault，按 `Command + Shift + .` 显示隐藏文件。
+4. 进入 `.obsidian/plugins/`，新建 `agent-task-loop` 文件夹，把三个文件放入其中。
+5. 重启 Obsidian，在“设置 → 第三方插件”中启用 `Agent Task Loop`。
+6. 打开“设置 → Agent Task Loop”，开启“允许 ATL 管理此 Vault”。
 
-1. 任务处于 Ready。
-2. 任务类型是 `research`。
-3. 权限是 `read_only_research`。
-4. 已关联项目，并有明确目标和至少一条验收标准。
-5. 你主动设置了 `auto_executable=true`。
+授权默认关闭。开启后，ATL 只管理当前 Vault 的 `10_Tasks` 目录。完整图文操作和字段示例见[在 Obsidian 中确认 ATL 任务](docs/operations/obsidian-plugin.md)。
 
-Agent 不能自动确认候选任务，不能修改代码、配置或正式日程，不能对外发送消息，也不能自动批准自己的结果。所有自动结果都进入 Review。
+### 使用前提
 
-## 快速开始
+- Obsidian 桌面版 `1.8.0` 或更高版本。
+- 已安装 TaskNotes，用于可视化任务看板。
+- Vault 中已经存在 ATL 的 `10_Tasks` 目录结构和候选任务。
 
-### 1. 安装
+> `v0.1.0` 已实现无终端的插件安装和日常任务确认。自动调研引擎与定时调度仍需要一次开发者部署，尚未由插件自动安装或启动；这是公开 MVP 的明确边界。
 
-需要 Node.js 24 或更高版本，以及 pnpm 10 或更高版本。
+## 什么任务可以交给 Agent
 
-```bash
-pnpm install
-pnpm build
-```
+只有同时满足以下条件的任务才可能被自动领取：
 
-### 2. 连接你的 Obsidian Vault
+1. 状态为 Ready。
+2. 类型为 `research`。
+3. 权限为 `read_only_research`。
+4. 已关联项目，且有明确目标和至少一条验收标准。
+5. 用户主动开启 `auto_executable=true`。
 
-将任务写入真实 Vault 前，必须同时提供绝对路径和显式写入许可：
-
-```bash
-export ATL_VAULT_ROOT="/absolute/path/to/your-vault"
-export ATL_ALLOW_REAL_WRITES=1
-```
-
-建议先进行只读健康检查：
-
-```bash
-pnpm --silent atl doctor --json
-pnpm --silent atl task list --status inbox --json
-```
-
-`doctor` 只报告重复任务 ID、无效 frontmatter、生命周期路径错误和索引异常，不会自动修改文件。
-
-### 3. 创建项目并记录任务
-
-```bash
-pnpm atl project create \
-  --project-id product-research \
-  --name "产品调研" \
-  --description "收集并验证公开产品信息"
-
-TASK_ID="$(pnpm --silent atl task capture \
-  --title "调研一个公开产品" \
-  --body "梳理产品定位、核心能力和公开定价。" \
-  --origin manual_cli \
-  --source-date 2026-07-15 \
-  --source-key manual:product-research:001 \
-  --priority high \
-  --json | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).taskId")"
-```
-
-`origin` 用来标记任务来源，`source-key` 用于避免同一来源重复导入。每日复盘自动化也可以调用同一个 `task capture` 入口，但 V0.1 不内置特定笔记格式的复盘解析器。
-
-### 4. 确认任务
-
-```bash
-pnpm atl task confirm \
-  --task-id "$TASK_ID" \
-  --project-id product-research \
-  --objective "基于公开资料梳理产品定位、能力和定价" \
-  --acceptance-criterion "引用至少一个官方 HTTPS 页面" \
-  --acceptance-criterion "明确区分事实和待验证信息" \
-  --priority high \
-  --auto-executable
-```
-
-确认后，任务才会从 Inbox 进入 Ready。查看下一个可执行任务不会改变任务状态：
-
-```bash
-pnpm --silent atl task next --json
-```
-
-### 5. 打开本地看板
-
-配置 Claude Code 运行环境后启动服务：
-
-```bash
-export ATL_CLAUDE_BIN="/absolute/path/to/claude"
-export ATL_CLAUDE_CONFIG_DIR="/absolute/path/to/claude-config"
-export ATL_CLAUDE_MODEL="your-supported-model"
-export ATL_ALLOWED_LOCAL_ROOTS="/absolute/path/to/allowed-read-only-sources"
-
-pnpm board:server
-```
-
-打开 [http://127.0.0.1:4173/inbox](http://127.0.0.1:4173/inbox)。本地看板只绑定 `127.0.0.1`，当前提供：
-
-- `/inbox`：候选任务及缺失信息。
-- `/review`：待验收结果及证据数量。
-- `/projects`：项目列表。
-- `/projects/:id`：按项目查看完整状态看板。
-
-V0.1 的看板主要用于查看和管理任务全局状态。快速记录按钮和完整的可视化编辑流程尚未开放；可信的状态变更仍通过 CLI 完成。
-
-## 执行与验收
-
-手动执行一个已确认任务：
-
-```bash
-pnpm atl runner run-task --task-id "$TASK_ID" --driver claude
-```
-
-检查 Runner 状态：
-
-```bash
-pnpm --silent atl runner status --json
-```
-
-Agent 提交结果后，任务会进入 Review。验收通过：
-
-```bash
-pnpm atl task review --task-id "$TASK_ID" --approve
-```
-
-退回修改、标记阻塞或取消任务时需要写明反馈：
-
-```bash
-pnpm atl task review --task-id "$TASK_ID" --request-changes --feedback "补充官方定价证据。"
-pnpm atl task review --task-id "$TASK_ID" --block --feedback "需要先确认研究范围。"
-pnpm atl task review --task-id "$TASK_ID" --cancel --feedback "不再需要这项调研。"
-```
-
-常用恢复操作：
-
-```bash
-pnpm atl task stop --task-id "$TASK_ID"
-pnpm atl task unblock --task-id "$TASK_ID" --feedback "范围已经补充。"
-pnpm atl task reopen --task-id "$TASK_ID" --feedback "需要补充新的公开证据。"
-```
-
-## 自动调度
-
-在 macOS 上安装调度器前，先完成构建并设置 Claude Code 相关环境变量。然后运行：
-
-```bash
-node build/server/cli.js scheduler install
-node build/server/cli.js scheduler status
-```
-
-默认调度策略：
-
-- 时区：`Asia/Shanghai`。
-- 时段：每天 08:00 至 22:00，每小时触发一次。
-- 单次：最多领取 1 个符合条件的任务。
-- 并发：1。
-- 每日自动领取上限：3，可通过 `ATL_DAILY_LIMIT` 调整。
-
-详细安装、日志、停用和恢复说明见 [本地研究任务调度](docs/operations/scheduler.md)。
+Agent 不能自动确认 Inbox 任务，不能修改代码、配置或正式日程，不能对外发送消息，也不能批准自己的结果。涉及登录、发布、付款、写代码或外部沟通的任务应由人工处理。
 
 ## 数据保存在哪里
-
-任务源数据位于 Vault 的 `10_Tasks`：
 
 ```text
 10_Tasks/
 ├── Inbox/       # 未确认的候选任务
 ├── Active/      # Ready、In Progress、Review、Blocked
 ├── Archive/     # Done、Cancelled
+├── Projects/    # 项目定义和项目上下文
 ├── Artifacts/   # 每次执行产生的独立结果
-└── _System/     # 索引、审计记录和内部状态
+└── _System/     # 索引、审计和内部状态
 ```
 
-个人任务正文、原始笔记和 Claude 登录凭据不会写入本仓库。Agent 执行只允许写入受控的任务元数据、审计记录和 Artifact。
+个人任务正文、原始笔记和 Agent 登录凭据不会写入本 GitHub 仓库。测试使用独立的临时 Vault，不读取真实个人任务。
 
-## 当前 MVP 边界
+## MVP 边界与下一步
 
-以下能力不属于 V0.1，README 不将它们视为已交付功能：
+`v0.1.0` 先验证“收集、管理、读取、简单调研、人工验收”能否成为可靠闭环。以下能力尚未包含：
 
-- 自动理解、扩写或补全信息不完整的 Inbox 任务。
-- 在看板中完成全部新增、编辑、确认和验收操作。
-- Agent、Skill、小队管理和多 Agent 编排。
-- 团队协作、云同步和 SaaS 托管。
-- 自动判断事实正确并将任务直接置为 Done。
+- 自动理解和扩写信息不完整的 Inbox 任务。
+- 由 Obsidian 插件自动安装、连接和维护 Agent 运行环境。
+- 在可视化看板中完成全部新增、编辑、执行和验收操作。
+- Agent、Skill、小队及多 Agent 编排。
+- 团队协作、云同步、SaaS 托管和移动端。
+- 自动判断事实正确并把任务直接标记为 Done。
 
-V0.1 的核心目标是先把“收集、管理、读取、简单调研、人工验收”跑成可靠的个人闭环。
+非关键问题和后续能力通过 [GitHub Issues](https://github.com/PANGKAIFENG/agent-task-loop/issues) 管理，MVP 不为未验证需求提前增加复杂度。
 
-## 完整的安全演练
+## 面向开发者
 
-首次验证请使用一次性 Vault，不要直接操作真实个人数据：
-
-```bash
-export ATL_VAULT_ROOT="$(mktemp -d -t atl-manual-XXXXXX)"
-cp -R tests/fixtures/vault/. "$ATL_VAULT_ROOT/"
-unset ATL_ALLOW_REAL_WRITES
-
-pnpm atl project create \
-  --project-id public-research \
-  --name "Public research" \
-  --description "Research only public sources."
-
-TASK_ID="$(pnpm --silent atl task capture \
-  --title "Review public pricing" \
-  --body "Compare the public pricing page." \
-  --origin manual_cli \
-  --source-date 2026-07-15 \
-  --source-key manual:readme:pricing \
-  --priority high \
-  --json | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).taskId")"
-
-pnpm --silent atl task list --status inbox --json
-
-pnpm atl task confirm \
-  --task-id "$TASK_ID" \
-  --project-id public-research \
-  --objective "Compare public pricing using official evidence." \
-  --acceptance-criterion "Cite an official HTTPS page." \
-  --priority high \
-  --auto-executable
-
-pnpm --silent atl task next --json
-
-pnpm atl task next \
-  --claim \
-  --task-id "$TASK_ID" \
-  --agent human-supervised \
-  --run-id run-readme-001
-
-cat > "$ATL_VAULT_ROOT/result.json" <<'JSON'
-{
-  "summary": "Pricing was reviewed.",
-  "findings": ["A public plan exists."],
-  "evidence": [
-    {
-      "title": "Official pricing",
-      "url": "https://example.com/pricing",
-      "accessedAt": "2026-07-15T09:00:00.000Z"
-    }
-  ],
-  "uncertainties": [],
-  "recommendedActions": ["Review again next quarter."],
-  "acceptance": [
-    {
-      "criterion": "Cite an official HTTPS page.",
-      "status": "met",
-      "note": "The official pricing page was cited."
-    }
-  ]
-}
-JSON
-
-pnpm atl task submit \
-  --task-id "$TASK_ID" \
-  --run-id run-readme-001 \
-  --result "$ATL_VAULT_ROOT/result.json"
-
-pnpm atl task review --task-id "$TASK_ID" --approve
-pnpm --silent atl doctor --json
-find "$ATL_VAULT_ROOT/10_Tasks/Archive" -name "$TASK_ID.md"
-find "$ATL_VAULT_ROOT/10_Tasks/Artifacts/$TASK_ID" -name 'attempt-*.md'
-```
-
-`task next --json` 是只读操作。受监督领取必须显式提供 `--claim`、`--task-id` 和 `--run-id`，不会消耗自动执行的每日额度。
-
-## 开发与验证
+本仓库同时包含 ATL Core、本地看板和 Obsidian 插件。开发环境需要 Node.js 24+ 与 pnpm 10+。
 
 ```bash
+pnpm install
 pnpm typecheck
 pnpm lint
 pnpm test
 pnpm build
 ```
 
-产品需求和完整边界见 [Agent Task Loop V0.1 PRD](docs/PRD-Agent-Task-Loop-V0.1.md)。
+- 产品需求与能力边界：[Agent Task Loop V0.1 PRD](docs/PRD-Agent-Task-Loop-V0.1.md)
+- Obsidian 插件说明：[在 Obsidian 中确认 ATL 任务](docs/operations/obsidian-plugin.md)
+- CLI 与本地开发：[开发者快速开始](docs/operations/developer-cli.md)
+- 调度器维护说明：[本地研究任务调度](docs/operations/scheduler.md)
+- 贡献指南：[CONTRIBUTING.md](CONTRIBUTING.md)
+- 安全问题：[SECURITY.md](SECURITY.md)
+
+## 开源协议
+
+Agent Task Loop 使用 [Apache License 2.0](LICENSE) 开源。你可以使用、修改和分发本项目；请保留许可证和版权声明。

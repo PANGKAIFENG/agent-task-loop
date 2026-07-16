@@ -12,6 +12,24 @@ import {
 
 import type { Task } from '../domain/task.js';
 
+export class VaultWriteAuthorization {
+  readonly canonicalRoot: string;
+
+  private constructor(canonicalRoot: string) {
+    this.canonicalRoot = canonicalRoot;
+  }
+
+  static forRoot(root: string): VaultWriteAuthorization {
+    return new VaultWriteAuthorization(canonicalizePotentialPath(root));
+  }
+}
+
+export function createVaultWriteAuthorization(
+  root: string,
+): VaultWriteAuthorization {
+  return VaultWriteAuthorization.forRoot(root);
+}
+
 export function vaultRoot(configuredRoot?: string): string {
   const root = configuredRoot ?? process.env.ATL_VAULT_ROOT;
   if (root === undefined || root.trim() === '') {
@@ -131,10 +149,22 @@ export function auditFilePath(root: string, localDate: string): string {
   return joinWithin(storageSubdirectory(root, 'Audit'), localDate, '.jsonl');
 }
 
-export function assertVaultWriteAllowed(root: string): void {
+export function assertVaultWriteAllowed(
+  root: string,
+  authorization?: VaultWriteAuthorization,
+): void {
   const canonicalRoot = canonicalizePotentialPath(root);
   const canonicalTasksRoot = canonicalizePotentialPath(taskStorageRoot(root));
   if (!isWithin(canonicalRoot, canonicalTasksRoot)) {
+    throw new Error('Vault writes are disabled');
+  }
+  if (authorization !== undefined) {
+    if (
+      authorization instanceof VaultWriteAuthorization
+      && authorization.canonicalRoot === canonicalRoot
+    ) {
+      return;
+    }
     throw new Error('Vault writes are disabled');
   }
   const canonicalTempRoot = canonicalizePotentialPath(tmpdir());

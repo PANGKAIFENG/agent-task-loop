@@ -47,7 +47,6 @@ describe('readinessErrors', () => {
       'objective is required',
       'acceptanceCriteria requires at least one item',
       'permissionProfile must be read_only_research',
-      'autoExecutable must be explicitly enabled',
     ]);
   });
 
@@ -59,6 +58,19 @@ describe('readinessErrors', () => {
       acceptanceCriteria: ['Cite official sources'],
       permissionProfile: 'read_only_research',
       autoExecutable: true,
+    });
+
+    expect(readinessErrors(task)).toEqual([]);
+  });
+
+  it('treats automatic execution as permission rather than task readiness', () => {
+    const task = makeTask({
+      projectId: 'project-1',
+      taskType: 'research',
+      objective: 'Compare the documented options',
+      acceptanceCriteria: ['Cite official sources'],
+      permissionProfile: 'read_only_research',
+      autoExecutable: false,
     });
 
     expect(readinessErrors(task)).toEqual([]);

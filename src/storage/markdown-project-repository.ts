@@ -17,6 +17,7 @@ import {
   isSafePathSegment,
   projectFilePath,
   taskStorageRoot,
+  type VaultWriteAuthorization,
   vaultRoot,
 } from './task-paths.js';
 
@@ -115,11 +116,15 @@ export class MarkdownProjectRepository implements ProjectRepository {
   readonly tasksRoot: string;
   readonly projectsRoot: string;
   readonly records = new Map<string, ProjectRecord>();
+  private readonly writeAuthorization: VaultWriteAuthorization | undefined;
 
-  constructor(root?: string) {
+  constructor(root?: string, options: {
+    writeAuthorization?: VaultWriteAuthorization;
+  } = {}) {
     this.root = vaultRoot(root);
     this.tasksRoot = taskStorageRoot(this.root);
     this.projectsRoot = `${this.tasksRoot}/Projects`;
+    this.writeAuthorization = options.writeAuthorization;
   }
 
   async list(): Promise<Project[]> {
@@ -144,7 +149,7 @@ export class MarkdownProjectRepository implements ProjectRepository {
   }
 
   async create(project: Project): Promise<Project> {
-    assertVaultWriteAllowed(this.root);
+    assertVaultWriteAllowed(this.root, this.writeAuthorization);
     const result = projectSchema.safeParse(project);
     if (!result.success || !isSafePathSegment(result.data.projectId)) {
       throw new InvalidProjectDataError();
@@ -175,7 +180,7 @@ export class MarkdownProjectRepository implements ProjectRepository {
   }
 
   async save(project: Project): Promise<Project> {
-    assertVaultWriteAllowed(this.root);
+    assertVaultWriteAllowed(this.root, this.writeAuthorization);
     const result = projectSchema.safeParse(project);
     if (!result.success) {
       throw new InvalidProjectDataError();

@@ -1,0 +1,112 @@
+.atl-task-confirmation-modal {
+  width: min(640px, calc(100vw - 32px));
+}
+
+.atl-task-confirmation-modal .modal-content {
+  padding-bottom: 8px;
+}
+
+.atl-task-title {
+  color: var(--text-normal);
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-semibold);
+  line-height: 1.4;
+  margin-top: 4px;
+}
+
+.atl-task-subtitle {
+  color: var(--text-muted);
+  margin: 6px 0 18px;
+}
+
+.atl-task-confirmation-modal .setting-item {
+  align-items: flex-start;
+}
+
+.atl-task-confirmation-modal .setting-item-control textarea,
+.atl-task-confirmation-modal .setting-item-control input[type='text'] {
+  min-width: min(340px, 52vw);
+}
+
+.atl-task-confirmation-modal textarea {
+  resize: vertical;
+}
+
+.atl-criteria-section {
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding: 12px 0 16px;
+}
+
+.atl-criteria-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.atl-criterion-row {
+  align-items: flex-start;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 32px;
+}
+
+.atl-criterion-row textarea {
+  min-height: 58px;
+  width: 100%;
+}
+
+.atl-icon-button {
+  height: 32px;
+  width: 32px;
+}
+
+.atl-add-criterion-button {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.atl-add-criterion-button svg {
+  height: 15px;
+  width: 15px;
+}
+
+.atl-form-error {
+  color: var(--text-error);
+  font-size: var(--font-ui-smaller);
+  margin-top: 6px;
+}
+
+.atl-form-error-summary {
+  background: var(--background-modifier-error);
+  border-radius: var(--radius-s);
+  color: var(--text-on-accent);
+  margin-bottom: 10px;
+  padding: 8px 10px;
+}
+
+.atl-modal-actions {
+  border-top: 0;
+  padding-top: 18px;
+}
+
+.atl-modal-actions .setting-item-info {
+  display: none;
+}
+
+@media (max-width: 560px) {
+  .atl-task-confirmation-modal .setting-item {
+    display: block;
+  }
+
+  .atl-task-confirmation-modal .setting-item-control {
+    justify-content: flex-start;
+    margin-top: 8px;
+  }
+
+  .atl-task-confirmation-modal .setting-item-control textarea,
+  .atl-task-confirmation-modal .setting-item-control input[type='text'] {
+    min-width: 100%;
+  }
+}
