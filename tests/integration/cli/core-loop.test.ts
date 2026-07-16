@@ -36,6 +36,7 @@ async function runCli(
   root: string | undefined,
   args: string[],
   extraEnv: Record<string, string | undefined> = {},
+  input?: string,
 ): Promise<CliResult> {
   const result = await execa('pnpm', ['exec', 'tsx', cli, ...args], {
     cwd: repositoryRoot,
@@ -44,6 +45,7 @@ async function runCli(
       ATL_ALLOW_REAL_WRITES: undefined,
       ...extraEnv,
     },
+    ...(input === undefined ? {} : { input }),
     reject: false,
   });
   return {
@@ -239,6 +241,75 @@ describe('atl CLI core loop', () => {
     const inbox = JSON.parse(lines[1] ?? '') as Task[];
     expect(inbox).toHaveLength(1);
     expect(inbox[0]?.taskId).toBe(lines[0]);
+  });
+
+  it('deduplicates daily review and real-time capture submitted as stdin JSON', async () => {
+    const root = await makeVault();
+    const common = {
+      title: '确认并恢复 Agent 产品情报雷达',
+      body: '检查每日推送并恢复运行。',
+      sourceDate: '2026-07-16',
+      sourceNote: '笔记同步助手/2026-07-16/同步助手_2026-07-16.md',
+      sourceQuote: '需要确认并恢复 Agent 产品情报雷达，检查每天推送',
+      priority: 'normal',
+    };
+    for (const input of [
+      {
+        ...common,
+        origin: 'explicit_wechat_todo',
+        sourceKey: 'daily-review:2026-07-16:radar',
+      },
+      {
+        ...common,
+        origin: 'obsidian_sync',
+        sourceKey: 'obsidian-sync:2026-07-16:radar',
+      },
+    ]) {
+      const result = await runCli(
+        root,
+        ['task', 'capture', '--stdin-json', '--json'],
+        {},
+        JSON.stringify(input),
+      );
+      expect(json<Task>(result).title).toBe(common.title);
+    }
+
+    const tasks = json<Task[]>(await runCli(root, ['task', 'list', '--json']));
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]?.origin).toBe('explicit_wechat_todo');
+  });
+
+  it('rejects invalid or oversized stdin JSON without echoing private input', async () => {
+    const root = await makeVault();
+    const privateMarker = 'PRIVATE-SYNC-NOTE-CONTENT';
+    const invalid = await runCli(
+      root,
+      ['task', 'capture', '--stdin-json', '--json'],
+      {},
+      `{not-json:${privateMarker}}`,
+    );
+    expect(invalid.exitCode).toBe(1);
+    expect(`${invalid.stdout}${invalid.stderr}`).not.toContain(privateMarker);
+    expect(JSON.parse(invalid.stdout)).toMatchObject({
+      ok: false,
+      error: { code: 'invalid_cli_input' },
+    });
+
+    const oversized = await runCli(
+      root,
+      ['task', 'capture', '--stdin-json', '--json'],
+      {},
+      JSON.stringify({
+        title: 'Oversized private note',
+        body: `${privateMarker}${'x'.repeat(1024 * 1024)}`,
+      }),
+    );
+    expect(oversized.exitCode).toBe(1);
+    expect(`${oversized.stdout}${oversized.stderr}`).not.toContain(privateMarker);
+    expect(JSON.parse(oversized.stdout)).toMatchObject({
+      ok: false,
+      error: { code: 'invalid_cli_input' },
+    });
   });
 
   it.each([

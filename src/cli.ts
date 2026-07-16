@@ -6,7 +6,12 @@ import { delimiter, isAbsolute, join } from 'node:path';
 import { Command, CommanderError } from 'commander';
 
 import { loadConfig, assertWriteEnabled, type AtlConfig } from './config.js';
-import { TASK_STATUSES, type TaskStatus } from './domain/task.js';
+import {
+  PRIORITIES,
+  TASK_STATUSES,
+  type Priority,
+  type TaskStatus,
+} from './domain/task.js';
 import {
   CLAUDE_RESEARCH_TIMEOUT_MS,
   createClaudeResearchDriver,
@@ -20,7 +25,10 @@ import {
   installLaunchAgent,
   uninstallLaunchAgent,
 } from './scheduler/launch-agent.js';
-import { captureTask } from './services/capture-task.js';
+import {
+  captureTask,
+  type CaptureTaskInput,
+} from './services/capture-task.js';
 import { claimTask } from './services/claim-task.js';
 import { confirmTask } from './services/confirm-task.js';
 import { createProject } from './services/create-project.js';
@@ -42,6 +50,8 @@ class CliUsageError extends Error {
   readonly code = 'invalid_cli_input';
 }
 
+const MAX_STDIN_JSON_BYTES = 1024 * 1024;
+
 interface OutputOptions {
   json?: boolean;
 }
@@ -51,6 +61,92 @@ function required(value: string | undefined, flag: string): string {
     throw new CliUsageError(`${flag} is required`);
   }
   return value;
+}
+
+function jsonRecord(value: unknown): Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new CliUsageError('stdin must contain a JSON object');
+  }
+  return value as Record<string, unknown>;
+}
+
+function requiredJsonString(
+  record: Record<string, unknown>,
+  field: string,
+): string {
+  const value = record[field];
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new CliUsageError(`stdin JSON field ${field} is required`);
+  }
+  return value;
+}
+
+function nullableJsonString(
+  record: Record<string, unknown>,
+  field: string,
+): string | null {
+  const value = record[field];
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') {
+    throw new CliUsageError(`stdin JSON field ${field} must be a string or null`);
+  }
+  return value;
+}
+
+function jsonPriority(record: Record<string, unknown>): Priority {
+  const value = record.priority ?? 'normal';
+  if (!PRIORITIES.includes(value as Priority)) {
+    throw new CliUsageError('stdin JSON field priority is invalid');
+  }
+  return value as Priority;
+}
+
+function captureInputFromJson(value: unknown): CaptureTaskInput {
+  const record = jsonRecord(value);
+  const allowed = new Set([
+    'title',
+    'body',
+    'origin',
+    'sourceDate',
+    'sourceNote',
+    'sourceQuote',
+    'sourceKey',
+    'priority',
+  ]);
+  if (Object.keys(record).some((field) => !allowed.has(field))) {
+    throw new CliUsageError('stdin JSON contains unsupported fields');
+  }
+  return {
+    title: requiredJsonString(record, 'title'),
+    body: requiredJsonString(record, 'body'),
+    origin: requiredJsonString(record, 'origin'),
+    sourceDate: nullableJsonString(record, 'sourceDate'),
+    sourceNote: nullableJsonString(record, 'sourceNote'),
+    sourceQuote: nullableJsonString(record, 'sourceQuote'),
+    sourceKey: requiredJsonString(record, 'sourceKey'),
+    priority: jsonPriority(record),
+  };
+}
+
+async function readBoundedJsonInput(
+  stream: AsyncIterable<Buffer | string>,
+  maxBytes: number,
+): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for await (const chunk of stream) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bytes += buffer.byteLength;
+    if (bytes > maxBytes) {
+      throw new CliUsageError('stdin JSON exceeds the 1 MiB limit');
+    }
+    chunks.push(buffer);
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
+  } catch {
+    throw new CliUsageError('stdin must contain valid JSON');
+  }
 }
 
 function collect(value: string, previous: string[]): string[] {
@@ -239,6 +335,7 @@ function buildProgram(): Command {
   const task = program.command('task');
   task
     .command('capture')
+    .option('--stdin-json')
     .option('--title <title>')
     .option('--body <body>')
     .option('--origin <origin>')
@@ -246,7 +343,7 @@ function buildProgram(): Command {
     .option('--source-note <path>')
     .option('--source-quote <quote>')
     .option('--source-key <key>')
-    .option('--priority <priority>', 'Task priority', 'normal')
+    .option('--priority <priority>', 'Task priority')
     .option('--json')
     .action(async (options: {
       title?: string;
@@ -256,20 +353,42 @@ function buildProgram(): Command {
       sourceNote?: string;
       sourceQuote?: string;
       sourceKey?: string;
-      priority: 'urgent' | 'high' | 'normal' | 'low';
+      priority?: 'urgent' | 'high' | 'normal' | 'low';
+      stdinJson?: boolean;
       json?: boolean;
     }) => {
       const { ctx } = contextForWrite();
-      const result = await captureTask(ctx, {
-        title: required(options.title, '--title'),
-        body: required(options.body, '--body'),
-        origin: required(options.origin, '--origin'),
-        sourceDate: options.sourceDate ?? null,
-        sourceNote: options.sourceNote ?? null,
-        sourceQuote: options.sourceQuote ?? null,
-        sourceKey: required(options.sourceKey, '--source-key'),
-        priority: options.priority,
-      });
+      const fieldFlagsUsed = [
+        options.title,
+        options.body,
+        options.origin,
+        options.sourceDate,
+        options.sourceNote,
+        options.sourceQuote,
+        options.sourceKey,
+        options.priority,
+      ].some((value) => value !== undefined);
+      if (options.stdinJson === true && fieldFlagsUsed) {
+        throw new CliUsageError(
+          '--stdin-json cannot be combined with task field options',
+        );
+      }
+      const input = options.stdinJson === true
+        ? captureInputFromJson(await readBoundedJsonInput(
+          process.stdin,
+          MAX_STDIN_JSON_BYTES,
+        ))
+        : {
+          title: required(options.title, '--title'),
+          body: required(options.body, '--body'),
+          origin: required(options.origin, '--origin'),
+          sourceDate: options.sourceDate ?? null,
+          sourceNote: options.sourceNote ?? null,
+          sourceQuote: options.sourceQuote ?? null,
+          sourceKey: required(options.sourceKey, '--source-key'),
+          priority: options.priority ?? 'normal',
+        };
+      const result = await captureTask(ctx, input);
       output(result, options);
     });
 
