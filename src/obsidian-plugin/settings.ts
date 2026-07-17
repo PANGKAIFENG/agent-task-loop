@@ -1,3 +1,5 @@
+import { isIP } from 'node:net';
+
 import type {
   BackgroundSettings,
   BackgroundState,
@@ -13,6 +15,7 @@ export interface AtlPluginSettings {
 export interface CaptureState {
   lastSuccessfulScanAt: string | null;
   reviewedFingerprints: string[];
+  processedRecordFingerprints: string[];
 }
 
 export const MAX_REVIEWED_FINGERPRINTS = 10_000;
@@ -40,6 +43,7 @@ export const DEFAULT_SETTINGS: AtlPluginSettings = {
   capture: {
     lastSuccessfulScanAt: null,
     reviewedFingerprints: [],
+    processedRecordFingerprints: [],
   },
   background: DEFAULT_BACKGROUND_SETTINGS,
 };
@@ -55,6 +59,12 @@ function modelValue(value: unknown): string {
     : DEFAULT_BACKGROUND_SETTINGS.model;
 }
 
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === 'localhost'
+    || hostname === '[::1]'
+    || (isIP(hostname) === 4 && hostname.split('.')[0] === '127');
+}
+
 function normalizeBaseUrl(value: unknown): string | undefined {
   if (typeof value !== 'string' || value.trim() === '') return undefined;
   const candidate = value.trim();
@@ -67,6 +77,10 @@ function normalizeBaseUrl(value: unknown): string | undefined {
       || parsed.password !== ''
       || parsed.search !== ''
       || parsed.hash !== ''
+      || (
+        parsed.protocol === 'http:'
+        && !isLoopbackHostname(parsed.hostname)
+      )
     ) {
       return undefined;
     }
@@ -78,6 +92,17 @@ function normalizeBaseUrl(value: unknown): string | undefined {
       : serialized;
   } catch {
     return undefined;
+  }
+}
+
+function isRemoteHttpBaseUrl(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  try {
+    const parsed = new URL(value.trim());
+    return parsed.protocol === 'http:'
+      && !isLoopbackHostname(parsed.hostname);
+  } catch {
+    return false;
   }
 }
 
@@ -115,7 +140,9 @@ export function modelServiceConfiguration(
     ? 'Model 格式无效，请检查模型名称。'
     : null;
   const baseUrlError = baseUrl === undefined
-    ? 'Base URL 必须是完整的 http 或 https 地址。'
+    ? isRemoteHttpBaseUrl(input.baseUrl)
+      ? 'Base URL 必须使用 HTTPS；本机地址可以使用 HTTP。'
+      : 'Base URL 必须是完整的 http 或 https 地址。'
     : null;
   return {
     valid: modelError === null && baseUrlError === null,
@@ -180,6 +207,11 @@ export function normalizeSettings(value: unknown): AtlPluginSettings {
       reviewedFingerprints: compactReviewedFingerprints(
         Array.isArray(rawCapture.reviewedFingerprints)
           ? rawCapture.reviewedFingerprints
+          : [],
+      ),
+      processedRecordFingerprints: compactReviewedFingerprints(
+        Array.isArray(rawCapture.processedRecordFingerprints)
+          ? rawCapture.processedRecordFingerprints
           : [],
       ),
     },

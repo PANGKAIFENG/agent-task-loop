@@ -47,6 +47,7 @@ async function fixture(overrides: Partial<CaptureControllerDependencies> = {}) {
   let state: CaptureState = {
     lastSuccessfulScanAt: null,
     reviewedFingerprints: [],
+    processedRecordFingerprints: [],
   };
   const saveState = vi.fn(async (next: CaptureState) => {
     state = structuredClone(next);
@@ -54,7 +55,7 @@ async function fixture(overrides: Partial<CaptureControllerDependencies> = {}) {
   const dependencies: CaptureControllerDependencies = {
     context: context.ctx,
     readSources: vi.fn(async () => ({ filesScanned: 1, records })),
-    extractCandidates: vi.fn(async () => records.map(candidate)),
+    extractCandidates: vi.fn(async (sourceRecords) => sourceRecords.map(candidate)),
     getState: () => structuredClone(state),
     saveState,
     clock: () => new Date(NOW),
@@ -102,6 +103,7 @@ describe('CaptureController', () => {
     expect(test.getState()).toEqual({
       lastSuccessfulScanAt: NOW.toISOString(),
       reviewedFingerprints: prepared.candidates.map(({ candidateId }) => candidateId),
+      processedRecordFingerprints: test.records.map(({ fingerprint }) => fingerprint),
     });
   });
 
@@ -114,6 +116,7 @@ describe('CaptureController', () => {
     expect(test.getState()).toEqual({
       lastSuccessfulScanAt: null,
       reviewedFingerprints: [],
+      processedRecordFingerprints: [],
     });
     await expect(test.context.ctx.tasks.list()).resolves.toEqual([]);
   });
@@ -154,6 +157,25 @@ describe('CaptureController', () => {
     expect(second.candidates).toEqual([]);
   });
 
+  it('does not send previously processed source records back to the model', async () => {
+    const extractCandidates = vi.fn(async (records: readonly SyncSourceRecord[]) => (
+      records.map(candidate)
+    ));
+    const test = await fixture({
+      extractCandidates,
+      getState: () => ({
+        lastSuccessfulScanAt: NOW.toISOString(),
+        reviewedFingerprints: [],
+        processedRecordFingerprints: [source(1).fingerprint],
+      } as CaptureState),
+    });
+
+    const prepared = await test.controller.scan();
+
+    expect(extractCandidates).toHaveBeenCalledWith([test.records[1]]);
+    expect(prepared.recordsConsidered).toBe(1);
+  });
+
   it('can checkpoint a successful scan with no candidates', async () => {
     const test = await fixture({ extractCandidates: vi.fn(async () => []) });
     const prepared = await test.controller.scan();
@@ -163,6 +185,7 @@ describe('CaptureController', () => {
     expect(test.getState()).toEqual({
       lastSuccessfulScanAt: NOW.toISOString(),
       reviewedFingerprints: [],
+      processedRecordFingerprints: test.records.map(({ fingerprint }) => fingerprint),
     });
   });
 });

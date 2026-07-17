@@ -123,6 +123,20 @@ describe('extractTaskCandidates', () => {
       .rejects.toThrow('Claude returned invalid JSON');
   });
 
+  it('rejects a source quote that is not present in the referenced record', async () => {
+    const source = record(1, '#待办 调研真实存在的工具');
+    const executor = fakeExecutor([{ candidates: [{
+      title: '调研不存在的工具',
+      summary: '模型幻觉出的候选。',
+      priority: 'normal',
+      sourceRecordFingerprint: source.fingerprint,
+      sourceQuote: '#待办 调研原文中不存在的工具',
+    }] }]);
+
+    await expect(extractTaskCandidates({ records: [source], executor }))
+      .rejects.toThrow('source quote');
+  });
+
   it('processes every bounded batch and combines the results', async () => {
     const sources = Array.from({ length: 41 }, (_, index) => record(index));
     const executor = fakeExecutor([

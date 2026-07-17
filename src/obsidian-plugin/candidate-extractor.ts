@@ -115,13 +115,19 @@ function extractionPrompt(records: readonly SyncSourceRecord[]): string {
   ].join('\n');
 }
 
+function normalizedEvidence(value: string): string {
+  return value.normalize('NFKC').replace(/\s+/gu, ' ').trim();
+}
+
 export async function extractTaskCandidates(input: {
   records: readonly SyncSourceRecord[];
   executor: ClaudeStructuredExecutor;
 }): Promise<ExtractedCandidate[]> {
   const candidates: ExtractedCandidate[] = [];
   for (const batch of batchCandidateSourceRecords(input.records)) {
-    const allowedFingerprints = new Set(batch.map((record) => record.fingerprint));
+    const sourceByFingerprint = new Map(batch.map((record) => (
+      [record.fingerprint, record] as const
+    )));
     const raw = await input.executor.execute({
       prompt: extractionPrompt(batch),
       jsonSchema: candidateExtractionJsonSchema,
@@ -130,8 +136,14 @@ export async function extractTaskCandidates(input: {
     });
     const result = extractionResultSchema.parse(raw);
     for (const candidate of result.candidates) {
-      if (!allowedFingerprints.has(candidate.sourceRecordFingerprint)) {
+      const source = sourceByFingerprint.get(candidate.sourceRecordFingerprint);
+      if (source === undefined) {
         throw new Error('Claude returned a candidate for an unknown source record');
+      }
+      if (!normalizedEvidence(source.content).includes(
+        normalizedEvidence(candidate.sourceQuote),
+      )) {
+        throw new Error('Claude returned a source quote that is not present in the source record');
       }
       candidates.push(candidate);
     }

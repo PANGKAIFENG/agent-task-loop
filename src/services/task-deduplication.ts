@@ -53,6 +53,23 @@ function titleEvidenceSimilarity(left: string, right: string): number {
   return jaccard(leftCharacters, rightCharacters);
 }
 
+function isSubset(left: Set<string>, right: Set<string>): boolean {
+  for (const value of left) {
+    if (!right.has(value)) return false;
+  }
+  return true;
+}
+
+function hardTitleMatch(left: string, right: string): boolean {
+  const leftCharacters = characterSet(left);
+  const rightCharacters = characterSet(right);
+  return titleEvidenceSimilarity(left, right) >= 0.6
+    && (
+      isSubset(leftCharacters, rightCharacters)
+      || isSubset(rightCharacters, leftCharacters)
+    );
+}
+
 function titleSoftSimilarity(left: string, right: string): number {
   const leftBigrams = bigrams(left);
   const rightBigrams = bigrams(right);
@@ -97,14 +114,21 @@ export function classifyTaskDuplicate(
   const evidenceMatch = sortedTasks.find((task) => (
     sameSourceNote(input.sourceNote, task.sourceNote)
     && quoteMatches(input.sourceQuote, task.sourceQuote)
-    && titleEvidenceSimilarity(input.title, task.title) >= 0.6
+    && hardTitleMatch(input.title, task.title)
   ));
   if (evidenceMatch !== undefined) {
     return { existingTaskId: evidenceMatch.taskId, possibleDuplicateIds: [] };
   }
 
   const possibleDuplicateIds = sortedTasks
-    .filter((task) => titleSoftSimilarity(input.title, task.title) >= 0.8)
+    .filter((task) => (
+      (
+        sameSourceNote(input.sourceNote, task.sourceNote)
+        && quoteMatches(input.sourceQuote, task.sourceQuote)
+        && titleEvidenceSimilarity(input.title, task.title) >= 0.6
+      )
+      || titleSoftSimilarity(input.title, task.title) >= 0.8
+    ))
     .map((task) => task.taskId);
   return { existingTaskId: null, possibleDuplicateIds };
 }

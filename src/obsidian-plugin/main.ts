@@ -265,6 +265,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
       }
       const executor = await createClaudeStructuredExecutor({ environment });
       const fileSystem = {
+        exists: async (relativePath: string) => adapter.exists(relativePath),
         listMarkdownFiles: async (relativeDirectory: string) => (
           (await adapter.list(relativeDirectory)).files
         ),
@@ -286,11 +287,15 @@ export default class AgentTaskLoopPlugin extends Plugin {
         getState: () => ({
           lastSuccessfulScanAt: this.settings.capture.lastSuccessfulScanAt,
           reviewedFingerprints: [...this.settings.capture.reviewedFingerprints],
+          processedRecordFingerprints: [
+            ...this.settings.capture.processedRecordFingerprints,
+          ],
         }),
         saveState: async (state: CaptureState) => {
           this.settings.capture = {
             lastSuccessfulScanAt: state.lastSuccessfulScanAt,
             reviewedFingerprints: [...state.reviewedFingerprints],
+            processedRecordFingerprints: [...state.processedRecordFingerprints],
           };
           await this.saveSettings();
         },

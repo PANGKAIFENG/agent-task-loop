@@ -24,6 +24,7 @@ export interface PreparedCapture {
   filesScanned: number;
   recordsConsidered: number;
   candidates: CaptureCandidateView[];
+  processedRecordFingerprints: string[];
   completedAt: string;
 }
 
@@ -84,8 +85,12 @@ export class CaptureController {
       now,
       lastSuccessfulScanAt: state.lastSuccessfulScanAt,
     });
-    const extracted = await this.dependencies.extractCandidates(sourceResult.records);
-    const sourceByFingerprint = new Map(sourceResult.records.map((record) => (
+    const processed = new Set(state.processedRecordFingerprints);
+    const records = sourceResult.records.filter(({ fingerprint }) => (
+      !processed.has(fingerprint)
+    ));
+    const extracted = await this.dependencies.extractCandidates(records);
+    const sourceByFingerprint = new Map(records.map((record) => (
       [record.fingerprint, record] as const
     )));
     const reviewed = new Set(state.reviewedFingerprints);
@@ -110,8 +115,9 @@ export class CaptureController {
     return {
       scanId: this.createScanId(),
       filesScanned: sourceResult.filesScanned,
-      recordsConsidered: sourceResult.records.length,
+      recordsConsidered: records.length,
       candidates,
+      processedRecordFingerprints: records.map(({ fingerprint }) => fingerprint),
       completedAt: now.toISOString(),
     };
   }
@@ -151,6 +157,10 @@ export class CaptureController {
       reviewedFingerprints: compactReviewedFingerprints([
         ...state.reviewedFingerprints,
         ...prepared.candidates.map(({ candidateId: id }) => id),
+      ]),
+      processedRecordFingerprints: compactReviewedFingerprints([
+        ...state.processedRecordFingerprints,
+        ...prepared.processedRecordFingerprints,
       ]),
     });
     return { createdTaskIds, existingTaskIds };

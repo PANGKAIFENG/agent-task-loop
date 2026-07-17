@@ -83,6 +83,21 @@ describe('classifyTaskDuplicate', () => {
     });
   });
 
+  it('keeps identifier variants separate and records a duplicate hint', () => {
+    const existing = task({
+      title: '调研产品方案A',
+      sourceQuote: '需要分别调研产品方案A和产品方案B。',
+    });
+
+    expect(classifyTaskDuplicate(input({
+      title: '调研产品方案B',
+      sourceQuote: '需要分别调研产品方案A和产品方案B。',
+    }), [existing])).toEqual({
+      existingTaskId: null,
+      possibleDuplicateIds: [existing.taskId],
+    });
+  });
+
   it('keeps similar titles from different evidence as soft duplicate hints', () => {
     const existing = task();
 

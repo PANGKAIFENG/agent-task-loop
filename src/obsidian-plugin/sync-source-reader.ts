@@ -15,6 +15,7 @@ export interface SyncSourceRecord {
 }
 
 export interface SyncSourceReaderFileSystem {
+  exists(relativePath: string): Promise<boolean>;
   listMarkdownFiles(relativeDirectory: string): Promise<string[]>;
   read(relativePath: string): Promise<string>;
 }
@@ -118,6 +119,7 @@ export async function readSyncSourceRecords(input: {
   const paths: string[] = [];
   for (const sourceDate of sourceDateRange(input.now, input.lastSuccessfulScanAt)) {
     const directory = `${SYNC_ROOT}/${sourceDate}`;
+    if (!(await input.fileSystem.exists(directory))) continue;
     const listed = await input.fileSystem.listMarkdownFiles(directory);
     paths.push(...listed.filter((path) => isDirectMarkdownFile(path, directory)));
   }

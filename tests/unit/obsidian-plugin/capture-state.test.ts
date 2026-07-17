@@ -15,10 +15,12 @@ describe('capture state', () => {
       capture: {
         lastSuccessfulScanAt: '2026-07-17T12:30:00.000Z',
         reviewedFingerprints: [first, second, first],
+        processedRecordFingerprints: [second, first, second],
       },
     }).capture).toEqual({
       lastSuccessfulScanAt: '2026-07-17T12:30:00.000Z',
       reviewedFingerprints: [first, second],
+      processedRecordFingerprints: [second, first],
     });
   });
 

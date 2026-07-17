@@ -11,6 +11,10 @@ class MemorySourceFileSystem implements SyncSourceReaderFileSystem {
 
   constructor(private readonly files: Readonly<Record<string, string>>) {}
 
+  async exists(): Promise<boolean> {
+    return true;
+  }
+
   async listMarkdownFiles(relativeDirectory: string): Promise<string[]> {
     this.listedDirectories.push(relativeDirectory);
     const prefix = `${relativeDirectory}/`;
@@ -47,6 +51,29 @@ describe('sourceDateRange', () => {
 });
 
 describe('readSyncSourceRecords', () => {
+  it('skips an absent date directory without aborting the scan', async () => {
+    const todayPath = '笔记同步助手/2026-07-17/today.md';
+    const fileSystem = {
+      exists: async (relativePath: string) => relativePath.endsWith('2026-07-17'),
+      listMarkdownFiles: async (relativeDirectory: string) => {
+        if (relativeDirectory.endsWith('2026-07-16')) {
+          throw new Error('Folder does not exist');
+        }
+        return [todayPath];
+      },
+      read: async () => '#待办 只处理今天存在的记录',
+    };
+
+    const result = await readSyncSourceRecords({
+      fileSystem,
+      now: new Date('2026-07-17T12:00:00.000Z'),
+      lastSuccessfulScanAt: null,
+    });
+
+    expect(result.filesScanned).toBe(1);
+    expect(result.records.map(({ sourceNote }) => sourceNote)).toEqual([todayPath]);
+  });
+
   it('reads direct Markdown files only and splits aggregate sync notes', async () => {
     const aggregatePath = '笔记同步助手/2026-07-17/同步助手_2026-07-17.md';
     const articlePath = '笔记同步助手/2026-07-17/一篇文章.md';
