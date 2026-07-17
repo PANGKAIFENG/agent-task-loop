@@ -24,7 +24,7 @@ function sourceLabel(candidate: CaptureCandidateView): string {
 }
 
 export class CaptureCandidatesModal extends Modal {
-  private selection: CandidateSelectionState;
+  private candidateSelection: CandidateSelectionState;
   private formError = '';
 
   constructor(
@@ -33,7 +33,7 @@ export class CaptureCandidatesModal extends Modal {
     private readonly onSubmit: (selectedIds: readonly string[]) => Promise<void>,
   ) {
     super(app);
-    this.selection = createCandidateSelection(
+    this.candidateSelection = createCandidateSelection(
       prepared.candidates.map(({ candidateId }) => candidateId),
     );
   }
@@ -70,10 +70,13 @@ export class CaptureCandidatesModal extends Modal {
         type: 'checkbox',
         attr: { 'aria-label': `选择 ${candidate.title}` },
       });
-      checkbox.checked = this.selection.selectedIds.has(candidate.candidateId);
-      checkbox.disabled = this.selection.submitting;
+      checkbox.checked = this.candidateSelection.selectedIds.has(candidate.candidateId);
+      checkbox.disabled = this.candidateSelection.submitting;
       checkbox.addEventListener('change', () => {
-        this.selection = toggleCandidate(this.selection, candidate.candidateId);
+        this.candidateSelection = toggleCandidate(
+          this.candidateSelection,
+          candidate.candidateId,
+        );
       });
 
       const content = row.createDiv({ cls: 'atl-candidate-content' });
@@ -92,31 +95,37 @@ export class CaptureCandidatesModal extends Modal {
     const actions = new Setting(contentEl).setClass('atl-modal-actions');
     actions.addButton((button) => button
       .setButtonText('取消')
-      .setDisabled(this.selection.submitting)
+      .setDisabled(this.candidateSelection.submitting)
       .onClick(() => this.close()));
     let submitButton: ButtonComponent;
     actions.addButton((button) => {
       submitButton = button;
       button
-        .setButtonText(this.selection.submitting
+        .setButtonText(this.candidateSelection.submitting
           ? '正在加入...'
           : '将所选任务加入 Inbox')
         .setCta()
-        .setDisabled(this.selection.submitting)
+        .setDisabled(this.candidateSelection.submitting)
         .onClick(() => this.submit(submitButton));
     });
   }
 
   private async submit(button: ButtonComponent): Promise<void> {
-    if (this.selection.submitting) return;
-    this.selection = setCandidateSelectionSubmitting(this.selection, true);
+    if (this.candidateSelection.submitting) return;
+    this.candidateSelection = setCandidateSelectionSubmitting(
+      this.candidateSelection,
+      true,
+    );
     this.formError = '';
     button.setDisabled(true).setButtonText('正在加入...');
     try {
-      await this.onSubmit(selectedCandidateIds(this.selection));
+      await this.onSubmit(selectedCandidateIds(this.candidateSelection));
       this.close();
     } catch {
-      this.selection = setCandidateSelectionSubmitting(this.selection, false);
+      this.candidateSelection = setCandidateSelectionSubmitting(
+        this.candidateSelection,
+        false,
+      );
       this.formError = '候选未能全部处理，扫描进度没有更新。请重试。';
       this.render();
     }
