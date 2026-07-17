@@ -1,7 +1,7 @@
 {
   "id": "agent-task-loop",
   "name": "Agent Task Loop",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "minAppVersion": "1.8.0",
   "description": "Capture, confirm, and run personal Agent tasks from Obsidian.",
   "author": "PANGKAIFENG",

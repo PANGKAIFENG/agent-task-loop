@@ -46,6 +46,7 @@ import {
 } from './settings.js';
 import { readSyncSourceRecords } from './sync-source-reader.js';
 import { isAtlInboxTaskPath, taskIdFromPath } from './task-eligibility.js';
+import { runWithPersistentFeedback } from './persistent-operation-feedback.js';
 
 const CARD_THEME_CLASS = 'atl-task-card-theme';
 
@@ -227,7 +228,11 @@ export default class AgentTaskLoopPlugin extends Plugin {
       new Notice('ATL 正在扫描同步助手，请稍候');
       return this.syncScanInFlight;
     }
-    const scan = this.performSyncAssistantScan().finally(() => {
+    const progress = new Notice('ATL 正在从同步助手获取待办...', 0);
+    const scan = runWithPersistentFeedback(
+      progress,
+      () => this.performSyncAssistantScan(),
+    ).finally(() => {
       if (this.syncScanInFlight === scan) this.syncScanInFlight = null;
     });
     this.syncScanInFlight = scan;
@@ -301,7 +306,6 @@ export default class AgentTaskLoopPlugin extends Plugin {
         },
       });
 
-      new Notice('ATL 正在从同步助手提取待办候选...');
       const prepared = await controller.scan();
       if (prepared.recordsConsidered === 0) {
         await controller.commit(prepared, []);
