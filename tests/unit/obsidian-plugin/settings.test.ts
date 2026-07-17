@@ -12,6 +12,11 @@ describe('normalizeSettings', () => {
     expect(normalizeSettings({ allowVaultManagement: true })).toEqual({
       allowVaultManagement: true,
       taskCardThemeEnabled: true,
+      capture: {
+        lastSuccessfulScanAt: null,
+        reviewedFingerprints: [],
+        processedRecordFingerprints: [],
+      },
       background: {
         nodeExecutable: '',
         claudeExecutable: '',
@@ -29,6 +34,11 @@ describe('normalizeSettings', () => {
     expect(normalizeSettings({
       allowVaultManagement: 'yes',
       taskCardThemeEnabled: false,
+      capture: {
+        lastSuccessfulScanAt: null,
+        reviewedFingerprints: [],
+        processedRecordFingerprints: [],
+      },
       background: {
         nodeExecutable: 24,
         claudeExecutable: '/valid-looking/claude',
@@ -42,6 +52,11 @@ describe('normalizeSettings', () => {
     })).toEqual({
       allowVaultManagement: false,
       taskCardThemeEnabled: false,
+      capture: {
+        lastSuccessfulScanAt: null,
+        reviewedFingerprints: [],
+        processedRecordFingerprints: [],
+      },
       background: {
         nodeExecutable: '',
         claudeExecutable: '/valid-looking/claude',
@@ -65,6 +80,24 @@ describe('normalizeSettings', () => {
       modelServiceMode: 'custom',
       model: 'glm-4-flash',
       baseUrl: 'https://api.example.com/anthropic',
+    });
+  });
+
+  it('drops malformed capture state without retaining source-shaped values', () => {
+    expect(normalizeSettings({
+      capture: {
+        lastSuccessfulScanAt: 'yesterday evening',
+        reviewedFingerprints: [
+          'source note content',
+          'A'.repeat(64),
+          'a'.repeat(63),
+          42,
+        ],
+      },
+    }).capture).toEqual({
+      lastSuccessfulScanAt: null,
+      reviewedFingerprints: [],
+      processedRecordFingerprints: [],
     });
   });
 });
@@ -94,6 +127,46 @@ describe('modelServiceConfiguration', () => {
       model: 'glm-4-flash',
       baseUrl: 'https://api.example.com/anthropic/',
       modelError: null,
+      baseUrlError: null,
+    });
+  });
+
+  it('rejects plain HTTP for remote model services', () => {
+    expect(modelServiceConfiguration({
+      modelServiceMode: 'custom',
+      model: 'glm-4-flash',
+      baseUrl: 'http://api.example.com/anthropic',
+    })).toMatchObject({
+      valid: false,
+      baseUrl: undefined,
+      baseUrlError: 'Base URL 必须使用 HTTPS；本机地址可以使用 HTTP。',
+    });
+  });
+
+  it('does not treat a hostname beginning with 127 as loopback', () => {
+    expect(modelServiceConfiguration({
+      modelServiceMode: 'custom',
+      model: 'glm-4-flash',
+      baseUrl: 'http://127.example.com/anthropic',
+    })).toMatchObject({
+      valid: false,
+      baseUrl: undefined,
+      baseUrlError: 'Base URL 必须使用 HTTPS；本机地址可以使用 HTTP。',
+    });
+  });
+
+  it.each([
+    'http://localhost:8080/anthropic',
+    'http://127.0.0.1:8080/anthropic',
+    'http://[::1]:8080/anthropic',
+  ])('allows HTTP for a loopback model service: %s', (baseUrl) => {
+    expect(modelServiceConfiguration({
+      modelServiceMode: 'custom',
+      model: 'local-model',
+      baseUrl,
+    })).toMatchObject({
+      valid: true,
+      baseUrl,
       baseUrlError: null,
     });
   });

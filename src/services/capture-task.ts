@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { z } from 'zod';
 
 import {
@@ -7,6 +9,7 @@ import {
   type Task,
 } from '../domain/task.js';
 import type { ServiceContext } from './service-context.js';
+import { classifyTaskDuplicate } from './task-deduplication.js';
 
 export interface CaptureTaskInput {
   title: string;
@@ -43,71 +46,35 @@ const captureTaskInputSchema: z.ZodType<CaptureTaskInput> = z
   })
   .strict();
 
-function normalizedTitleCharacters(title: string): string[] {
-  return [...title.normalize('NFKC').toLowerCase()]
-    .filter((character) => /[\p{L}\p{N}]/u.test(character));
-}
-
 function markdownBody(body: string): string {
   return body.startsWith('\n') || body.startsWith('\r\n') ? body : `\n${body}`;
 }
 
-function titleBigrams(title: string): Set<string> | null {
-  const characters = normalizedTitleCharacters(title);
-  if (characters.length < 4) {
-    return null;
-  }
-  const bigrams = new Set<string>();
-  for (let index = 0; index < characters.length - 1; index += 1) {
-    bigrams.add(`${characters[index] ?? ''}${characters[index + 1] ?? ''}`);
-  }
-  return bigrams;
+function captureLockId(input: CaptureTaskInput): string {
+  const scope = input.sourceNote === null
+    ? `source-key:${input.sourceKey}`
+    : `source-note:${input.sourceNote.normalize('NFKC').trim()}`;
+  const digest = createHash('sha256').update(scope).digest('hex');
+  return `capture-${digest}`;
 }
 
-function jaccardSimilarity(left: Set<string>, right: Set<string>): number {
-  let intersectionSize = 0;
-  for (const item of left) {
-    if (right.has(item)) {
-      intersectionSize += 1;
-    }
-  }
-  const unionSize = left.size + right.size - intersectionSize;
-  return unionSize === 0 ? 0 : intersectionSize / unionSize;
-}
-
-function possibleDuplicateIds(input: CaptureTaskInput, tasks: Task[]): string[] {
-  const inputBigrams = titleBigrams(input.title);
-  if (inputBigrams === null) {
-    return [];
-  }
-  return tasks
-    .filter((task) => {
-      if (task.sourceKey === input.sourceKey) {
-        return false;
-      }
-      const existingBigrams = titleBigrams(task.title);
-      return existingBigrams !== null
-        && jaccardSimilarity(inputBigrams, existingBigrams) >= 0.8;
-    })
-    .map((task) => task.taskId)
-    .sort();
-}
-
-export async function captureTask(
+async function captureValidatedTask(
   ctx: ServiceContext,
-  input: CaptureTaskInput,
+  validInput: CaptureTaskInput,
 ): Promise<Task> {
-  const parsed = captureTaskInputSchema.safeParse(input);
-  if (!parsed.success) {
-    throw new InvalidCaptureTaskInputError();
-  }
-  const validInput = parsed.data;
   const existing = await ctx.tasks.findBySourceKey(validInput.sourceKey);
   if (existing !== null) {
     return existing;
   }
 
   const tasks = await ctx.tasks.list();
+  const duplicate = classifyTaskDuplicate(validInput, tasks);
+  if (duplicate.existingTaskId !== null) {
+    const duplicateTask = tasks.find((task) => (
+      task.taskId === duplicate.existingTaskId
+    ));
+    if (duplicateTask !== undefined) return duplicateTask;
+  }
   const timestamp = ctx.clock().toISOString();
   const task = taskSchema.parse({
     schemaVersion: 1,
@@ -127,7 +94,7 @@ export async function captureTask(
     sourceNote: validInput.sourceNote,
     sourceQuote: validInput.sourceQuote,
     sourceKey: validInput.sourceKey,
-    possibleDuplicateIds: possibleDuplicateIds(validInput, tasks),
+    possibleDuplicateIds: duplicate.possibleDuplicateIds,
     priority: validInput.priority,
     attempts: 0,
     claim: null,
@@ -153,4 +120,19 @@ export async function captureTask(
     },
   });
   return saved;
+}
+
+export async function captureTask(
+  ctx: ServiceContext,
+  input: CaptureTaskInput,
+): Promise<Task> {
+  const parsed = captureTaskInputSchema.safeParse(input);
+  if (!parsed.success) {
+    throw new InvalidCaptureTaskInputError();
+  }
+  const validInput = parsed.data;
+  return ctx.tasks.withTaskLock(
+    captureLockId(validInput),
+    () => captureValidatedTask(ctx, validInput),
+  );
 }

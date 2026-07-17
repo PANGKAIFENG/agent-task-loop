@@ -11,6 +11,8 @@ import {
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join } from 'node:path';
 
+import type { ZodType } from 'zod';
+
 import type { ContextBundle } from './context-bundle.js';
 import type {
   ResearchDriver,
@@ -49,6 +51,7 @@ const ERROR_MESSAGES = {
     'Claude CLI does not support the required restricted mode',
   claude_timeout: 'Claude research execution timed out',
   invalid_claude_json: 'Claude returned invalid JSON',
+  invalid_structured_result: 'Claude returned an invalid structured result',
   invalid_research_result: 'Claude returned an invalid research result',
   claude_process_failed: 'Claude process failed',
 } as const;
@@ -105,6 +108,19 @@ export interface CreateClaudeResearchDriverOptions {
   executor?: ProcessExecutor;
   fileSystem?: ClaudeDriverFileSystem;
   maxProcessOutputBytes?: number;
+}
+
+export type CreateClaudeStructuredExecutorOptions = CreateClaudeResearchDriverOptions;
+
+export interface ClaudeStructuredInput<T> {
+  prompt: string;
+  jsonSchema: Record<string, unknown>;
+  schema: ZodType<T>;
+  timeoutMs: number;
+}
+
+export interface ClaudeStructuredExecutor {
+  execute<T>(input: ClaudeStructuredInput<T>): Promise<T>;
 }
 
 const defaultFileSystem: ClaudeDriverFileSystem = {
@@ -380,6 +396,20 @@ function parseResult(stdout: string): ResearchResult {
   return result.data;
 }
 
+function parseStructuredResult<T>(stdout: string, schema: ZodType<T>): T {
+  let envelope: unknown;
+  try {
+    envelope = JSON.parse(stdout);
+  } catch {
+    throw new ClaudeDriverError('invalid_claude_json');
+  }
+  const result = schema.safeParse(extractStructuredOutput(envelope));
+  if (!result.success) {
+    throw new ClaudeDriverError('invalid_structured_result');
+  }
+  return result.data;
+}
+
 function declaredOptions(help: string): Map<string, string> {
   const options = new Map<string, string>();
   const declaration = /^(\s*)(?:-[A-Za-z0-9](?:,\s*|\s+))?(--[A-Za-z0-9][A-Za-z0-9-]*)(?=$|[\s<[=])/;
@@ -622,6 +652,127 @@ async function verifyExecutable(
   }
 }
 
+class RestrictedClaudeStructuredExecutor implements ClaudeStructuredExecutor {
+  constructor(
+    private readonly executable: { path: string; dev: number; ino: number },
+    private readonly environment: NodeJS.ProcessEnv,
+    private readonly executor: ProcessExecutor,
+    private readonly fileSystem: ClaudeDriverFileSystem,
+    private readonly claudeConfigDirectory: string | undefined,
+    private readonly model: string | undefined,
+  ) {}
+
+  async execute<T>(input: ClaudeStructuredInput<T>): Promise<T> {
+    if (
+      input.prompt.trim() === ''
+      || !Number.isFinite(input.timeoutMs)
+      || input.timeoutMs <= 0
+      || input.jsonSchema === null
+      || typeof input.jsonSchema !== 'object'
+    ) {
+      throw new ClaudeDriverError('invalid_driver_input');
+    }
+    const runDirectory = await this.fileSystem.mkdtemp(
+      join(tmpdir(), 'atl-claude-'),
+    );
+    const environment = allowedEnvironment(
+      this.environment,
+      runDirectory,
+      this.executable.path,
+      this.claudeConfigDirectory,
+    );
+    let outcome:
+      | { success: true; value: T }
+      | { success: false; error: unknown };
+    try {
+      outcome = {
+        success: true,
+        value: await this.executeInDirectory(input, runDirectory, environment),
+      };
+    } catch (error) {
+      outcome = { success: false, error };
+    }
+    let cleanupFailed = false;
+    try {
+      await this.fileSystem.rm(runDirectory, { recursive: true, force: true });
+    } catch {
+      cleanupFailed = true;
+    }
+    if (!outcome.success) throw outcome.error;
+    if (cleanupFailed) {
+      throw new ClaudeDriverError('claude_process_failed');
+    }
+    return outcome.value;
+  }
+
+  private async executeInDirectory<T>(
+    input: ClaudeStructuredInput<T>,
+    runDirectory: string,
+    environment: NodeJS.ProcessEnv,
+  ): Promise<T> {
+    await verifyExecutable(this.executable, this.fileSystem);
+    let help: ProcessResult;
+    try {
+      help = await this.executor.execute({
+        command: this.executable.path,
+        args: ['--help'],
+        cwd: runDirectory,
+        environment,
+        timeoutMs: HELP_TIMEOUT_MS,
+      });
+    } catch {
+      throw new ClaudeDriverError('unsupported_claude_cli');
+    }
+    if (
+      help.timedOut
+      || help.exitCode !== 0
+      || !isCompatibleHelp(help.stdout)
+    ) {
+      throw new ClaudeDriverError('unsupported_claude_cli');
+    }
+
+    const args = [
+      '--print',
+      '--safe-mode',
+      '--no-session-persistence',
+      '--permission-mode',
+      'dontAsk',
+      '--tools',
+      '',
+      '--output-format',
+      'json',
+      '--json-schema',
+      JSON.stringify(input.jsonSchema),
+      '--max-budget-usd',
+      '2',
+    ];
+    if (this.model !== undefined) args.push('--model', this.model);
+    if (declaredOptions(help.stdout).has('--strict-mcp-config')) {
+      args.push('--strict-mcp-config');
+    }
+
+    await verifyExecutable(this.executable, this.fileSystem);
+    let result: ProcessResult;
+    try {
+      result = await this.executor.execute({
+        command: this.executable.path,
+        args,
+        cwd: runDirectory,
+        environment,
+        input: input.prompt,
+        timeoutMs: Math.min(input.timeoutMs, CLAUDE_RESEARCH_TIMEOUT_MS),
+      });
+    } catch {
+      throw new ClaudeDriverError('claude_process_failed');
+    }
+    if (result.timedOut) throw new ClaudeDriverError('claude_timeout');
+    if (result.exitCode !== 0) {
+      throw new ClaudeDriverError('claude_process_failed');
+    }
+    return parseStructuredResult(result.stdout, input.schema);
+  }
+}
+
 class ClaudeResearchDriver implements ResearchDriver {
   readonly name = 'claude-code';
 
@@ -771,6 +922,34 @@ export async function createClaudeResearchDriver(
     throw new ClaudeDriverError('invalid_driver_input');
   }
   return new ClaudeResearchDriver(
+    executable,
+    environment,
+    options.executor ?? createDefaultExecutor(maxProcessOutputBytes),
+    fileSystem,
+    claudeConfigDirectory,
+    model,
+  );
+}
+
+export async function createClaudeStructuredExecutor(
+  options: CreateClaudeStructuredExecutorOptions = {},
+): Promise<ClaudeStructuredExecutor> {
+  const environment = options.environment ?? process.env;
+  const fileSystem = options.fileSystem ?? defaultFileSystem;
+  const executable = await resolveExecutable(environment, fileSystem);
+  const claudeConfigDirectory = configuredDirectory(
+    environment.ATL_CLAUDE_CONFIG_DIR,
+  );
+  const model = configuredModel(environment.ATL_CLAUDE_MODEL);
+  const maxProcessOutputBytes = options.maxProcessOutputBytes
+    ?? DEFAULT_PROCESS_OUTPUT_LIMIT_BYTES;
+  if (
+    !Number.isSafeInteger(maxProcessOutputBytes)
+    || maxProcessOutputBytes <= 0
+  ) {
+    throw new ClaudeDriverError('invalid_driver_input');
+  }
+  return new RestrictedClaudeStructuredExecutor(
     executable,
     environment,
     options.executor ?? createDefaultExecutor(maxProcessOutputBytes),

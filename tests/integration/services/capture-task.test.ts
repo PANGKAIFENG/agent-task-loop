@@ -116,6 +116,39 @@ describe('captureTask', () => {
     })).resolves.toBe(1);
   });
 
+  it('atomically deduplicates concurrent daily and real-time capture', async () => {
+    const context = await makeContext();
+    const realTime = context.createIndependentContext({
+      ids: ['task-20260714-00000002'],
+    });
+    const common = {
+      sourceNote: '/vault/笔记同步助手/2026-07-17/同步助手_2026-07-17.md',
+      sourceQuote: '我想实时从同步助手获取待办，下午就让 AI 先跑掉。',
+    };
+
+    const [dailyTask, realTimeTask] = await Promise.all([
+      captureTask(context.ctx, captureInput({
+        ...common,
+        title: '调研实时同步助手待办方案',
+        origin: 'explicit_wechat_todo',
+        sourceKey: 'daily-review:concurrent-source',
+      })),
+      captureTask(realTime, captureInput({
+        ...common,
+        title: '实时获取同步助手里的待办方案调研',
+        origin: 'obsidian_sync',
+        sourceKey: 'obsidian-sync:concurrent-source',
+      })),
+    ]);
+
+    expect(realTimeTask.taskId).toBe(dailyTask.taskId);
+    expect(await context.ctx.tasks.list()).toHaveLength(1);
+    await expect(context.ctx.audit.count({
+      event: 'task.captured',
+      localDate: '2026-07-14',
+    })).resolves.toBe(1);
+  });
+
   it('does not reclaim an expired source lock while its owner process is alive', async () => {
     const context = await makeContext();
     const input = captureInput({
@@ -270,16 +303,51 @@ describe('captureTask', () => {
     })).resolves.toBe(0);
   });
 
-  it('creates separate tasks for different source keys', async () => {
+  it('creates separate tasks for different source evidence', async () => {
     const { ctx } = await makeContext();
 
     const first = await captureTask(ctx, captureInput());
     const second = await captureTask(ctx, captureInput({
       sourceKey: 'synthetic:source-2',
+      sourceNote: '/synthetic/different-private-source.md',
+      sourceQuote: 'A different synthetic source quote.',
     }));
 
     expect(second.taskId).not.toBe(first.taskId);
     expect(await ctx.tasks.list()).toHaveLength(2);
+  });
+
+  it.each([
+    ['daily review first', 'explicit_wechat_todo', 'obsidian_sync'],
+    ['real-time scan first', 'obsidian_sync', 'explicit_wechat_todo'],
+  ])('deduplicates the same action when %s', async (
+    _label,
+    firstOrigin,
+    secondOrigin,
+  ) => {
+    const { ctx } = await makeContext();
+    const first = await captureTask(ctx, captureInput({
+      title: '调研实时同步助手待办方案',
+      origin: firstOrigin,
+      sourceKey: `${firstOrigin}:source`,
+      sourceNote: '/vault/笔记同步助手/2026-07-17/同步助手_2026-07-17.md',
+      sourceQuote: '我想实时从同步助手获取待办，然后让 AI 在下午先跑掉。',
+    }));
+
+    const duplicate = await captureTask(ctx, captureInput({
+      title: '实时获取同步助手里的待办方案调研',
+      origin: secondOrigin,
+      sourceKey: `${secondOrigin}:source`,
+      sourceNote: '/vault/笔记同步助手/2026-07-17/同步助手_2026-07-17.md',
+      sourceQuote: '我想实时从同步助手获取待办，然后让 AI 在下午先跑掉',
+    }));
+
+    expect(duplicate.taskId).toBe(first.taskId);
+    expect(await ctx.tasks.list()).toHaveLength(1);
+    await expect(ctx.audit.count({
+      event: 'task.captured',
+      localDate: '2026-07-14',
+    })).resolves.toBe(1);
   });
 
   it('always creates a non-executable candidate in the inbox', async () => {
@@ -311,6 +379,8 @@ describe('captureTask', () => {
     const similar = await captureTask(ctx, captureInput({
       title: 'REVIEW public product pricing!',
       sourceKey: 'synthetic:source-2',
+      sourceNote: '/synthetic/second-private-source.md',
+      sourceQuote: 'A second source independently requests a pricing review.',
     }));
 
     expect(await ctx.tasks.list()).toHaveLength(2);

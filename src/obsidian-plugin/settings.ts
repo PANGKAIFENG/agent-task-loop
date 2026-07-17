@@ -1,3 +1,5 @@
+import { isIP } from 'node:net';
+
 import type {
   BackgroundSettings,
   BackgroundState,
@@ -6,7 +8,22 @@ import type {
 export interface AtlPluginSettings {
   allowVaultManagement: boolean;
   taskCardThemeEnabled: boolean;
+  capture: CaptureState;
   background: BackgroundSettings;
+}
+
+export interface CaptureState {
+  lastSuccessfulScanAt: string | null;
+  reviewedFingerprints: string[];
+  processedRecordFingerprints: string[];
+}
+
+export const MAX_REVIEWED_FINGERPRINTS = 10_000;
+
+export function compactReviewedFingerprints(values: readonly unknown[]): string[] {
+  return [...new Set(values.filter((value): value is string => (
+    typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
+  )))].slice(-MAX_REVIEWED_FINGERPRINTS);
 }
 
 export const DEFAULT_BACKGROUND_SETTINGS: BackgroundSettings = {
@@ -23,6 +40,11 @@ export const DEFAULT_BACKGROUND_SETTINGS: BackgroundSettings = {
 export const DEFAULT_SETTINGS: AtlPluginSettings = {
   allowVaultManagement: false,
   taskCardThemeEnabled: true,
+  capture: {
+    lastSuccessfulScanAt: null,
+    reviewedFingerprints: [],
+    processedRecordFingerprints: [],
+  },
   background: DEFAULT_BACKGROUND_SETTINGS,
 };
 
@@ -37,6 +59,12 @@ function modelValue(value: unknown): string {
     : DEFAULT_BACKGROUND_SETTINGS.model;
 }
 
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === 'localhost'
+    || hostname === '[::1]'
+    || (isIP(hostname) === 4 && hostname.split('.')[0] === '127');
+}
+
 function normalizeBaseUrl(value: unknown): string | undefined {
   if (typeof value !== 'string' || value.trim() === '') return undefined;
   const candidate = value.trim();
@@ -49,6 +77,10 @@ function normalizeBaseUrl(value: unknown): string | undefined {
       || parsed.password !== ''
       || parsed.search !== ''
       || parsed.hash !== ''
+      || (
+        parsed.protocol === 'http:'
+        && !isLoopbackHostname(parsed.hostname)
+      )
     ) {
       return undefined;
     }
@@ -61,6 +93,23 @@ function normalizeBaseUrl(value: unknown): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function isRemoteHttpBaseUrl(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  try {
+    const parsed = new URL(value.trim());
+    return parsed.protocol === 'http:'
+      && !isLoopbackHostname(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function timestampValue(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
 }
 
 export interface ModelServiceConfiguration {
@@ -91,7 +140,9 @@ export function modelServiceConfiguration(
     ? 'Model 格式无效，请检查模型名称。'
     : null;
   const baseUrlError = baseUrl === undefined
-    ? 'Base URL 必须是完整的 http 或 https 地址。'
+    ? isRemoteHttpBaseUrl(input.baseUrl)
+      ? 'Base URL 必须使用 HTTPS；本机地址可以使用 HTTP。'
+      : 'Base URL 必须是完整的 http 或 https 地址。'
     : null;
   return {
     valid: modelError === null && baseUrlError === null,
@@ -129,6 +180,9 @@ export function normalizeSettings(value: unknown): AtlPluginSettings {
     && typeof root.background === 'object'
     ? root.background as Record<string, unknown>
     : {};
+  const rawCapture = root.capture !== null && typeof root.capture === 'object'
+    ? root.capture as Record<string, unknown>
+    : {};
   const roots = Array.isArray(rawBackground.allowedLocalRoots)
     ? rawBackground.allowedLocalRoots.filter((path): path is string => (
       typeof path === 'string' && path.trim() !== ''
@@ -148,6 +202,19 @@ export function normalizeSettings(value: unknown): AtlPluginSettings {
   return {
     allowVaultManagement: root.allowVaultManagement === true,
     taskCardThemeEnabled: root.taskCardThemeEnabled !== false,
+    capture: {
+      lastSuccessfulScanAt: timestampValue(rawCapture.lastSuccessfulScanAt),
+      reviewedFingerprints: compactReviewedFingerprints(
+        Array.isArray(rawCapture.reviewedFingerprints)
+          ? rawCapture.reviewedFingerprints
+          : [],
+      ),
+      processedRecordFingerprints: compactReviewedFingerprints(
+        Array.isArray(rawCapture.processedRecordFingerprints)
+          ? rawCapture.processedRecordFingerprints
+          : [],
+      ),
+    },
     background: {
       nodeExecutable: stringValue(rawBackground.nodeExecutable),
       claudeExecutable: stringValue(rawBackground.claudeExecutable),
