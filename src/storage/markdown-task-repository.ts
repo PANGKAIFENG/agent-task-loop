@@ -3,6 +3,7 @@ import { basename, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import {
+  taskStatusSchema,
   taskSchema,
   type Priority,
   type Task,
@@ -213,15 +214,15 @@ function legacyNullableEnum<T extends string>(
 }
 
 function taskStatus(data: Record<string, unknown>): TaskStatus {
-  return legacyEnum(data, 'status', [
-    'inbox',
-    'ready',
-    'in_progress',
-    'review',
-    'done',
-    'blocked',
-    'cancelled',
-  ], 'inbox');
+  const value = data.status;
+  if (value === undefined || value === null) {
+    return 'inbox';
+  }
+  const result = taskStatusSchema.safeParse(value);
+  if (!result.success) {
+    throw new InvalidTaskDataError('status');
+  }
+  return result.data;
 }
 
 function priority(data: Record<string, unknown>): Priority {

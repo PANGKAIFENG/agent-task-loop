@@ -1,11 +1,4 @@
-export type TaskStatus =
-  | 'inbox'
-  | 'ready'
-  | 'in_progress'
-  | 'review'
-  | 'done'
-  | 'blocked'
-  | 'cancelled';
+export type TaskStatus = string;
 
 export type Priority = 'urgent' | 'high' | 'normal' | 'low';
 

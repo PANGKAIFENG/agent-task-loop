@@ -10,7 +10,7 @@ import {
   type TaskStatus,
 } from '../api.js';
 
-const columns: Array<{ status: TaskStatus; label: string }> = [
+const knownColumns: Array<{ status: TaskStatus; label: string }> = [
   { status: 'inbox', label: '待规划' },
   { status: 'ready', label: '待办' },
   { status: 'in_progress', label: '进行中' },
@@ -45,6 +45,18 @@ export function ProjectBoardPage({ projectId, navigate }: ProjectBoardPageProps)
     () => Array.from(new Set((tasksQuery.data ?? []).map((task) => task.origin))).sort(),
     [tasksQuery.data],
   );
+  const columns = useMemo(() => {
+    const knownStatuses = new Set(knownColumns.map((column) => column.status));
+    const customStatuses = Array.from(new Set(
+      (tasksQuery.data ?? [])
+        .map((task) => task.status)
+        .filter((taskStatus) => !knownStatuses.has(taskStatus)),
+    )).sort();
+    return [
+      ...knownColumns,
+      ...customStatuses.map((taskStatus) => ({ status: taskStatus, label: taskStatus })),
+    ];
+  }, [tasksQuery.data]);
   const tasks = (tasksQuery.data ?? []).filter((task) => (
     (status === 'all' || task.status === status)
     && (source === 'all' || task.origin === source)
