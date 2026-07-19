@@ -131,7 +131,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
           return;
         }
         menu.addItem((item) => item
-          .setTitle('确认并移到待执行')
+          .setTitle('移到待办')
           .setIcon('circle-check-big')
           .onClick(() => this.openConfirmation(file)));
       },
@@ -139,7 +139,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
 
     this.addCommand({
       id: 'confirm-current-inbox-task',
-      name: '确认当前任务并移到待执行',
+      name: '将当前任务移到待办',
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const eligible = file !== null && isAtlInboxTaskPath(file.path);

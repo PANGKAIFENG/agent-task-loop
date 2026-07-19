@@ -12,13 +12,13 @@ import { TaskSavedIndexStaleError } from '../storage/markdown-task-repository.js
 import type { ServiceContext } from './service-context.js';
 
 export interface ConfirmTaskInput {
-  projectId: string;
-  taskType: 'research';
-  objective: string;
-  acceptanceCriteria: string[];
-  permissionProfile: 'read_only_research';
+  projectId?: string;
+  taskType?: 'research';
+  objective?: string;
+  acceptanceCriteria?: string[];
+  permissionProfile?: 'read_only_research';
   priority: Priority;
-  autoExecutable: boolean;
+  autoExecutable?: boolean;
 }
 
 export class InvalidConfirmTaskInputError extends Error {
@@ -117,9 +117,11 @@ export async function confirmTask(
         throw error;
       }
     }
-    const errors = readinessErrors(candidate);
-    if (errors.length > 0) {
-      throw new Error(`Task is not ready: ${errors.join('; ')}`);
+    if (candidate.autoExecutable) {
+      const errors = readinessErrors(candidate);
+      if (errors.length > 0) {
+        throw new Error(`Task is not ready: ${errors.join('; ')}`);
+      }
     }
 
     const timestamp = ctx.clock().toISOString();

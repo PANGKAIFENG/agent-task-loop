@@ -6,10 +6,13 @@ import {
 } from '../../../src/domain/transitions.js';
 import {
   TASK_STATUSES,
-  type TaskStatus,
+  type ControlledTaskStatus,
 } from '../../../src/domain/task.js';
 
-const expectedTransitions: Record<TaskStatus, readonly TaskStatus[]> = {
+const expectedTransitions: Record<
+  ControlledTaskStatus,
+  readonly ControlledTaskStatus[]
+> = {
   inbox: ['ready', 'cancelled'],
   ready: ['in_progress', 'blocked', 'cancelled'],
   in_progress: ['review', 'ready', 'blocked', 'cancelled'],

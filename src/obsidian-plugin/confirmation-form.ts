@@ -1,6 +1,8 @@
 import { PRIORITIES, type Priority } from '../domain/task.js';
 
 export type ProjectFormInput = {
+  mode: 'none';
+} | {
   mode: 'existing';
   projectId: string;
 } | {
@@ -18,6 +20,8 @@ export interface ConfirmationFormInput {
 }
 
 export type NormalizedProjectForm = {
+  mode: 'none';
+} | {
   mode: 'existing';
   projectId: string;
 } | {
@@ -29,7 +33,7 @@ export type NormalizedProjectForm = {
 
 export interface NormalizedConfirmationForm {
   project: NormalizedProjectForm;
-  objective: string;
+  objective: string | null;
   acceptanceCriteria: string[];
   priority: Priority;
   autoExecutable: boolean;
@@ -67,7 +71,9 @@ export function validateConfirmationForm(
   const errors: ConfirmationFormErrors = {};
   let project: NormalizedProjectForm | null = null;
 
-  if (input.project.mode === 'existing') {
+  if (input.project.mode === 'none') {
+    project = { mode: 'none' };
+  } else if (input.project.mode === 'existing') {
     const projectId = input.project.projectId.trim();
     if (projectId === '') {
       errors.project = '请选择项目';
@@ -85,18 +91,11 @@ export function validateConfirmationForm(
     }
   }
 
-  const objective = input.objective.trim();
-  if (objective === '') {
-    errors.objective = '请填写任务目标';
-  }
+  const objective = input.objective.trim() || null;
 
   const acceptanceCriteria = input.acceptanceCriteria
     .map((criterion) => criterion.trim())
     .filter((criterion) => criterion !== '');
-  if (acceptanceCriteria.length === 0) {
-    errors.acceptanceCriteria = '请至少填写一条验收标准';
-  }
-
   if (!PRIORITIES.includes(input.priority)) {
     errors.priority = '请选择优先级';
   }

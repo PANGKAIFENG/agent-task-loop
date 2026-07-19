@@ -53,7 +53,7 @@ export class ConfirmationController {
       throw new InvalidConfirmationFormError(result.errors);
     }
     const { value } = result;
-    let projectId: string;
+    let projectId: string | undefined;
     if (value.project.mode === 'new') {
       const project = await createProject(this.ctx, {
         projectId: value.project.projectId,
@@ -62,16 +62,23 @@ export class ConfirmationController {
         resources: [],
       });
       projectId = project.projectId;
-    } else {
+    } else if (value.project.mode === 'existing') {
       projectId = value.project.projectId;
     }
 
+    const hasExecutionDetails = value.objective !== null
+      || value.acceptanceCriteria.length > 0;
+
     return confirmTask(this.ctx, taskId, {
-      projectId,
-      taskType: 'research',
-      objective: value.objective,
+      ...(projectId === undefined ? {} : { projectId }),
+      ...(hasExecutionDetails || value.autoExecutable
+        ? { taskType: 'research' as const }
+        : {}),
+      ...(value.objective === null ? {} : { objective: value.objective }),
       acceptanceCriteria: value.acceptanceCriteria,
-      permissionProfile: 'read_only_research',
+      ...(value.autoExecutable
+        ? { permissionProfile: 'read_only_research' as const }
+        : {}),
       priority: value.priority,
       autoExecutable: value.autoExecutable,
     });

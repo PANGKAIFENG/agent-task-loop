@@ -26,8 +26,8 @@ async function makeContext(): Promise<TestServiceContext> {
 }
 
 function confirmInput(
-  overrides: Partial<ConfirmTaskInput> = {},
-): ConfirmTaskInput {
+  overrides: Partial<Required<ConfirmTaskInput>> = {},
+): Required<ConfirmTaskInput> {
   return {
     projectId: 'project-public-research',
     taskType: 'research',
@@ -74,6 +74,37 @@ afterEach(async () => {
 });
 
 describe('confirmTask', () => {
+  it('moves a lightweight manual task to Ready without execution metadata', async () => {
+    const context = await makeContext();
+    const task = await captureSyntheticTask(context);
+
+    const confirmed = await confirmTask(context.ctx, task.taskId, {
+      priority: 'normal',
+      autoExecutable: false,
+    });
+
+    expect(confirmed).toMatchObject({
+      status: 'ready',
+      reviewState: 'confirmed',
+      projectId: null,
+      taskType: null,
+      objective: null,
+      acceptanceCriteria: [],
+      permissionProfile: null,
+      autoExecutable: false,
+    });
+  });
+
+  it('still requires complete readiness when automatic execution is requested', async () => {
+    const context = await makeContext();
+    const task = await captureSyntheticTask(context);
+
+    await expect(confirmTask(context.ctx, task.taskId, {
+      priority: 'normal',
+      autoExecutable: true,
+    })).rejects.toThrow('Task is not ready: projectId is required');
+  });
+
   it('rejects confirmation when projectId is missing', async () => {
     const context = await makeContext();
     const task = await captureSyntheticTask(context);

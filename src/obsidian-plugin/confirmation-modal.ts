@@ -20,6 +20,7 @@ import type {
 } from './confirmation-form.js';
 
 const NEW_PROJECT_VALUE = '__atl_new_project__';
+const NO_PROJECT_VALUE = '__atl_no_project__';
 
 const PRIORITY_LABELS: Record<Priority, string> = {
   urgent: '紧急',
@@ -54,7 +55,6 @@ export class TaskConfirmationModal extends Modal {
   private objective: string;
   private acceptanceCriteria: string[];
   private priority: Priority;
-  private autoExecutable: boolean;
   private errors: ConfirmationFormErrors = {};
   private formError = '';
   private submitting = false;
@@ -70,14 +70,13 @@ export class TaskConfirmationModal extends Modal {
         projectId === prepared.task.projectId
       ));
     this.projectValue = knownProject
-      ? prepared.task.projectId ?? NEW_PROJECT_VALUE
-      : prepared.projects[0]?.projectId ?? NEW_PROJECT_VALUE;
+      ? prepared.task.projectId ?? NO_PROJECT_VALUE
+      : NO_PROJECT_VALUE;
     this.objective = prepared.task.objective ?? '';
     this.acceptanceCriteria = prepared.task.acceptanceCriteria.length > 0
       ? [...prepared.task.acceptanceCriteria]
       : [''];
     this.priority = prepared.task.priority;
-    this.autoExecutable = prepared.task.autoExecutable;
   }
 
   override onOpen(): void {
@@ -92,14 +91,14 @@ export class TaskConfirmationModal extends Modal {
   private render(): void {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl('h2', { text: '确认任务' });
+    contentEl.createEl('h2', { text: '移到待办' });
     contentEl.createDiv({
       cls: 'atl-task-title',
       text: this.prepared.task.title,
     });
     contentEl.createEl('p', {
       cls: 'atl-task-subtitle',
-      text: '补齐执行边界后，任务将进入待执行。',
+      text: '项目、目标和完成条件都可以稍后补充。',
     });
 
     if (this.formError !== '') {
@@ -113,15 +112,15 @@ export class TaskConfirmationModal extends Modal {
     this.renderObjective(contentEl);
     this.renderAcceptanceCriteria(contentEl);
     this.renderPriority(contentEl);
-    this.renderPermission(contentEl);
     this.renderActions(contentEl);
   }
 
   private renderProject(container: HTMLElement): void {
     const projectSetting = new Setting(container)
       .setName('项目')
-      .setDesc('用于归类任务和保存调研上下文')
+      .setDesc('可选，用于归类任务')
       .addDropdown((dropdown) => {
+        dropdown.addOption(NO_PROJECT_VALUE, '暂不选择项目');
         for (const project of this.prepared.projects) {
           dropdown.addOption(project.projectId, project.name);
         }
@@ -162,7 +161,7 @@ export class TaskConfirmationModal extends Modal {
   private renderObjective(container: HTMLElement): void {
     const setting = new Setting(container)
       .setName('任务目标')
-      .setDesc('说明 Agent 最终需要回答什么')
+      .setDesc('可选，说明希望最终得到什么结果')
       .addTextArea((text) => {
         text.inputEl.rows = 3;
         text
@@ -240,17 +239,6 @@ export class TaskConfirmationModal extends Modal {
       });
   }
 
-  private renderPermission(container: HTMLElement): void {
-    new Setting(container)
-      .setName('允许 Agent 自动执行')
-      .setDesc('关闭后任务仍进入待执行，但不会被自动调度领取')
-      .addToggle((toggle) => toggle
-        .setValue(this.autoExecutable)
-        .onChange((value) => {
-          this.autoExecutable = value;
-        }));
-  }
-
   private renderActions(container: HTMLElement): void {
     const actions = new Setting(container).setClass('atl-modal-actions');
     actions.addButton((button) => button
@@ -262,7 +250,7 @@ export class TaskConfirmationModal extends Modal {
     actions.addButton((button) => {
       submitButton = button;
       button
-        .setButtonText(this.submitting ? '正在确认...' : '确认并移到待执行')
+        .setButtonText(this.submitting ? '正在移动...' : '移到待办')
         .setCta()
         .setDisabled(this.submitting)
         .onClick(() => this.submit(submitButton));
@@ -271,7 +259,9 @@ export class TaskConfirmationModal extends Modal {
 
   private formInput(): ConfirmationFormInput {
     return {
-      project: this.projectValue === NEW_PROJECT_VALUE
+      project: this.projectValue === NO_PROJECT_VALUE
+        ? { mode: 'none' }
+        : this.projectValue === NEW_PROJECT_VALUE
         ? {
             mode: 'new',
             name: this.newProjectName,
@@ -281,7 +271,7 @@ export class TaskConfirmationModal extends Modal {
       objective: this.objective,
       acceptanceCriteria: this.acceptanceCriteria,
       priority: this.priority,
-      autoExecutable: this.autoExecutable,
+      autoExecutable: false,
     };
   }
 
@@ -290,11 +280,11 @@ export class TaskConfirmationModal extends Modal {
       return;
     }
     this.submitting = true;
-    button.setDisabled(true).setButtonText('正在确认...');
+    button.setDisabled(true).setButtonText('正在移动...');
     this.formError = '';
     try {
       await this.controller.confirm(this.prepared.task.taskId, this.formInput());
-      new Notice('任务已移到待执行');
+      new Notice('任务已移到待办');
       this.close();
     } catch (error) {
       if (error instanceof InvalidConfirmationFormError) {
