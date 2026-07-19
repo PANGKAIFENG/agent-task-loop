@@ -18,6 +18,10 @@ import type {
   ConfirmationFormErrors,
   ConfirmationFormInput,
 } from './confirmation-form.js';
+import type {
+  TaskEnrichment,
+  TaskEnrichmentInput,
+} from './task-enrichment.js';
 
 const NEW_PROJECT_VALUE = '__atl_new_project__';
 const NO_PROJECT_VALUE = '__atl_no_project__';
@@ -55,14 +59,17 @@ export class TaskConfirmationModal extends Modal {
   private objective: string;
   private acceptanceCriteria: string[];
   private priority: Priority;
+  private userIntent = '';
   private errors: ConfirmationFormErrors = {};
   private formError = '';
   private submitting = false;
+  private enriching = false;
 
   constructor(
     app: App,
     private readonly controller: ConfirmationController,
     private readonly prepared: PreparedConfirmation,
+    private readonly enrich?: (input: TaskEnrichmentInput) => Promise<TaskEnrichment>,
   ) {
     super(app);
     const knownProject = prepared.task.projectId !== null
@@ -109,10 +116,35 @@ export class TaskConfirmationModal extends Modal {
     }
 
     this.renderProject(contentEl);
+    this.renderEnrichment(contentEl);
     this.renderObjective(contentEl);
     this.renderAcceptanceCriteria(contentEl);
     this.renderPriority(contentEl);
     this.renderActions(contentEl);
+  }
+
+  private renderEnrichment(container: HTMLElement): void {
+    if (this.enrich === undefined) return;
+    new Setting(container)
+      .setName('补充说明')
+      .setDesc('可选，用一句话告诉 AI 你最终想得到什么')
+      .addTextArea((text) => {
+        text.inputEl.rows = 2;
+        text
+          .setPlaceholder('例如：给出是否值得接入的明确建议')
+          .setValue(this.userIntent)
+          .onChange((value) => {
+            this.userIntent = value;
+          });
+      });
+    new Setting(container)
+      .setName('AI 整理')
+      .setDesc('只生成目标和完成条件，生成后仍可编辑')
+      .addButton((button) => button
+        .setButtonText(this.enriching ? '正在整理...' : 'AI 帮我整理')
+        .setIcon('sparkles')
+        .setDisabled(this.enriching || this.submitting)
+        .onClick(() => this.runEnrichment()));
   }
 
   private renderProject(container: HTMLElement): void {
@@ -295,6 +327,30 @@ export class TaskConfirmationModal extends Modal {
         this.formError = errorMessage(error);
       }
       this.submitting = false;
+      this.render();
+    }
+  }
+
+  private async runEnrichment(): Promise<void> {
+    if (this.enrich === undefined || this.enriching || this.submitting) return;
+    this.enriching = true;
+    this.formError = '';
+    this.render();
+    try {
+      const result = await this.enrich({
+        title: this.prepared.task.title,
+        body: this.prepared.task.body,
+        userIntent: this.userIntent,
+        projectNames: this.prepared.projects.map(({ name }) => name),
+      });
+      this.objective = result.objective;
+      this.acceptanceCriteria = [...result.acceptanceCriteria];
+    } catch (error) {
+      this.formError = error instanceof Error && error.message.trim() !== ''
+        ? `AI 整理失败：${error.message}`
+        : 'AI 整理失败，请检查模型配置后重试';
+    } finally {
+      this.enriching = false;
       this.render();
     }
   }

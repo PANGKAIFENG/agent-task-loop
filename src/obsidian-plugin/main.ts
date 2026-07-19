@@ -47,6 +47,7 @@ import {
 import { readSyncSourceRecords } from './sync-source-reader.js';
 import { isAtlInboxTaskPath, taskIdFromPath } from './task-eligibility.js';
 import { runWithPersistentFeedback } from './persistent-operation-feedback.js';
+import { enrichTask } from './task-enrichment.js';
 
 const CARD_THEME_CLASS = 'atl-task-card-theme';
 
@@ -249,26 +250,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
     }
 
     try {
-      await this.ensureClaudeExecutable();
-      const background = this.settings.background;
-      const modelService = modelServiceConfiguration(background);
-      if (!modelService.valid) {
-        new Notice('模型配置无效，请在 ATL 设置中检查 Model 和 Base URL');
-        return;
-      }
-      const environment: NodeJS.ProcessEnv = { ...process.env };
-      delete environment.ATL_CLAUDE_BIN;
-      delete environment.ATL_CLAUDE_CONFIG_DIR;
-      delete environment.ATL_CLAUDE_MODEL;
-      environment.ATL_CLAUDE_BIN = background.claudeExecutable;
-      environment.ATL_CLAUDE_CONFIG_DIR = background.claudeConfigDirectory;
-      if (modelService.model !== undefined) {
-        environment.ATL_CLAUDE_MODEL = modelService.model;
-      }
-      if (modelService.baseUrl !== undefined) {
-        environment.ANTHROPIC_BASE_URL = modelService.baseUrl;
-      }
-      const executor = await createClaudeStructuredExecutor({ environment });
+      const executor = await this.createStructuredExecutor();
       const fileSystem = {
         exists: async (relativePath: string) => adapter.exists(relativePath),
         listMarkdownFiles: async (relativeDirectory: string) => (
@@ -354,6 +336,28 @@ export default class AgentTaskLoopPlugin extends Plugin {
     }
   }
 
+  private async createStructuredExecutor() {
+    await this.ensureClaudeExecutable();
+    const background = this.settings.background;
+    const modelService = modelServiceConfiguration(background);
+    if (!modelService.valid) {
+      throw new Error('模型配置无效，请在 ATL 设置中检查 Model 和 Base URL');
+    }
+    const environment: NodeJS.ProcessEnv = { ...process.env };
+    delete environment.ATL_CLAUDE_BIN;
+    delete environment.ATL_CLAUDE_CONFIG_DIR;
+    delete environment.ATL_CLAUDE_MODEL;
+    environment.ATL_CLAUDE_BIN = background.claudeExecutable;
+    environment.ATL_CLAUDE_CONFIG_DIR = background.claudeConfigDirectory;
+    if (modelService.model !== undefined) {
+      environment.ATL_CLAUDE_MODEL = modelService.model;
+    }
+    if (modelService.baseUrl !== undefined) {
+      environment.ANTHROPIC_BASE_URL = modelService.baseUrl;
+    }
+    return createClaudeStructuredExecutor({ environment });
+  }
+
   private async openConfirmation(file: TFile): Promise<void> {
     if (!this.settings.allowVaultManagement) {
       new Notice('请先在“设置 → Agent Task Loop”中允许 ATL 管理此 Vault');
@@ -374,7 +378,12 @@ export default class AgentTaskLoopPlugin extends Plugin {
     ));
     try {
       const prepared = await controller.prepare(taskId);
-      new TaskConfirmationModal(this.app, controller, prepared).open();
+      new TaskConfirmationModal(
+        this.app,
+        controller,
+        prepared,
+        async (input) => enrichTask(await this.createStructuredExecutor(), input),
+      ).open();
     } catch {
       new Notice('无法读取这项 Inbox 任务，请刷新看板后重试');
     }
