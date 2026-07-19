@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   createCandidateSelection,
+  ignoredCandidateIds,
   selectedCandidateIds,
   setCandidateSelectionSubmitting,
+  setIgnoreUnselected,
   toggleCandidate,
 } from '../../../src/obsidian-plugin/capture-candidates-state.js';
 
@@ -12,6 +14,8 @@ describe('candidate selection state', () => {
     const state = createCandidateSelection(['a', 'b', 'a', 'c']);
 
     expect(selectedCandidateIds(state)).toEqual(['a', 'b', 'c']);
+    expect(ignoredCandidateIds(state)).toEqual([]);
+    expect(state.ignoreUnselected).toBe(false);
     expect(state.submitting).toBe(false);
   });
 
@@ -40,5 +44,16 @@ describe('candidate selection state', () => {
 
     expect(submitting.submitting).toBe(true);
     expect(selectedCandidateIds(submitting)).toEqual(['a', 'b']);
+  });
+
+  it('only resolves unchecked candidates when ignore unselected is explicit', () => {
+    const pending = toggleCandidate(createCandidateSelection(['a', 'b', 'c']), 'b');
+
+    expect(ignoredCandidateIds(pending)).toEqual([]);
+
+    const ignoring = setIgnoreUnselected(pending, true);
+    expect(ignoredCandidateIds(ignoring)).toEqual(['b']);
+    expect(selectedCandidateIds(ignoring)).toEqual(['a', 'c']);
+    expect(ignoredCandidateIds(setIgnoreUnselected(ignoring, false))).toEqual([]);
   });
 });

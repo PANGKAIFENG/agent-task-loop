@@ -47,6 +47,9 @@ import {
 } from './settings.js';
 import { readSyncSourceRecords } from './sync-source-reader.js';
 import {
+  TaskLifecycleReconciliationController,
+} from './task-lifecycle-reconciliation-controller.js';
+import {
   isAtlInboxTaskPath,
   isAtlTaskPath,
   taskIdFromPath,
@@ -101,6 +104,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
   settings: AtlPluginSettings = DEFAULT_SETTINGS;
   readonly boardAppearance = new BoardAppearanceController();
   private syncScanInFlight: Promise<void> | null = null;
+  private taskLifecycleReconciliation: TaskLifecycleReconciliationController | null = null;
 
   override async onload(): Promise<void> {
     this.settings = normalizeSettings(await this.loadData());
@@ -109,6 +113,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
     }
     this.applyTaskCardTheme();
     this.register(() => document.body.classList.remove(CARD_THEME_CLASS));
+    this.initializeTaskLifecycleReconciliation();
 
     this.addRibbonIcon('square-pen', 'ATL：新建任务', () => {
       this.openQuickCapture();
@@ -146,6 +151,11 @@ export default class AgentTaskLoopPlugin extends Plugin {
           .onClick(() => this.copyTaskForCodex(file)));
       },
     ));
+
+    this.registerEvent(this.app.metadataCache.on('changed', (file) => {
+      if (!this.settings.allowVaultManagement || !isAtlTaskPath(file.path)) return;
+      this.taskLifecycleReconciliation?.schedule(file.path);
+    }));
 
     this.addCommand({
       id: 'confirm-current-inbox-task',
@@ -199,6 +209,25 @@ export default class AgentTaskLoopPlugin extends Plugin {
       CARD_THEME_CLASS,
       this.settings.taskCardThemeEnabled,
     );
+  }
+
+  private initializeTaskLifecycleReconciliation(): void {
+    const adapter = this.app.vault.adapter;
+    if (!(adapter instanceof FileSystemAdapter)) return;
+    const root = adapter.getBasePath();
+    this.taskLifecycleReconciliation = new TaskLifecycleReconciliationController({
+      context: createObsidianServiceContext(
+        root,
+        createVaultWriteAuthorization(root),
+      ),
+      onError: () => {
+        new Notice('任务状态已更新，但 ATL 未能同步任务文件位置');
+      },
+    });
+    this.register(() => {
+      this.taskLifecycleReconciliation?.dispose();
+      this.taskLifecycleReconciliation = null;
+    });
   }
 
   private authorizedServiceContext(): {
@@ -281,6 +310,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
           executor,
         }),
         getState: () => ({
+          captureStateVersion: 2,
           lastSuccessfulScanAt: this.settings.capture.lastSuccessfulScanAt,
           reviewedFingerprints: [...this.settings.capture.reviewedFingerprints],
           processedRecordFingerprints: [
@@ -289,6 +319,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
         }),
         saveState: async (state: CaptureState) => {
           this.settings.capture = {
+            captureStateVersion: 2,
             lastSuccessfulScanAt: state.lastSuccessfulScanAt,
             reviewedFingerprints: [...state.reviewedFingerprints],
             processedRecordFingerprints: [...state.processedRecordFingerprints],
@@ -309,12 +340,14 @@ export default class AgentTaskLoopPlugin extends Plugin {
         return;
       }
 
-      new CaptureCandidatesModal(this.app, prepared, async (selectedIds) => {
-        const result = await controller.commit(prepared, selectedIds);
+      new CaptureCandidatesModal(this.app, prepared, async (selectedIds, ignoredIds) => {
+        const result = await controller.commit(prepared, selectedIds, ignoredIds);
         const accepted = result.createdTaskIds.length + result.existingTaskIds.length;
-        new Notice(accepted === 0
-          ? '已忽略本次待办候选'
-          : `已处理 ${accepted} 个待办候选`);
+        new Notice(accepted === 0 && ignoredIds.length > 0
+          ? `已忽略 ${ignoredIds.length} 个待办候选`
+          : accepted === 0
+            ? '未选候选已保留，稍后仍可处理'
+            : `已处理 ${accepted} 个待办候选`);
       }).open();
     } catch (error) {
       new Notice(errorMessage(

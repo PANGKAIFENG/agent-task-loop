@@ -35,6 +35,7 @@ function candidate(record: SyncSourceRecord): ExtractedCandidate {
     title: `调研工具 ${record.content.at(-1)}`,
     summary: `整理工具 ${record.content.at(-1)} 的能力和适用场景。`,
     priority: 'normal',
+    topicKey: `工具-${record.content.at(-1)}`,
     sourceRecordFingerprint: record.fingerprint,
     sourceQuote: record.content,
   };
@@ -45,6 +46,7 @@ async function fixture(overrides: Partial<CaptureControllerDependencies> = {}) {
   contexts.push(context);
   const records = [source(1), source(2)];
   let state: CaptureState = {
+    captureStateVersion: 2,
     lastSuccessfulScanAt: null,
     reviewedFingerprints: [],
     processedRecordFingerprints: [],
@@ -72,7 +74,7 @@ async function fixture(overrides: Partial<CaptureControllerDependencies> = {}) {
 }
 
 describe('CaptureController', () => {
-  it('writes selected candidates and marks every presented candidate reviewed', async () => {
+  it('writes selected candidates while leaving unselected candidates pending', async () => {
     const test = await fixture();
     const prepared = await test.controller.scan();
 
@@ -101,9 +103,29 @@ describe('CaptureController', () => {
       sourceNote: test.records[0]!.sourceNote,
     });
     expect(test.getState()).toEqual({
+      captureStateVersion: 2,
       lastSuccessfulScanAt: NOW.toISOString(),
-      reviewedFingerprints: prepared.candidates.map(({ candidateId }) => candidateId),
-      processedRecordFingerprints: test.records.map(({ fingerprint }) => fingerprint),
+      reviewedFingerprints: [prepared.candidates[0]!.candidateId],
+      processedRecordFingerprints: [test.records[0]!.fingerprint],
+    });
+  });
+
+  it('marks an explicitly ignored candidate resolved without creating a task', async () => {
+    const test = await fixture();
+    const prepared = await test.controller.scan();
+
+    await test.controller.commit(
+      prepared,
+      [],
+      [prepared.candidates[0]!.candidateId],
+    );
+
+    await expect(test.context.ctx.tasks.list()).resolves.toEqual([]);
+    expect(test.getState()).toEqual({
+      captureStateVersion: 2,
+      lastSuccessfulScanAt: NOW.toISOString(),
+      reviewedFingerprints: [prepared.candidates[0]!.candidateId],
+      processedRecordFingerprints: [test.records[0]!.fingerprint],
     });
   });
 
@@ -114,6 +136,7 @@ describe('CaptureController', () => {
 
     expect(test.saveState).not.toHaveBeenCalled();
     expect(test.getState()).toEqual({
+      captureStateVersion: 2,
       lastSuccessfulScanAt: null,
       reviewedFingerprints: [],
       processedRecordFingerprints: [],
@@ -150,7 +173,11 @@ describe('CaptureController', () => {
   it('filters previously reviewed candidates after extraction', async () => {
     const test = await fixture();
     const first = await test.controller.scan();
-    await test.controller.commit(first, []);
+    await test.controller.commit(
+      first,
+      [],
+      first.candidates.map(({ candidateId }) => candidateId),
+    );
 
     const second = await test.controller.scan();
 
@@ -164,6 +191,7 @@ describe('CaptureController', () => {
     const test = await fixture({
       extractCandidates,
       getState: () => ({
+        captureStateVersion: 2,
         lastSuccessfulScanAt: NOW.toISOString(),
         reviewedFingerprints: [],
         processedRecordFingerprints: [source(1).fingerprint],
@@ -176,16 +204,47 @@ describe('CaptureController', () => {
     expect(prepared.recordsConsidered).toBe(1);
   });
 
-  it('can checkpoint a successful scan with no candidates', async () => {
+  it('keeps source records pending when the model returns no candidates', async () => {
     const test = await fixture({ extractCandidates: vi.fn(async () => []) });
     const prepared = await test.controller.scan();
 
     await test.controller.commit(prepared, []);
 
     expect(test.getState()).toEqual({
+      captureStateVersion: 2,
       lastSuccessfulScanAt: NOW.toISOString(),
       reviewedFingerprints: [],
-      processedRecordFingerprints: test.records.map(({ fingerprint }) => fingerprint),
+      processedRecordFingerprints: [],
     });
+  });
+
+  it('clusters candidates with the same topic while retaining every source record', async () => {
+    const test = await fixture({
+      extractCandidates: vi.fn(async (records: readonly SyncSourceRecord[]) => (
+        records.map((record, index) => ({
+          ...candidate(record),
+          title: index === 0 ? '设计 Obsidian 数据首页' : '补充 Obsidian 每日面板',
+          topicKey: 'obsidian-data-home',
+        }))
+      )),
+    });
+
+    const prepared = await test.controller.scan();
+
+    expect(prepared.candidates).toHaveLength(1);
+    expect(prepared.candidates[0]).toMatchObject({
+      topicKey: 'obsidian-data-home',
+      sourceRecordFingerprints: test.records.map(({ fingerprint }) => fingerprint),
+    });
+    expect(prepared.candidates[0]?.sourceEvidence).toHaveLength(2);
+
+    await test.controller.commit(prepared, [prepared.candidates[0]!.candidateId]);
+
+    const [task] = await test.context.ctx.tasks.list();
+    expect(task?.body).toContain(test.records[0]!.content);
+    expect(task?.body).toContain(test.records[1]!.content);
+    expect(test.getState().processedRecordFingerprints).toEqual(
+      test.records.map(({ fingerprint }) => fingerprint),
+    );
   });
 });

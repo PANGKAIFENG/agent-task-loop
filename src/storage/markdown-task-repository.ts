@@ -568,6 +568,14 @@ export class MarkdownTaskRepository implements TaskRepository {
   }
 
   async save(task: Task): Promise<Task> {
+    return this.saveTask(task, true);
+  }
+
+  async saveBody(task: Task): Promise<Task> {
+    return this.saveTask(task, false);
+  }
+
+  private async saveTask(task: Task, preserveExistingBody: boolean): Promise<Task> {
     assertVaultWriteAllowed(this.root, this.writeAuthorization);
     const result = taskSchema.safeParse(task);
     if (!result.success) {
@@ -587,8 +595,11 @@ export class MarkdownTaskRepository implements TaskRepository {
     }
 
     const existing = current?.record;
-    // Existing-task save updates canonical metadata while preserving the latest disk body.
-    const body = existing?.body ?? validTask.body;
+    // Normal metadata saves preserve manual body edits. Explicit body saves are
+    // reserved for services that re-read the task while holding its lock.
+    const body = preserveExistingBody
+      ? existing?.body ?? validTask.body
+      : validTask.body;
     const persistedTask = { ...validTask, body };
     const data = mergeTaskData(existing?.data ?? {}, persistedTask);
     const targetDirectory = lifecycleDirectory(this.tasksRoot, persistedTask);

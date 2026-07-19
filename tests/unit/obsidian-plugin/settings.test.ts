@@ -13,6 +13,7 @@ describe('normalizeSettings', () => {
       allowVaultManagement: true,
       taskCardThemeEnabled: true,
       capture: {
+        captureStateVersion: 2,
         lastSuccessfulScanAt: null,
         reviewedFingerprints: [],
         processedRecordFingerprints: [],
@@ -35,6 +36,7 @@ describe('normalizeSettings', () => {
       allowVaultManagement: 'yes',
       taskCardThemeEnabled: false,
       capture: {
+        captureStateVersion: 2,
         lastSuccessfulScanAt: null,
         reviewedFingerprints: [],
         processedRecordFingerprints: [],
@@ -53,6 +55,7 @@ describe('normalizeSettings', () => {
       allowVaultManagement: false,
       taskCardThemeEnabled: false,
       capture: {
+        captureStateVersion: 2,
         lastSuccessfulScanAt: null,
         reviewedFingerprints: [],
         processedRecordFingerprints: [],
@@ -95,7 +98,25 @@ describe('normalizeSettings', () => {
         ],
       },
     }).capture).toEqual({
+      captureStateVersion: 2,
       lastSuccessfulScanAt: null,
+      reviewedFingerprints: [],
+      processedRecordFingerprints: [],
+    });
+  });
+
+  it('clears legacy processed fingerprints while retaining the valid checkpoint', () => {
+    const fingerprint = 'a'.repeat(64);
+
+    expect(normalizeSettings({
+      capture: {
+        lastSuccessfulScanAt: '2026-07-17T11:12:27.447Z',
+        reviewedFingerprints: [fingerprint],
+        processedRecordFingerprints: [fingerprint],
+      },
+    }).capture).toEqual({
+      captureStateVersion: 2,
+      lastSuccessfulScanAt: '2026-07-17T11:12:27.447Z',
       reviewedFingerprints: [],
       processedRecordFingerprints: [],
     });
