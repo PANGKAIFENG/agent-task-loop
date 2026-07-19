@@ -12,7 +12,7 @@ import type {
 function fakeExecutor(output: unknown): ClaudeStructuredExecutor & {
   execute: ReturnType<typeof vi.fn>;
 } {
-  const execute = vi.fn(async <T>(_input: ClaudeStructuredInput<T>) => {
+  const execute = vi.fn(async <T>() => {
     if (output instanceof Error) throw output;
     return output as T;
   });

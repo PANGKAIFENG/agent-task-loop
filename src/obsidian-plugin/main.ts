@@ -674,7 +674,7 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
     if (status?.available === true && !status.applied) {
       setting.addButton((button) => button
         .setCta()
-        .setButtonText('应用推荐布局')
+        .setButtonText('应用人工任务布局')
         .setDisabled(!this.atlPlugin.settings.allowVaultManagement)
         .onClick(() => this.applyBoardPreset()));
     }

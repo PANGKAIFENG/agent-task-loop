@@ -21,7 +21,10 @@ export const taskStatusSchema = z
   .trim()
   .min(1)
   .max(100)
-  .refine((value) => !/[\u0000-\u001f\u007f]/u.test(value));
+  .refine((value) => Array.from(value).every((character) => {
+    const code = character.charCodeAt(0);
+    return code >= 32 && code !== 127;
+  }));
 
 export interface Task {
   schemaVersion: 1;
