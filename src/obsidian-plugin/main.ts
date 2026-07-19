@@ -655,7 +655,7 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
     containerEl.createEl('h2', { text: '任务看板' });
     new Setting(containerEl)
       .setName('ATL 紧凑卡片')
-      .setDesc('在 TaskNotes 看板中突出任务标题、确认状态、来源日期和优先级。')
+      .setDesc('在 TaskNotes 看板中优先显示项目、计划时间、截止时间和优先级。')
       .addToggle((toggle) => toggle
         .setValue(this.atlPlugin.settings.taskCardThemeEnabled)
         .onChange(async (value) => {

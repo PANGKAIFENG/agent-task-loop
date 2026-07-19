@@ -243,6 +243,33 @@ describe('atl CLI core loop', () => {
     expect(inbox[0]?.taskId).toBe(lines[0]);
   });
 
+  it('accepts a safe custom status when filtering tasks', async () => {
+    const root = await makeVault();
+    const captured = await captureTask(root);
+    const inboxPath = join(
+      root,
+      '10_Tasks',
+      'Inbox',
+      '2026-07-15',
+      `${captured.taskId}.md`,
+    );
+    const original = await readFile(inboxPath, 'utf8');
+    await writeFile(inboxPath, original.replace(
+      'status: inbox',
+      'status: waiting_external',
+    ));
+
+    const tasks = json<Task[]>(await runCli(root, [
+      'task', 'list', '--status', 'waiting_external', '--json',
+    ]));
+
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({
+      taskId: captured.taskId,
+      status: 'waiting_external',
+    });
+  });
+
   it('deduplicates daily review and real-time capture submitted as stdin JSON', async () => {
     const root = await makeVault();
     const common = {

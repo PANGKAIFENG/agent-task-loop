@@ -17,6 +17,13 @@ export const ATL_BOARD_PATH = '10_Tasks/Views/任务总看板.base';
 const MANUAL_COLUMN_ORDER = JSON.stringify({
   status: ['inbox', 'ready', 'in_progress', 'done'],
 });
+const MANUAL_CARD_FIELDS = ['project_id', 'scheduled', 'due', 'priority'];
+
+function stringArrayEquals(value: unknown, expected: readonly string[]): boolean {
+  return Array.isArray(value)
+    && value.length === expected.length
+    && value.every((item, index) => item === expected[index]);
+}
 
 export interface BoardPresetStatus {
   available: boolean;
@@ -186,6 +193,7 @@ export class BoardAppearanceController {
         && view.pinnedColumns === 'inbox,ready,in_progress,done'
         && view.columnOrder === MANUAL_COLUMN_ORDER
         && view.hideEmptyColumns === true
+        && stringArrayEquals(view.order, MANUAL_CARD_FIELDS)
         && view.columnWidth === 320
         && view.cardLayout === 'compact';
     } catch {
@@ -207,7 +215,7 @@ export class BoardAppearanceController {
     view.pinnedColumns = 'inbox,ready,in_progress,done';
     view.columnOrder = MANUAL_COLUMN_ORDER;
     view.hideEmptyColumns = true;
-    view.order = ['review_state', 'source_date'];
+    view.order = [...MANUAL_CARD_FIELDS];
     view.columnWidth = 320;
     view.cardLayout = 'compact';
     await atomicWrite(basePath, stringify(document, { lineWidth: 0 }), root);

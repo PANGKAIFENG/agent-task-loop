@@ -64,6 +64,8 @@ export class TaskConfirmationModal extends Modal {
   private formError = '';
   private submitting = false;
   private enriching = false;
+  private detailsExpanded: boolean;
+  private closed = false;
 
   constructor(
     app: App,
@@ -84,14 +86,18 @@ export class TaskConfirmationModal extends Modal {
       ? [...prepared.task.acceptanceCriteria]
       : [''];
     this.priority = prepared.task.priority;
+    this.detailsExpanded = this.objective.trim() !== ''
+      || prepared.task.acceptanceCriteria.length > 0;
   }
 
   override onOpen(): void {
+    this.closed = false;
     this.modalEl.addClass('atl-task-confirmation-modal');
     this.render();
   }
 
   override onClose(): void {
+    this.closed = true;
     this.contentEl.empty();
   }
 
@@ -116,11 +122,22 @@ export class TaskConfirmationModal extends Modal {
     }
 
     this.renderProject(contentEl);
-    this.renderEnrichment(contentEl);
-    this.renderObjective(contentEl);
-    this.renderAcceptanceCriteria(contentEl);
     this.renderPriority(contentEl);
+    this.renderEnrichment(contentEl);
+    this.renderTaskDetails(contentEl);
     this.renderActions(contentEl);
+  }
+
+  private renderTaskDetails(container: HTMLElement): void {
+    const details = container.createEl('details', { cls: 'atl-task-details' });
+    details.open = this.detailsExpanded;
+    details.addEventListener('toggle', () => {
+      this.detailsExpanded = details.open;
+    });
+    details.createEl('summary', { text: '任务说明（可选）' });
+    const body = details.createDiv({ cls: 'atl-task-details-body' });
+    this.renderObjective(body);
+    this.renderAcceptanceCriteria(body);
   }
 
   private renderEnrichment(container: HTMLElement): void {
@@ -345,13 +362,14 @@ export class TaskConfirmationModal extends Modal {
       });
       this.objective = result.objective;
       this.acceptanceCriteria = [...result.acceptanceCriteria];
+      this.detailsExpanded = true;
     } catch (error) {
       this.formError = error instanceof Error && error.message.trim() !== ''
         ? `AI 整理失败：${error.message}`
         : 'AI 整理失败，请检查模型配置后重试';
     } finally {
       this.enriching = false;
-      this.render();
+      if (!this.closed) this.render();
     }
   }
 

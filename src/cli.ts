@@ -8,7 +8,7 @@ import { Command, CommanderError } from 'commander';
 import { loadConfig, assertWriteEnabled, type AtlConfig } from './config.js';
 import {
   PRIORITIES,
-  TASK_STATUSES,
+  taskStatusSchema,
   type Priority,
   type TaskStatus,
 } from './domain/task.js';
@@ -398,13 +398,19 @@ function buildProgram(): Command {
     .option('--json')
     .action(async (options: { status?: string; json?: boolean }) => {
       const { ctx } = contextForRead();
+      const status = options.status === undefined
+        ? undefined
+        : taskStatusSchema.safeParse(options.status);
       if (
-        options.status !== undefined
-        && !TASK_STATUSES.includes(options.status as (typeof TASK_STATUSES)[number])
+        status !== undefined
+        && (!status.success || options.status?.startsWith('-') === true)
       ) {
         throw new CliUsageError('invalid --status');
       }
-      output(await listTasks(ctx, options.status as TaskStatus | undefined), options);
+      output(await listTasks(
+        ctx,
+        status?.data as TaskStatus | undefined,
+      ), options);
     });
 
   task

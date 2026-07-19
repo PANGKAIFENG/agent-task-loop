@@ -77,7 +77,7 @@ describe('BoardAppearanceController', () => {
     expect(parsed.views[0]).toMatchObject({
       type: 'tasknotesKanban',
       name: '任务总看板',
-      order: ['review_state', 'source_date'],
+      order: ['project_id', 'scheduled', 'due', 'priority'],
       columnWidth: 320,
       cardLayout: 'compact',
       hideEmptyColumns: true,
