@@ -6,7 +6,7 @@ export interface TaskEnrichmentInput {
   title: string;
   body: string;
   userIntent: string;
-  projectNames: readonly string[];
+  projectName: string | null;
 }
 
 export const taskEnrichmentSchema = z.object({
@@ -34,9 +34,7 @@ export const taskEnrichmentJsonSchema = {
 const ENRICHMENT_TIMEOUT_MS = 120_000;
 
 function promptFor(input: TaskEnrichmentInput): string {
-  const projects = input.projectNames.length > 0
-    ? input.projectNames.join('、')
-    : '未选择项目';
+  const project = input.projectName?.trim() || '未选择项目';
   return [
     '你是一个任务整理助手，只负责把用户的想法整理成清晰的任务目标和完成条件。',
     '不要执行任务，不要调用工具，不要读取任何文件，不要访问网络。',
@@ -46,7 +44,7 @@ function promptFor(input: TaskEnrichmentInput): string {
     `任务标题：${input.title.slice(0, 500)}`,
     `任务正文：${input.body.slice(0, 8_000)}`,
     `用户补充：${input.userIntent.slice(0, 4_000)}`,
-    `可选项目：${projects.slice(0, 2_000)}`,
+    `当前项目：${project.slice(0, 500)}`,
     '',
     '输出 objective 和 1 至 5 条 acceptanceCriteria。',
     '只返回符合 JSON Schema 的结果。',

@@ -341,7 +341,7 @@ export class TaskConfirmationModal extends Modal {
         title: this.prepared.task.title,
         body: this.prepared.task.body,
         userIntent: this.userIntent,
-        projectNames: this.prepared.projects.map(({ name }) => name),
+        projectName: this.selectedProjectName(),
       });
       this.objective = result.objective;
       this.acceptanceCriteria = [...result.acceptanceCriteria];
@@ -353,6 +353,16 @@ export class TaskConfirmationModal extends Modal {
       this.enriching = false;
       this.render();
     }
+  }
+
+  private selectedProjectName(): string | null {
+    if (this.projectValue === NO_PROJECT_VALUE) return null;
+    if (this.projectValue === NEW_PROJECT_VALUE) {
+      return this.newProjectName.trim() || null;
+    }
+    return this.prepared.projects.find(({ projectId }) => (
+      projectId === this.projectValue
+    ))?.name ?? null;
   }
 
   private appendFieldError(setting: Setting, message?: string): void {

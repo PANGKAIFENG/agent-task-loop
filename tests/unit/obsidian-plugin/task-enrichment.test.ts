@@ -25,7 +25,7 @@ const input: TaskEnrichmentInput = {
   title: '评估 AnySearch',
   body: '判断是否接入 StyleWork',
   userIntent: '给出明确的接入建议',
-  projectNames: ['StyleWork'],
+  projectName: 'StyleWork',
 };
 
 describe('enrichTask', () => {
