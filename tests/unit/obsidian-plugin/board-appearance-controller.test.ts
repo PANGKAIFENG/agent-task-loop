@@ -83,7 +83,7 @@ describe('BoardAppearanceController', () => {
       hideEmptyColumns: true,
       groupBy: { property: 'status', direction: 'ASC' },
       pinnedColumns: 'inbox,ready,in_progress,done',
-      columnOrder: ['inbox', 'ready', 'in_progress', 'done'],
+      columnOrder: '{"status":["inbox","ready","in_progress","done"]}',
       sort: [{ property: 'formula.atlPriorityRank', direction: 'ASC' }],
     });
     expect(parsed.views[1]).toMatchObject({

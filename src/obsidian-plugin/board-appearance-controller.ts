@@ -14,6 +14,9 @@ import { dirname, isAbsolute, join, relative } from 'node:path';
 import { parse, stringify } from 'yaml';
 
 export const ATL_BOARD_PATH = '10_Tasks/Views/任务总看板.base';
+const MANUAL_COLUMN_ORDER = JSON.stringify({
+  status: ['inbox', 'ready', 'in_progress', 'done'],
+});
 
 export interface BoardPresetStatus {
   available: boolean;
@@ -181,10 +184,7 @@ export class BoardAppearanceController {
         && (view.groupBy as BaseView).property === 'status'
         && (view.groupBy as BaseView).direction === 'ASC'
         && view.pinnedColumns === 'inbox,ready,in_progress,done'
-        && Array.isArray(view.columnOrder)
-        && JSON.stringify(view.columnOrder) === JSON.stringify([
-          'inbox', 'ready', 'in_progress', 'done',
-        ])
+        && view.columnOrder === MANUAL_COLUMN_ORDER
         && view.hideEmptyColumns === true
         && view.columnWidth === 320
         && view.cardLayout === 'compact';
@@ -205,7 +205,7 @@ export class BoardAppearanceController {
     await createBackup(`${basePath}.atl-backup`, content, root);
     view.groupBy = { property: 'status', direction: 'ASC' };
     view.pinnedColumns = 'inbox,ready,in_progress,done';
-    view.columnOrder = ['inbox', 'ready', 'in_progress', 'done'];
+    view.columnOrder = MANUAL_COLUMN_ORDER;
     view.hideEmptyColumns = true;
     view.order = ['review_state', 'source_date'];
     view.columnWidth = 320;
