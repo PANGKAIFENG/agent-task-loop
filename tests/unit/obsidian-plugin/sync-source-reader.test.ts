@@ -31,8 +31,20 @@ class MemorySourceFileSystem implements SyncSourceReaderFileSystem {
 describe('sourceDateRange', () => {
   const now = new Date('2026-07-17T12:00:00.000Z');
 
-  it('uses yesterday and today for the first scan in the local timezone', () => {
+  it('uses a 14-day inclusive lookback for the first scan in the local timezone', () => {
     expect(sourceDateRange(now, null)).toEqual([
+      '2026-07-04',
+      '2026-07-05',
+      '2026-07-06',
+      '2026-07-07',
+      '2026-07-08',
+      '2026-07-09',
+      '2026-07-10',
+      '2026-07-11',
+      '2026-07-12',
+      '2026-07-13',
+      '2026-07-14',
+      '2026-07-15',
       '2026-07-16',
       '2026-07-17',
     ]);
@@ -43,10 +55,29 @@ describe('sourceDateRange', () => {
       now,
       '2026-07-15T11:30:00.000Z',
     )).toEqual([
+      '2026-07-04',
+      '2026-07-05',
+      '2026-07-06',
+      '2026-07-07',
+      '2026-07-08',
+      '2026-07-09',
+      '2026-07-10',
+      '2026-07-11',
+      '2026-07-12',
+      '2026-07-13',
+      '2026-07-14',
       '2026-07-15',
       '2026-07-16',
       '2026-07-17',
     ]);
+  });
+
+  it('does not expand beyond 14 days for an old checkpoint', () => {
+    const dates = sourceDateRange(now, '2026-05-01T11:30:00.000Z');
+
+    expect(dates).toHaveLength(14);
+    expect(dates.at(0)).toBe('2026-07-04');
+    expect(dates.at(-1)).toBe('2026-07-17');
   });
 });
 
@@ -89,10 +120,9 @@ describe('readSyncSourceRecords', () => {
       lastSuccessfulScanAt: null,
     });
 
-    expect(fileSystem.listedDirectories).toEqual([
-      '笔记同步助手/2026-07-16',
-      '笔记同步助手/2026-07-17',
-    ]);
+    expect(fileSystem.listedDirectories).toHaveLength(14);
+    expect(fileSystem.listedDirectories.at(0)).toBe('笔记同步助手/2026-07-04');
+    expect(fileSystem.listedDirectories.at(-1)).toBe('笔记同步助手/2026-07-17');
     expect(result.filesScanned).toBe(2);
     expect(result.records).toHaveLength(3);
     expect(result.records.map(({ recordedAt }) => recordedAt)).toEqual([
@@ -128,5 +158,23 @@ describe('readSyncSourceRecords', () => {
     });
 
     expect(first.records[0]?.fingerprint).toBe(second.records[0]?.fingerprint);
+  });
+
+  it('merges an image record with adjacent explanatory text into one semantic message', async () => {
+    const path = '笔记同步助手/2026-07-17/同步助手_2026-07-17.md';
+    const fileSystem = new MemorySourceFileSystem({
+      [path]: `#### 图片\n## 📅 2026-07-17 10:00:02\n![[images/tool.png]]\n\n#### 说明\n## 📅 2026-07-17 10:00:00\n评估示例工具 #待办\n\n#### 另一件事\n## 📅 2026-07-17 09:40:00\n#待办 整理周报\n`,
+    });
+
+    const result = await readSyncSourceRecords({
+      fileSystem,
+      now: new Date('2026-07-17T12:00:00.000Z'),
+      lastSuccessfulScanAt: null,
+    });
+
+    expect(result.records).toHaveLength(2);
+    expect(result.records[0]?.content).toContain('![[images/tool.png]]');
+    expect(result.records[0]?.content).toContain('评估示例工具 #待办');
+    expect(result.records[1]?.content).toBe('#待办 整理周报');
   });
 });

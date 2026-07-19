@@ -13,11 +13,13 @@ describe('capture state', () => {
 
     expect(normalizeSettings({
       capture: {
+        captureStateVersion: 2,
         lastSuccessfulScanAt: '2026-07-17T12:30:00.000Z',
         reviewedFingerprints: [first, second, first],
         processedRecordFingerprints: [second, first, second],
       },
     }).capture).toEqual({
+      captureStateVersion: 2,
       lastSuccessfulScanAt: '2026-07-17T12:30:00.000Z',
       reviewedFingerprints: [first, second],
       processedRecordFingerprints: [second, first],

@@ -21,6 +21,7 @@ export interface TaskRepository {
     created: boolean;
   }>;
   save(task: Task): Promise<Task>;
+  saveBody(task: Task): Promise<Task>;
 }
 
 export interface ArtifactRepository {

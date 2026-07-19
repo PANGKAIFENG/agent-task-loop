@@ -13,6 +13,7 @@ import {
   createCandidateSelection,
   selectedCandidateIds,
   setCandidateSelectionSubmitting,
+  setIgnoreUnselected,
   toggleCandidate,
   type CandidateSelectionState,
 } from './capture-candidates-state.js';
@@ -30,7 +31,10 @@ export class CaptureCandidatesModal extends Modal {
   constructor(
     app: App,
     private readonly prepared: PreparedCapture,
-    private readonly onSubmit: (selectedIds: readonly string[]) => Promise<void>,
+    private readonly onSubmit: (
+      selectedIds: readonly string[],
+      ignoredIds: readonly string[],
+    ) => Promise<void>,
   ) {
     super(app);
     this.candidateSelection = createCandidateSelection(
@@ -92,6 +96,27 @@ export class CaptureCandidatesModal extends Modal {
       });
     }
 
+    const resolution = contentEl.createDiv({ cls: 'atl-candidate-resolution' });
+    resolution.createEl('p', {
+      text: '未勾选的候选会保留，下次扫描仍会出现。',
+    });
+    const ignoreControl = resolution.createDiv({
+      cls: 'atl-candidate-ignore-unselected',
+    });
+    const ignoreCheckbox = ignoreControl.createEl('input', {
+      type: 'checkbox',
+      attr: { 'aria-label': '忽略所有未选候选' },
+    });
+    ignoreCheckbox.checked = this.candidateSelection.ignoreUnselected;
+    ignoreCheckbox.disabled = this.candidateSelection.submitting;
+    ignoreCheckbox.addEventListener('click', () => {
+      this.candidateSelection = setIgnoreUnselected(
+        this.candidateSelection,
+        !this.candidateSelection.ignoreUnselected,
+      );
+    });
+    ignoreControl.createEl('span', { text: '忽略所有未选候选（以后不再显示）' });
+
     const actions = new Setting(contentEl).setClass('atl-modal-actions');
     actions.addButton((button) => button
       .setButtonText('取消')
@@ -112,6 +137,12 @@ export class CaptureCandidatesModal extends Modal {
 
   private async submit(button: ButtonComponent): Promise<void> {
     if (this.candidateSelection.submitting) return;
+    const selectedIds = selectedCandidateIds(this.candidateSelection);
+    const ignoredIds = this.candidateSelection.ignoreUnselected
+      ? this.candidateSelection.candidateIds.filter((id) => (
+        !this.candidateSelection.selectedIds.has(id)
+      ))
+      : [];
     this.candidateSelection = setCandidateSelectionSubmitting(
       this.candidateSelection,
       true,
@@ -119,7 +150,10 @@ export class CaptureCandidatesModal extends Modal {
     this.formError = '';
     button.setDisabled(true).setButtonText('正在加入...');
     try {
-      await this.onSubmit(selectedCandidateIds(this.candidateSelection));
+      await this.onSubmit(
+        selectedIds,
+        ignoredIds,
+      );
       this.close();
     } catch {
       this.candidateSelection = setCandidateSelectionSubmitting(

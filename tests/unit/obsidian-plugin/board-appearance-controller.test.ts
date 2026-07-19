@@ -84,7 +84,10 @@ describe('BoardAppearanceController', () => {
       groupBy: { property: 'status', direction: 'ASC' },
       pinnedColumns: 'inbox,ready,in_progress,done',
       columnOrder: '{"status":["inbox","ready","in_progress","done"]}',
-      sort: [{ property: 'formula.atlPriorityRank', direction: 'ASC' }],
+      sort: [
+        { column: 'tasknotes_manual_order', direction: 'DESC' },
+        { column: 'formula.atlPriorityRank', direction: 'ASC' },
+      ],
     });
     expect(parsed.views[1]).toMatchObject({
       type: 'tasknotesCalendar',

@@ -5,6 +5,8 @@ const SYNC_ROOT = '笔记同步助手';
 const DEFAULT_TIME_ZONE = 'Asia/Shanghai';
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const TIMESTAMP_HEADER = /^####[^\n]*\n## 📅 (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})\n/gm;
+const LOOKBACK_DAYS = 13;
+const IMAGE_CONTEXT_WINDOW_MS = 2 * 60 * 1000;
 
 export interface SyncSourceRecord {
   fingerprint: string;
@@ -41,21 +43,13 @@ function addUtcDays(date: string, amount: number): string {
 
 export function sourceDateRange(
   now: Date,
-  lastSuccessfulScanAt: string | null,
+  _lastSuccessfulScanAt: string | null,
   timeZone = DEFAULT_TIME_ZONE,
 ): string[] {
   const today = localDate(now, timeZone);
-  const checkpoint = lastSuccessfulScanAt === null
-    ? null
-    : new Date(lastSuccessfulScanAt);
-  const checkpointDate = checkpoint !== null && Number.isFinite(checkpoint.getTime())
-    ? localDate(checkpoint, timeZone)
-    : null;
-  const start = checkpointDate === null
-    ? addUtcDays(today, -1)
-    : checkpointDate > today ? today : checkpointDate;
+  const lookbackStart = addUtcDays(today, -LOOKBACK_DAYS);
   const dates: string[] = [];
-  for (let date = start; date <= today; date = addUtcDays(date, 1)) {
+  for (let date = lookbackStart; date <= today; date = addUtcDays(date, 1)) {
     dates.push(date);
   }
   return dates;
@@ -92,7 +86,7 @@ function parseAggregateRecords(content: string): ParsedRecord[] {
     return whole === '' ? [] : [{ recordedAt: null, content: whole }];
   }
 
-  return headers.flatMap((match, index) => {
+  const records = headers.flatMap((match, index) => {
     const date = match[1];
     const time = match[2];
     const contentStart = (match.index ?? 0) + match[0].length;
@@ -105,6 +99,41 @@ function parseAggregateRecords(content: string): ParsedRecord[] {
       ? [{ recordedAt: `${date}T${time}+08:00`, content: recordContent }]
       : [];
   });
+  return mergeAdjacentImageContext(records);
+}
+
+function containsImage(content: string): boolean {
+  return /!\[\[[^\]]+\.(?:avif|gif|jpe?g|png|webp)(?:\|[^\]]*)?\]\]/iu.test(content)
+    || /!\[[^\]]*\]\([^\n)]+\.(?:avif|gif|jpe?g|png|webp)(?:\?[^\n)]*)?\)/iu.test(content)
+    || /(?:「|\[)?图片(?:」|\])?/u.test(content);
+}
+
+function recordedAtMillis(value: string | null): number | null {
+  if (value === null) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function shouldMergeImageContext(left: ParsedRecord, right: ParsedRecord): boolean {
+  if (!containsImage(left.content) && !containsImage(right.content)) return false;
+  const leftTime = recordedAtMillis(left.recordedAt);
+  const rightTime = recordedAtMillis(right.recordedAt);
+  return leftTime !== null
+    && rightTime !== null
+    && Math.abs(leftTime - rightTime) <= IMAGE_CONTEXT_WINDOW_MS;
+}
+
+function mergeAdjacentImageContext(records: readonly ParsedRecord[]): ParsedRecord[] {
+  const merged: ParsedRecord[] = [];
+  for (const record of records) {
+    const previous = merged.at(-1);
+    if (previous === undefined || !shouldMergeImageContext(previous, record)) {
+      merged.push({ ...record });
+      continue;
+    }
+    previous.content = normalizedContent(`${previous.content}\n\n${record.content}`);
+  }
+  return merged;
 }
 
 function isDirectMarkdownFile(path: string, directory: string): boolean {

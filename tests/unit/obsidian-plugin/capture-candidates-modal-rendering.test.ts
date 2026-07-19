@@ -49,22 +49,40 @@ function preparedCapture(): PreparedCapture {
         title: '调研工具一',
         summary: '整理工具一的能力和适用场景。',
         priority: 'normal',
+        topicKey: '工具一调研',
         sourceRecordFingerprint: '1'.repeat(64),
+        sourceRecordFingerprints: ['1'.repeat(64)],
         sourceQuote: '调研工具一',
         sourceDate: '2026-07-17',
         sourceNote: '笔记同步助手/2026-07-17/记录.md',
         recordedAt: '2026-07-17T09:00:00+08:00',
+        sourceEvidence: [{
+          sourceRecordFingerprint: '1'.repeat(64),
+          sourceQuote: '调研工具一',
+          sourceDate: '2026-07-17',
+          sourceNote: '笔记同步助手/2026-07-17/记录.md',
+          recordedAt: '2026-07-17T09:00:00+08:00',
+        }],
       },
       {
         candidateId: 'candidate-2',
         title: '调研工具二',
         summary: '整理工具二的能力和适用场景。',
         priority: 'high',
+        topicKey: '工具二调研',
         sourceRecordFingerprint: '2'.repeat(64),
+        sourceRecordFingerprints: ['2'.repeat(64)],
         sourceQuote: '调研工具二',
         sourceDate: '2026-07-17',
         sourceNote: '笔记同步助手/2026-07-17/记录.md',
         recordedAt: '2026-07-17T10:00:00+08:00',
+        sourceEvidence: [{
+          sourceRecordFingerprint: '2'.repeat(64),
+          sourceQuote: '调研工具二',
+          sourceDate: '2026-07-17',
+          sourceNote: '笔记同步助手/2026-07-17/记录.md',
+          recordedAt: '2026-07-17T10:00:00+08:00',
+        }],
       },
     ],
   };
@@ -85,5 +103,52 @@ describe('CaptureCandidatesModal rendering', () => {
     expect(modal.contentEl.querySelectorAll('.atl-candidate-row')).toHaveLength(2);
     expect(modal.contentEl.textContent).toContain('调研工具一');
     expect(modal.contentEl.textContent).toContain('调研工具二');
+  });
+
+  it('explains that unchecked candidates remain pending by default', async () => {
+    const { CaptureCandidatesModal } = await import(
+      '../../../src/obsidian-plugin/capture-candidates-modal.js'
+    );
+    const modal = new CaptureCandidatesModal(
+      {} as never,
+      preparedCapture(),
+      vi.fn(async () => undefined),
+    );
+
+    modal.open();
+
+    expect(modal.contentEl.textContent).toContain('未勾选的候选会保留，下次扫描仍会出现');
+    const ignore = modal.contentEl.querySelector<HTMLInputElement>(
+      'input[aria-label="忽略所有未选候选"]',
+    );
+    expect(ignore).not.toBeNull();
+    expect(ignore?.checked).toBe(false);
+  });
+
+  it('submits ignored IDs only after the user explicitly enables ignore', async () => {
+    const { CaptureCandidatesModal } = await import(
+      '../../../src/obsidian-plugin/capture-candidates-modal.js'
+    );
+    const onSubmit = vi.fn(async () => undefined);
+    const modal = new CaptureCandidatesModal({} as never, preparedCapture(), onSubmit);
+    modal.open();
+
+    const candidate = modal.contentEl.querySelector<HTMLInputElement>(
+      'input[aria-label="选择 调研工具二"]',
+    );
+    candidate!.checked = false;
+    candidate!.dispatchEvent(new window.Event('change', { bubbles: true }));
+    const ignore = modal.contentEl.querySelector<HTMLInputElement>(
+      'input[aria-label="忽略所有未选候选"]',
+    );
+    ignore!.click();
+    const submit = [...modal.contentEl.querySelectorAll('button')].find((button) => (
+      button.textContent === '将所选任务加入 Inbox'
+    ));
+    submit!.click();
+
+    await vi.waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledWith(['candidate-1'], ['candidate-2']);
+    });
   });
 });

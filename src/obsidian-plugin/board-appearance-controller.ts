@@ -18,11 +18,19 @@ const MANUAL_COLUMN_ORDER = JSON.stringify({
   status: ['inbox', 'ready', 'in_progress', 'done'],
 });
 const MANUAL_CARD_FIELDS = ['project_id', 'scheduled', 'due', 'priority'];
+const MANUAL_CARD_SORT = [
+  { column: 'tasknotes_manual_order', direction: 'DESC' },
+  { column: 'formula.atlPriorityRank', direction: 'ASC' },
+];
 
 function stringArrayEquals(value: unknown, expected: readonly string[]): boolean {
   return Array.isArray(value)
     && value.length === expected.length
     && value.every((item, index) => item === expected[index]);
+}
+
+function sortEquals(value: unknown): boolean {
+  return JSON.stringify(value) === JSON.stringify(MANUAL_CARD_SORT);
 }
 
 export interface BoardPresetStatus {
@@ -194,6 +202,7 @@ export class BoardAppearanceController {
         && view.columnOrder === MANUAL_COLUMN_ORDER
         && view.hideEmptyColumns === true
         && stringArrayEquals(view.order, MANUAL_CARD_FIELDS)
+        && sortEquals(view.sort)
         && view.columnWidth === 320
         && view.cardLayout === 'compact';
     } catch {
@@ -216,6 +225,7 @@ export class BoardAppearanceController {
     view.columnOrder = MANUAL_COLUMN_ORDER;
     view.hideEmptyColumns = true;
     view.order = [...MANUAL_CARD_FIELDS];
+    view.sort = MANUAL_CARD_SORT.map((item) => ({ ...item }));
     view.columnWidth = 320;
     view.cardLayout = 'compact';
     await atomicWrite(basePath, stringify(document, { lineWidth: 0 }), root);

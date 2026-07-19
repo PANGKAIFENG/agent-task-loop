@@ -65,6 +65,7 @@ describe('extractTaskCandidates', () => {
       title: '调研工具 1',
       summary: '比较工具能力与适用场景。',
       priority: 'normal',
+      topicKey: '工具-1-调研',
       sourceRecordFingerprint: source.fingerprint,
       sourceQuote: '#待办 调研工具 1',
     }] }]);
@@ -74,6 +75,7 @@ describe('extractTaskCandidates', () => {
         title: '调研工具 1',
         summary: '比较工具能力与适用场景。',
         priority: 'normal',
+        topicKey: '工具-1-调研',
         sourceRecordFingerprint: source.fingerprint,
         sourceQuote: '#待办 调研工具 1',
       }]);
@@ -83,6 +85,8 @@ describe('extractTaskCandidates', () => {
     expect(input.prompt).toContain('纯资讯');
     expect(input.prompt).toContain('已经完成');
     expect(input.prompt).toContain('不要补充项目');
+    expect(input.prompt).toContain('topicKey');
+    expect(input.prompt).toContain('同一个预期成果');
     expect(input.prompt).toContain(source.fingerprint);
     expect(input.prompt).toContain(source.content);
   });
@@ -92,6 +96,7 @@ describe('extractTaskCandidates', () => {
       title: '调研工具',
       summary: '说明',
       priority: 'medium',
+      topicKey: '工具调研',
       sourceRecordFingerprint: record(1).fingerprint,
       sourceQuote: '引用',
     }],
@@ -99,6 +104,7 @@ describe('extractTaskCandidates', () => {
       title: '调研工具',
       summary: '说明',
       priority: 'normal',
+      topicKey: '工具调研',
       sourceRecordFingerprint: 'f'.repeat(64),
       sourceQuote: '引用',
     }],
@@ -106,6 +112,7 @@ describe('extractTaskCandidates', () => {
       title: '调研工具',
       summary: '说明',
       priority: 'normal',
+      topicKey: '工具调研',
       sourceRecordFingerprint: record(1).fingerprint,
       sourceQuote: '引'.repeat(301),
     }],
@@ -129,6 +136,7 @@ describe('extractTaskCandidates', () => {
       title: '调研不存在的工具',
       summary: '模型幻觉出的候选。',
       priority: 'normal',
+      topicKey: '工具调研',
       sourceRecordFingerprint: source.fingerprint,
       sourceQuote: '#待办 调研原文中不存在的工具',
     }] }]);
@@ -145,7 +153,67 @@ describe('extractTaskCandidates', () => {
     ]);
 
     await expect(extractTaskCandidates({ records: sources, executor }))
-      .resolves.toEqual([]);
+      .resolves.toHaveLength(41);
     expect(executor.execute).toHaveBeenCalledTimes(2);
+  });
+
+  it('creates a deterministic fallback when the model omits an explicit hashtag todo', async () => {
+    const source = record(1, '评估示例工具 #待办');
+    const executor = fakeExecutor([{ candidates: [] }]);
+
+    const result = await extractTaskCandidates({ records: [source], executor });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      priority: 'normal',
+      topicKey: '评估示例工具',
+      sourceRecordFingerprint: source.fingerprint,
+      sourceQuote: '评估示例工具 #待办',
+    });
+    expect(result[0]?.title).toContain('评估示例工具');
+  });
+
+  it('removes the sync sender wrapper from a deterministic todo title', async () => {
+    const source = record(1, '「测试用户:#待办 每天汇总示例榜单」');
+    const executor = fakeExecutor([{ candidates: [] }]);
+
+    const result = await extractTaskCandidates({ records: [source], executor });
+
+    expect(result[0]?.title).toBe('每天汇总示例榜单');
+    expect(result[0]?.topicKey).toBe('每天汇总示例榜单');
+  });
+
+  it('creates a deterministic fallback for an article with a todo frontmatter tag', async () => {
+    const source = record(2, `---\ntags:\n  - 待办\n  - AI\n---\n# AI 不能担责\n\n文章正文。`);
+    const executor = fakeExecutor([{ candidates: [] }]);
+
+    const result = await extractTaskCandidates({ records: [source], executor });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.title).toContain('AI 不能担责');
+    expect(result[0]?.topicKey).toBe('AI 不能担责');
+    expect(result[0]?.sourceRecordFingerprint).toBe(source.fingerprint);
+  });
+
+  it('creates a deterministic fallback for an actionable link annotation', async () => {
+    const source = record(3, `---\ntags:\n  - 产品思考_项目地址_评估示例连接器方案\n---\n# Example connector project\n\nhttps://example.com/connector`);
+    const executor = fakeExecutor([{ candidates: [] }]);
+
+    const result = await extractTaskCandidates({ records: [source], executor });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.title).toContain('示例连接器');
+    expect(result[0]?.topicKey).toContain('示例连接器');
+    expect(result[0]?.sourceRecordFingerprint).toBe(source.fingerprint);
+  });
+
+  it('removes the todo prefix from an actionable frontmatter tag', async () => {
+    const source = record(4, `---\ntags:\n  - 待办_安装 UI 设计 skill\n---\n# UI skill`);
+    const executor = fakeExecutor([{ candidates: [] }]);
+
+    const result = await extractTaskCandidates({ records: [source], executor });
+
+    expect(result[0]?.title).toBe('安装 UI 设计 skill');
+    expect(result[0]?.topicKey).toBe('安装 UI 设计 skill');
   });
 });

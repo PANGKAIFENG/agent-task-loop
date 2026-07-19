@@ -317,6 +317,120 @@ describe('captureTask', () => {
     expect(await ctx.tasks.list()).toHaveLength(2);
   });
 
+  it('appends new ATL source evidence to exactly one strongly similar task', async () => {
+    const { ctx } = await makeContext();
+    const first = await captureTask(ctx, captureInput({
+      title: '设计 Obsidian 数据首页',
+      origin: 'obsidian_sync',
+      sourceKey: 'obsidian_sync:first-source',
+      sourceDate: '2026-07-13',
+      sourceNote: '笔记同步助手/2026-07-13/同步助手.md',
+      sourceQuote: '先做一个 Obsidian 数据首页。',
+    }));
+
+    const duplicate = await captureTask(ctx, captureInput({
+      title: '设计 Obsidian 数据首页',
+      origin: 'obsidian_sync',
+      sourceKey: 'obsidian_sync:second-source',
+      sourceDate: '2026-07-14',
+      sourceNote: '笔记同步助手/2026-07-14/同步助手.md',
+      sourceQuote: '数据首页还需要补一个每日面板。',
+    }));
+
+    expect(duplicate.taskId).toBe(first.taskId);
+    expect(await ctx.tasks.list()).toHaveLength(1);
+    const updated = await ctx.tasks.get(first.taskId);
+    expect(updated.body).toContain('## 来源补充');
+    expect(updated.body).toContain('2026-07-14');
+    expect(updated.body).toContain('笔记同步助手/2026-07-14/同步助手.md');
+    expect(updated.body).toContain('数据首页还需要补一个每日面板。');
+    await expect(ctx.audit.count({
+      event: 'task.source_evidence_added',
+      localDate: '2026-07-14',
+    })).resolves.toBe(1);
+  });
+
+  it.each(['done', 'cancelled'])('creates a new Inbox candidate for a repeated %s task title', async (status) => {
+    const { ctx } = await makeContext();
+    const historical = await captureTask(ctx, captureInput({
+      title: '设计 Obsidian 数据首页',
+      origin: 'obsidian_sync',
+      sourceKey: `obsidian_sync:historical-${status}`,
+      sourceDate: '2026-07-01',
+      sourceNote: '笔记同步助手/2026-07-01/同步助手.md',
+      sourceQuote: '完成第一版数据首页。',
+    }));
+    await ctx.tasks.save({
+      ...historical,
+      status,
+      updatedAt: '2026-07-14T00:00:00.000Z',
+    });
+
+    const repeated = await captureTask(ctx, captureInput({
+      title: '设计 Obsidian 数据首页',
+      origin: 'obsidian_sync',
+      sourceKey: `obsidian_sync:repeated-${status}`,
+      sourceDate: '2026-07-14',
+      sourceNote: '笔记同步助手/2026-07-14/同步助手.md',
+      sourceQuote: '基于新需求重新设计数据首页。',
+    }));
+
+    expect(repeated.taskId).not.toBe(historical.taskId);
+    expect(repeated.status).toBe('inbox');
+    expect(await ctx.tasks.list()).toHaveLength(2);
+  });
+
+  it('does not append the same source evidence twice on retry', async () => {
+    const { ctx } = await makeContext();
+    const first = await captureTask(ctx, captureInput({
+      title: '设计 Obsidian 数据首页',
+      origin: 'obsidian_sync',
+    }));
+    const evidence = captureInput({
+      title: '设计 Obsidian 数据首页',
+      origin: 'obsidian_sync',
+      sourceKey: 'obsidian_sync:retry-source',
+      sourceDate: '2026-07-15',
+      sourceNote: '笔记同步助手/2026-07-15/同步助手.md',
+      sourceQuote: '补充稍后读视图。',
+    });
+
+    await captureTask(ctx, evidence);
+    await captureTask(ctx, evidence);
+
+    const updated = await ctx.tasks.get(first.taskId);
+    expect(updated.body.match(/补充稍后读视图。/gu)).toHaveLength(1);
+    await expect(ctx.audit.count({
+      event: 'task.source_evidence_added',
+      localDate: '2026-07-14',
+    })).resolves.toBe(1);
+  });
+
+  it('does not merge a single soft duplicate from a different intended outcome', async () => {
+    const { ctx } = await makeContext();
+    const first = await captureTask(ctx, captureInput({
+      title: '调研产品方案 A 的用户端接入流程与上线风险评估',
+      origin: 'obsidian_sync',
+      sourceKey: 'obsidian_sync:product-a',
+      sourceDate: '2026-07-13',
+      sourceNote: '笔记同步助手/2026-07-13/同步助手.md',
+      sourceQuote: '需要分别调研产品方案 A 和产品方案 B。',
+    }));
+
+    const second = await captureTask(ctx, captureInput({
+      title: '调研产品方案 B 的用户端接入流程与上线风险评估',
+      origin: 'obsidian_sync',
+      sourceKey: 'obsidian_sync:product-b',
+      sourceDate: '2026-07-14',
+      sourceNote: '笔记同步助手/2026-07-14/同步助手.md',
+      sourceQuote: '需要分别调研产品方案 A 和产品方案 B。',
+    }));
+
+    expect(second.taskId).not.toBe(first.taskId);
+    expect(await ctx.tasks.list()).toHaveLength(2);
+    expect(second.possibleDuplicateIds).toEqual([first.taskId]);
+  });
+
   it.each([
     ['daily review first', 'explicit_wechat_todo', 'obsidian_sync'],
     ['real-time scan first', 'obsidian_sync', 'explicit_wechat_todo'],

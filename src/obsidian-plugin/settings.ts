@@ -13,6 +13,7 @@ export interface AtlPluginSettings {
 }
 
 export interface CaptureState {
+  captureStateVersion: 2;
   lastSuccessfulScanAt: string | null;
   reviewedFingerprints: string[];
   processedRecordFingerprints: string[];
@@ -41,6 +42,7 @@ export const DEFAULT_SETTINGS: AtlPluginSettings = {
   allowVaultManagement: false,
   taskCardThemeEnabled: true,
   capture: {
+    captureStateVersion: 2,
     lastSuccessfulScanAt: null,
     reviewedFingerprints: [],
     processedRecordFingerprints: [],
@@ -183,6 +185,7 @@ export function normalizeSettings(value: unknown): AtlPluginSettings {
   const rawCapture = root.capture !== null && typeof root.capture === 'object'
     ? root.capture as Record<string, unknown>
     : {};
+  const currentCaptureState = rawCapture.captureStateVersion === 2;
   const roots = Array.isArray(rawBackground.allowedLocalRoots)
     ? rawBackground.allowedLocalRoots.filter((path): path is string => (
       typeof path === 'string' && path.trim() !== ''
@@ -203,14 +206,15 @@ export function normalizeSettings(value: unknown): AtlPluginSettings {
     allowVaultManagement: root.allowVaultManagement === true,
     taskCardThemeEnabled: root.taskCardThemeEnabled !== false,
     capture: {
+      captureStateVersion: 2,
       lastSuccessfulScanAt: timestampValue(rawCapture.lastSuccessfulScanAt),
       reviewedFingerprints: compactReviewedFingerprints(
-        Array.isArray(rawCapture.reviewedFingerprints)
+        currentCaptureState && Array.isArray(rawCapture.reviewedFingerprints)
           ? rawCapture.reviewedFingerprints
           : [],
       ),
       processedRecordFingerprints: compactReviewedFingerprints(
-        Array.isArray(rawCapture.processedRecordFingerprints)
+        currentCaptureState && Array.isArray(rawCapture.processedRecordFingerprints)
           ? rawCapture.processedRecordFingerprints
           : [],
       ),
