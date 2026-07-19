@@ -65,7 +65,7 @@ afterEach(async () => {
 });
 
 describe('BoardAppearanceController', () => {
-  it('applies only the recommended card fields and preserves the original backup', async () => {
+  it('applies the manual-first four-column preset and preserves the original backup', async () => {
     const paths = await fixture();
     const controller = new BoardAppearanceController();
 
@@ -80,8 +80,10 @@ describe('BoardAppearanceController', () => {
       order: ['review_state', 'source_date'],
       columnWidth: 320,
       cardLayout: 'compact',
-      hideEmptyColumns: false,
-      groupBy: { property: 'formula.atlStatus', direction: 'ASC' },
+      hideEmptyColumns: true,
+      groupBy: { property: 'status', direction: 'ASC' },
+      pinnedColumns: 'inbox,ready,in_progress,done',
+      columnOrder: ['inbox', 'ready', 'in_progress', 'done'],
       sort: [{ property: 'formula.atlPriorityRank', direction: 'ASC' }],
     });
     expect(parsed.views[1]).toMatchObject({

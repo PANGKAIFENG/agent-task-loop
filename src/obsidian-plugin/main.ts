@@ -623,11 +623,11 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
 
     const status = this.boardStatus;
     const setting = new Setting(containerEl)
-      .setName('推荐看板布局')
+      .setName('人工任务看板布局')
       .setDesc(status === null
         ? '正在读取任务总看板…'
         : status.available
-          ? '只显示确认状态与来源日期；首次应用会保留原始备份。'
+          ? '按原始任务状态显示四列；首次应用会保留原始备份。'
           : '未找到 10_Tasks/Views/任务总看板.base');
     if (status?.available === true && !status.applied) {
       setting.addButton((button) => button

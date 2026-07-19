@@ -176,10 +176,16 @@ export class BoardAppearanceController {
     let applied = false;
     try {
       const { view } = parseBoard(content);
-      applied = Array.isArray(view.order)
-        && view.order.length === 2
-        && view.order[0] === 'review_state'
-        && view.order[1] === 'source_date'
+      applied = view.groupBy !== null
+        && typeof view.groupBy === 'object'
+        && (view.groupBy as BaseView).property === 'status'
+        && (view.groupBy as BaseView).direction === 'ASC'
+        && view.pinnedColumns === 'inbox,ready,in_progress,done'
+        && Array.isArray(view.columnOrder)
+        && JSON.stringify(view.columnOrder) === JSON.stringify([
+          'inbox', 'ready', 'in_progress', 'done',
+        ])
+        && view.hideEmptyColumns === true
         && view.columnWidth === 320
         && view.cardLayout === 'compact';
     } catch {
@@ -197,6 +203,10 @@ export class BoardAppearanceController {
     }
     const { document, view } = parseBoard(content);
     await createBackup(`${basePath}.atl-backup`, content, root);
+    view.groupBy = { property: 'status', direction: 'ASC' };
+    view.pinnedColumns = 'inbox,ready,in_progress,done';
+    view.columnOrder = ['inbox', 'ready', 'in_progress', 'done'];
+    view.hideEmptyColumns = true;
     view.order = ['review_state', 'source_date'];
     view.columnWidth = 320;
     view.cardLayout = 'compact';
