@@ -1,11 +1,32 @@
 const ATL_INBOX_PREFIX = '10_Tasks/Inbox/';
+const ATL_TASK_PREFIX = '10_Tasks/';
+const LIFECYCLE_FOLDERS = new Set(['Inbox', 'Active', 'Archive']);
 const TASK_FILENAME = /^task-[^/]+\.md$/u;
+
+function hasSafeSegments(path: string): boolean {
+  return !path.includes('\\')
+    && !path.split('/').some((segment) => (
+      segment === '' || segment === '.' || segment === '..'
+    ));
+}
+
+export function isAtlTaskPath(path: string): boolean {
+  if (!path.startsWith(ATL_TASK_PREFIX) || !hasSafeSegments(path)) {
+    return false;
+  }
+  const segments = path.slice(ATL_TASK_PREFIX.length).split('/');
+  const [lifecycle] = segments;
+  const filename = segments.at(-1) ?? '';
+  return lifecycle !== undefined
+    && LIFECYCLE_FOLDERS.has(lifecycle)
+    && segments.length >= 3
+    && TASK_FILENAME.test(filename);
+}
 
 export function isAtlInboxTaskPath(path: string): boolean {
   if (
     !path.startsWith(ATL_INBOX_PREFIX)
-    || path.includes('\\')
-    || path.split('/').some((segment) => segment === '.' || segment === '..')
+    || !hasSafeSegments(path)
   ) {
     return false;
   }
@@ -17,7 +38,7 @@ export function isAtlInboxTaskPath(path: string): boolean {
 }
 
 export function taskIdFromPath(path: string): string | null {
-  if (!isAtlInboxTaskPath(path)) {
+  if (!isAtlTaskPath(path)) {
     return null;
   }
   const filename = path.split('/').at(-1);

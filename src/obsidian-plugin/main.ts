@@ -31,6 +31,7 @@ import {
 import { extractTaskCandidates } from './candidate-extractor.js';
 import { CaptureCandidatesModal } from './capture-candidates-modal.js';
 import { CaptureController } from './capture-controller.js';
+import { formatCodexHandoff } from './codex-handoff.js';
 import { ConfirmationController } from './confirmation-controller.js';
 import { TaskConfirmationModal } from './confirmation-modal.js';
 import { QuickCaptureModal } from './quick-capture-modal.js';
@@ -45,7 +46,11 @@ import {
   type AtlPluginSettings,
 } from './settings.js';
 import { readSyncSourceRecords } from './sync-source-reader.js';
-import { isAtlInboxTaskPath, taskIdFromPath } from './task-eligibility.js';
+import {
+  isAtlInboxTaskPath,
+  isAtlTaskPath,
+  taskIdFromPath,
+} from './task-eligibility.js';
 import { runWithPersistentFeedback } from './persistent-operation-feedback.js';
 import { enrichTask } from './task-enrichment.js';
 
@@ -128,13 +133,17 @@ export default class AgentTaskLoopPlugin extends Plugin {
     this.registerEvent(this.app.workspace.on(
       'file-menu',
       (menu: Menu, file: TAbstractFile) => {
-        if (!(file instanceof TFile) || !isAtlInboxTaskPath(file.path)) {
-          return;
+        if (!(file instanceof TFile) || !isAtlTaskPath(file.path)) return;
+        if (isAtlInboxTaskPath(file.path)) {
+          menu.addItem((item) => item
+            .setTitle('移到待办')
+            .setIcon('circle-check-big')
+            .onClick(() => this.openConfirmation(file)));
         }
         menu.addItem((item) => item
-          .setTitle('移到待办')
-          .setIcon('circle-check-big')
-          .onClick(() => this.openConfirmation(file)));
+          .setTitle('复制给 Codex')
+          .setIcon('copy')
+          .onClick(() => this.copyTaskForCodex(file)));
       },
     ));
 
@@ -386,6 +395,30 @@ export default class AgentTaskLoopPlugin extends Plugin {
       ).open();
     } catch {
       new Notice('无法读取这项 Inbox 任务，请刷新看板后重试');
+    }
+  }
+
+  private async copyTaskForCodex(file: TFile): Promise<void> {
+    const taskId = taskIdFromPath(file.path);
+    const adapter = this.app.vault.adapter;
+    if (taskId === null || !(adapter instanceof FileSystemAdapter)) {
+      new Notice('Agent Task Loop 仅支持桌面版本地 Vault');
+      return;
+    }
+    const root = adapter.getBasePath();
+    try {
+      const context = createObsidianServiceContext(
+        root,
+        createVaultWriteAuthorization(root),
+      );
+      const task = await context.tasks.get(taskId);
+      await navigator.clipboard.writeText(formatCodexHandoff(
+        task,
+        join(root, file.path),
+      ));
+      new Notice('任务上下文已复制，可粘贴到 Codex');
+    } catch {
+      new Notice('复制失败，请重新打开任务后重试');
     }
   }
 }
