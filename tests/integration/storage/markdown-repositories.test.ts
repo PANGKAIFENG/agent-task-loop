@@ -279,7 +279,6 @@ describe('MarkdownTaskRepository', () => {
   });
 
   it.each([
-    ['status', 'synthetic-invalid-status'],
     ['priority', 'synthetic-invalid-priority'],
     ['review_state', 'synthetic-invalid-review-state'],
     ['task_type', 'synthetic-invalid-task-type'],
@@ -306,6 +305,37 @@ describe('MarkdownTaskRepository', () => {
     expect((error as Error).message).toContain(field);
     expect((error as Error).message).not.toContain(value);
     expect((error as Error).message).not.toContain('Synthetic private body');
+  });
+
+  it('round-trips a custom status while preserving TaskNotes calendar fields', async () => {
+    const root = await makeVault();
+    const path = join(root, fixtureRelativePath);
+    const document = parseTaskDocument(await readFile(path, 'utf8'));
+    await writeFile(path, serializeTaskDocument({
+      ...document.data,
+      status: '等待回复',
+      scheduled: '2026-07-20T14:00:00+08:00',
+      due: '2026-07-20T16:00:00+08:00',
+    }, document.body));
+    const repository = new MarkdownTaskRepository(root);
+
+    const task = await repository.get('task-20260713-deadbeef');
+    expect(task.status).toBe('等待回复');
+    await repository.save({ ...task, title: 'Custom status task' });
+
+    const activePath = join(
+      root,
+      '10_Tasks',
+      'Active',
+      'unassigned',
+      'task-20260713-deadbeef.md',
+    );
+    const persisted = parseTaskDocument(await readFile(activePath, 'utf8'));
+    expect(persisted.data).toMatchObject({
+      status: '等待回复',
+      scheduled: '2026-07-20T14:00:00+08:00',
+      due: '2026-07-20T16:00:00+08:00',
+    });
   });
 
   it('uses compatibility defaults for absent or null legacy fields', async () => {

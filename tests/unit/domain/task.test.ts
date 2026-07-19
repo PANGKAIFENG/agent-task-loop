@@ -105,6 +105,21 @@ describe('priorityRank', () => {
 });
 
 describe('taskSchema', () => {
+  it.each([
+    'waiting_external',
+    '等待回复',
+  ])('accepts a safe custom task status: %s', (status) => {
+    expect(taskSchema.safeParse(makeTask({ status })).success).toBe(true);
+  });
+
+  it.each([
+    '',
+    'bad\nstatus',
+    'x'.repeat(101),
+  ])('rejects an unsafe custom task status', (status) => {
+    expect(taskSchema.safeParse(makeTask({ status })).success).toBe(false);
+  });
+
   it('rejects unknown top-level keys', () => {
     const task = { ...makeTask(), unexpected: true };
 

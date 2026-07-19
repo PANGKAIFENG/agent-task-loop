@@ -48,6 +48,33 @@ function controllerFor(context: TestServiceContext): ConfirmationController {
 }
 
 describe('ConfirmationController', () => {
+  it('moves a task to Ready without choosing a project', async () => {
+    const context = await makeContext();
+    const task = await captureCandidate(context, 'synthetic:obsidian-lightweight');
+    const controller = controllerFor(context);
+
+    const confirmed = await controller.confirm(task.taskId, {
+      project: { mode: 'none' },
+      objective: '',
+      acceptanceCriteria: [],
+      priority: 'normal',
+      autoExecutable: false,
+    });
+
+    expect(confirmed).toMatchObject({
+      status: 'ready',
+      projectId: null,
+      objective: null,
+      acceptanceCriteria: [],
+      autoExecutable: false,
+    });
+    await expect(stat(join(
+      context.root,
+      '10_Tasks/Active/unassigned',
+      `${task.taskId}.md`,
+    ))).resolves.toMatchObject({});
+  });
+
   it('loads an Inbox task and confirms it with an existing project', async () => {
     const context = await makeContext();
     const task = await captureCandidate(context, 'synthetic:obsidian-existing');

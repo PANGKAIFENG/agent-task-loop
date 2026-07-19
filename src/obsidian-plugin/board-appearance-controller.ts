@@ -14,6 +14,16 @@ import { dirname, isAbsolute, join, relative } from 'node:path';
 import { parse, stringify } from 'yaml';
 
 export const ATL_BOARD_PATH = '10_Tasks/Views/任务总看板.base';
+const MANUAL_COLUMN_ORDER = JSON.stringify({
+  status: ['inbox', 'ready', 'in_progress', 'done'],
+});
+const MANUAL_CARD_FIELDS = ['project_id', 'scheduled', 'due', 'priority'];
+
+function stringArrayEquals(value: unknown, expected: readonly string[]): boolean {
+  return Array.isArray(value)
+    && value.length === expected.length
+    && value.every((item, index) => item === expected[index]);
+}
 
 export interface BoardPresetStatus {
   available: boolean;
@@ -176,10 +186,14 @@ export class BoardAppearanceController {
     let applied = false;
     try {
       const { view } = parseBoard(content);
-      applied = Array.isArray(view.order)
-        && view.order.length === 2
-        && view.order[0] === 'review_state'
-        && view.order[1] === 'source_date'
+      applied = view.groupBy !== null
+        && typeof view.groupBy === 'object'
+        && (view.groupBy as BaseView).property === 'status'
+        && (view.groupBy as BaseView).direction === 'ASC'
+        && view.pinnedColumns === 'inbox,ready,in_progress,done'
+        && view.columnOrder === MANUAL_COLUMN_ORDER
+        && view.hideEmptyColumns === true
+        && stringArrayEquals(view.order, MANUAL_CARD_FIELDS)
         && view.columnWidth === 320
         && view.cardLayout === 'compact';
     } catch {
@@ -197,7 +211,11 @@ export class BoardAppearanceController {
     }
     const { document, view } = parseBoard(content);
     await createBackup(`${basePath}.atl-backup`, content, root);
-    view.order = ['review_state', 'source_date'];
+    view.groupBy = { property: 'status', direction: 'ASC' };
+    view.pinnedColumns = 'inbox,ready,in_progress,done';
+    view.columnOrder = MANUAL_COLUMN_ORDER;
+    view.hideEmptyColumns = true;
+    view.order = [...MANUAL_CARD_FIELDS];
     view.columnWidth = 320;
     view.cardLayout = 'compact';
     await atomicWrite(basePath, stringify(document, { lineWidth: 0 }), root);

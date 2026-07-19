@@ -31,6 +31,7 @@ import {
 import { extractTaskCandidates } from './candidate-extractor.js';
 import { CaptureCandidatesModal } from './capture-candidates-modal.js';
 import { CaptureController } from './capture-controller.js';
+import { formatCodexHandoff } from './codex-handoff.js';
 import { ConfirmationController } from './confirmation-controller.js';
 import { TaskConfirmationModal } from './confirmation-modal.js';
 import { QuickCaptureModal } from './quick-capture-modal.js';
@@ -45,8 +46,13 @@ import {
   type AtlPluginSettings,
 } from './settings.js';
 import { readSyncSourceRecords } from './sync-source-reader.js';
-import { isAtlInboxTaskPath, taskIdFromPath } from './task-eligibility.js';
+import {
+  isAtlInboxTaskPath,
+  isAtlTaskPath,
+  taskIdFromPath,
+} from './task-eligibility.js';
 import { runWithPersistentFeedback } from './persistent-operation-feedback.js';
+import { enrichTask } from './task-enrichment.js';
 
 const CARD_THEME_CLASS = 'atl-task-card-theme';
 
@@ -127,19 +133,23 @@ export default class AgentTaskLoopPlugin extends Plugin {
     this.registerEvent(this.app.workspace.on(
       'file-menu',
       (menu: Menu, file: TAbstractFile) => {
-        if (!(file instanceof TFile) || !isAtlInboxTaskPath(file.path)) {
-          return;
+        if (!(file instanceof TFile) || !isAtlTaskPath(file.path)) return;
+        if (isAtlInboxTaskPath(file.path)) {
+          menu.addItem((item) => item
+            .setTitle('移到待办')
+            .setIcon('circle-check-big')
+            .onClick(() => this.openConfirmation(file)));
         }
         menu.addItem((item) => item
-          .setTitle('确认并移到待执行')
-          .setIcon('circle-check-big')
-          .onClick(() => this.openConfirmation(file)));
+          .setTitle('复制给 Codex')
+          .setIcon('copy')
+          .onClick(() => this.copyTaskForCodex(file)));
       },
     ));
 
     this.addCommand({
       id: 'confirm-current-inbox-task',
-      name: '确认当前任务并移到待执行',
+      name: '将当前任务移到待办',
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const eligible = file !== null && isAtlInboxTaskPath(file.path);
@@ -249,26 +259,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
     }
 
     try {
-      await this.ensureClaudeExecutable();
-      const background = this.settings.background;
-      const modelService = modelServiceConfiguration(background);
-      if (!modelService.valid) {
-        new Notice('模型配置无效，请在 ATL 设置中检查 Model 和 Base URL');
-        return;
-      }
-      const environment: NodeJS.ProcessEnv = { ...process.env };
-      delete environment.ATL_CLAUDE_BIN;
-      delete environment.ATL_CLAUDE_CONFIG_DIR;
-      delete environment.ATL_CLAUDE_MODEL;
-      environment.ATL_CLAUDE_BIN = background.claudeExecutable;
-      environment.ATL_CLAUDE_CONFIG_DIR = background.claudeConfigDirectory;
-      if (modelService.model !== undefined) {
-        environment.ATL_CLAUDE_MODEL = modelService.model;
-      }
-      if (modelService.baseUrl !== undefined) {
-        environment.ANTHROPIC_BASE_URL = modelService.baseUrl;
-      }
-      const executor = await createClaudeStructuredExecutor({ environment });
+      const executor = await this.createStructuredExecutor();
       const fileSystem = {
         exists: async (relativePath: string) => adapter.exists(relativePath),
         listMarkdownFiles: async (relativeDirectory: string) => (
@@ -354,6 +345,28 @@ export default class AgentTaskLoopPlugin extends Plugin {
     }
   }
 
+  private async createStructuredExecutor() {
+    await this.ensureClaudeExecutable();
+    const background = this.settings.background;
+    const modelService = modelServiceConfiguration(background);
+    if (!modelService.valid) {
+      throw new Error('模型配置无效，请在 ATL 设置中检查 Model 和 Base URL');
+    }
+    const environment: NodeJS.ProcessEnv = { ...process.env };
+    delete environment.ATL_CLAUDE_BIN;
+    delete environment.ATL_CLAUDE_CONFIG_DIR;
+    delete environment.ATL_CLAUDE_MODEL;
+    environment.ATL_CLAUDE_BIN = background.claudeExecutable;
+    environment.ATL_CLAUDE_CONFIG_DIR = background.claudeConfigDirectory;
+    if (modelService.model !== undefined) {
+      environment.ATL_CLAUDE_MODEL = modelService.model;
+    }
+    if (modelService.baseUrl !== undefined) {
+      environment.ANTHROPIC_BASE_URL = modelService.baseUrl;
+    }
+    return createClaudeStructuredExecutor({ environment });
+  }
+
   private async openConfirmation(file: TFile): Promise<void> {
     if (!this.settings.allowVaultManagement) {
       new Notice('请先在“设置 → Agent Task Loop”中允许 ATL 管理此 Vault');
@@ -374,9 +387,38 @@ export default class AgentTaskLoopPlugin extends Plugin {
     ));
     try {
       const prepared = await controller.prepare(taskId);
-      new TaskConfirmationModal(this.app, controller, prepared).open();
+      new TaskConfirmationModal(
+        this.app,
+        controller,
+        prepared,
+        async (input) => enrichTask(await this.createStructuredExecutor(), input),
+      ).open();
     } catch {
       new Notice('无法读取这项 Inbox 任务，请刷新看板后重试');
+    }
+  }
+
+  private async copyTaskForCodex(file: TFile): Promise<void> {
+    const taskId = taskIdFromPath(file.path);
+    const adapter = this.app.vault.adapter;
+    if (taskId === null || !(adapter instanceof FileSystemAdapter)) {
+      new Notice('Agent Task Loop 仅支持桌面版本地 Vault');
+      return;
+    }
+    const root = adapter.getBasePath();
+    try {
+      const context = createObsidianServiceContext(
+        root,
+        createVaultWriteAuthorization(root),
+      );
+      const task = await context.tasks.get(taskId);
+      await navigator.clipboard.writeText(formatCodexHandoff(
+        task,
+        join(root, file.path),
+      ));
+      new Notice('任务上下文已复制，可粘贴到 Codex');
+    } catch {
+      new Notice('复制失败，请重新打开任务后重试');
     }
   }
 }
@@ -613,7 +655,7 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
     containerEl.createEl('h2', { text: '任务看板' });
     new Setting(containerEl)
       .setName('ATL 紧凑卡片')
-      .setDesc('在 TaskNotes 看板中突出任务标题、确认状态、来源日期和优先级。')
+      .setDesc('在 TaskNotes 看板中优先显示项目、计划时间、截止时间和优先级。')
       .addToggle((toggle) => toggle
         .setValue(this.atlPlugin.settings.taskCardThemeEnabled)
         .onChange(async (value) => {
@@ -623,16 +665,16 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
 
     const status = this.boardStatus;
     const setting = new Setting(containerEl)
-      .setName('推荐看板布局')
+      .setName('人工任务看板布局')
       .setDesc(status === null
         ? '正在读取任务总看板…'
         : status.available
-          ? '只显示确认状态与来源日期；首次应用会保留原始备份。'
+          ? '按原始任务状态显示四列；首次应用会保留原始备份。'
           : '未找到 10_Tasks/Views/任务总看板.base');
     if (status?.available === true && !status.applied) {
       setting.addButton((button) => button
         .setCta()
-        .setButtonText('应用推荐布局')
+        .setButtonText('应用人工任务布局')
         .setDisabled(!this.atlPlugin.settings.allowVaultManagement)
         .onClick(() => this.applyBoardPreset()));
     }

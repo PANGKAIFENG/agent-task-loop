@@ -65,7 +65,7 @@ afterEach(async () => {
 });
 
 describe('BoardAppearanceController', () => {
-  it('applies only the recommended card fields and preserves the original backup', async () => {
+  it('applies the manual-first four-column preset and preserves the original backup', async () => {
     const paths = await fixture();
     const controller = new BoardAppearanceController();
 
@@ -77,11 +77,13 @@ describe('BoardAppearanceController', () => {
     expect(parsed.views[0]).toMatchObject({
       type: 'tasknotesKanban',
       name: '任务总看板',
-      order: ['review_state', 'source_date'],
+      order: ['project_id', 'scheduled', 'due', 'priority'],
       columnWidth: 320,
       cardLayout: 'compact',
-      hideEmptyColumns: false,
-      groupBy: { property: 'formula.atlStatus', direction: 'ASC' },
+      hideEmptyColumns: true,
+      groupBy: { property: 'status', direction: 'ASC' },
+      pinnedColumns: 'inbox,ready,in_progress,done',
+      columnOrder: '{"status":["inbox","ready","in_progress","done"]}',
       sort: [{ property: 'formula.atlPriorityRank', direction: 'ASC' }],
     });
     expect(parsed.views[1]).toMatchObject({

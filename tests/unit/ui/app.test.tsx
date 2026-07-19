@@ -227,6 +227,32 @@ describe('page data states', () => {
           updatedAt: '2026-07-14T09:00:00+08:00',
         }],
       },
+      '/api/projects/project-alpha/tasks': {
+        tasks: [{
+          taskId: 'task-custom-status',
+          title: '等待外部团队回复',
+          status: 'waiting_external',
+          reviewState: 'confirmed',
+          projectId: 'project-alpha',
+          taskType: null,
+          objective: null,
+          acceptanceCriteria: [],
+          autoExecutable: false,
+          permissionProfile: null,
+          origin: 'manual',
+          sourceDate: null,
+          sourceExcerpt: null,
+          possibleDuplicateIds: [],
+          priority: 'normal',
+          attempts: 0,
+          claim: null,
+          artifactSummaries: [],
+          reviewFeedback: null,
+          readyAt: null,
+          createdAt: '2026-07-14T08:30:00+08:00',
+          updatedAt: '2026-07-14T08:30:00+08:00',
+        }],
+      },
     });
     const user = userEvent.setup();
     render(<App />);
@@ -238,6 +264,8 @@ describe('page data states', () => {
     for (const status of ['待规划', '待办', '进行中', '审核中', '已完成', '已阻塞', '已取消']) {
       expect(screen.getByRole('heading', { name: status })).toBeTruthy();
     }
+    expect(screen.getByRole('heading', { name: 'waiting_external' })).toBeTruthy();
+    expect(screen.getByText('等待外部团队回复')).toBeTruthy();
     for (const filter of ['项目筛选', '状态筛选', '来源筛选', '优先级筛选', '自动执行筛选']) {
       expect(screen.getByLabelText(filter)).toBeTruthy();
     }

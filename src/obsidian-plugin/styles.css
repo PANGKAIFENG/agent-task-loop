@@ -119,6 +119,20 @@
   resize: vertical;
 }
 
+.atl-task-details {
+  margin: 14px 0 4px;
+}
+
+.atl-task-details > summary {
+  color: var(--text-muted);
+  cursor: pointer;
+  font-weight: var(--font-semibold);
+}
+
+.atl-task-details-body {
+  margin-top: 8px;
+}
+
 .atl-criteria-section {
   border-bottom: 1px solid var(--background-modifier-border);
   padding: 12px 0 16px;

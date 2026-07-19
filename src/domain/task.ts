@@ -12,8 +12,19 @@ export const TASK_STATUSES = [
 
 export const PRIORITIES = ['urgent', 'high', 'normal', 'low'] as const;
 
-export type TaskStatus = (typeof TASK_STATUSES)[number];
+export type ControlledTaskStatus = (typeof TASK_STATUSES)[number];
+export type TaskStatus = string;
 export type Priority = (typeof PRIORITIES)[number];
+
+export const taskStatusSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(100)
+  .refine((value) => Array.from(value).every((character) => {
+    const code = character.charCodeAt(0);
+    return code >= 32 && code !== 127;
+  }));
 
 export interface Task {
   schemaVersion: 1;
@@ -55,7 +66,7 @@ export const taskSchema: z.ZodType<Task> = z
     taskId: z.string(),
     title: z.string(),
     body: z.string(),
-    status: z.enum(TASK_STATUSES),
+    status: taskStatusSchema,
     reviewState: z.enum(['candidate', 'ready_for_confirm', 'confirmed']),
     projectId: z.string().nullable(),
     taskType: z.literal('research').nullable(),

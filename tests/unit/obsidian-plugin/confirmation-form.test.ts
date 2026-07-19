@@ -19,6 +19,25 @@ function existingProjectForm(
 }
 
 describe('validateConfirmationForm', () => {
+  it('normalizes a lightweight task without a project or execution details', () => {
+    expect(validateConfirmationForm({
+      project: { mode: 'none' },
+      objective: ' ',
+      acceptanceCriteria: [' ', '\t'],
+      priority: 'normal',
+      autoExecutable: false,
+    })).toEqual({
+      success: true,
+      value: {
+        project: { mode: 'none' },
+        objective: null,
+        acceptanceCriteria: [],
+        priority: 'normal',
+        autoExecutable: false,
+      },
+    });
+  });
+
   it('normalizes a complete existing-project form', () => {
     expect(validateConfirmationForm(existingProjectForm())).toEqual({
       success: true,
@@ -32,7 +51,7 @@ describe('validateConfirmationForm', () => {
     });
   });
 
-  it('returns field errors for missing project, objective and criteria', () => {
+  it('returns a field error for an empty existing-project selection', () => {
     expect(validateConfirmationForm(existingProjectForm({
       project: { mode: 'existing', projectId: ' ' },
       objective: ' ',
@@ -41,8 +60,6 @@ describe('validateConfirmationForm', () => {
       success: false,
       errors: {
         project: '请选择项目',
-        objective: '请填写任务目标',
-        acceptanceCriteria: '请至少填写一条验收标准',
       },
     });
   });
