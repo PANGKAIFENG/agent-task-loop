@@ -28,6 +28,13 @@ describe('normalizeSettings', () => {
         baseUrl: '',
         dailyLimit: 3,
       },
+      dashboard: {
+        tokenCacheVersion: 1,
+        updatedAt: null,
+        version: null,
+        since: null,
+        days: [],
+      },
     });
   });
 
@@ -70,7 +77,80 @@ describe('normalizeSettings', () => {
         baseUrl: '',
         dailyLimit: 3,
       },
+      dashboard: {
+        tokenCacheVersion: 1,
+        updatedAt: null,
+        version: null,
+        since: null,
+        days: [],
+      },
     });
+  });
+
+  it('keeps only valid aggregate token cache values', () => {
+    const validDay = {
+      date: '2026-07-20',
+      normalized: 120,
+      input: 100,
+      output: 20,
+      cacheRead: 40,
+      cacheWrite: 0,
+      tools: ['codex', 'codex', 'claude-code'],
+    };
+
+    expect(normalizeSettings({
+      dashboard: {
+        tokenCacheVersion: 1,
+        updatedAt: '2026-07-20T01:00:00Z',
+        version: '0.3.11',
+        since: '2026-07-01',
+        days: [
+          validDay,
+          { ...validDay, date: '2026-02-30' },
+          { ...validDay, date: '2026-07-19', normalized: -1 },
+          { ...validDay, date: '2026-07-18', tools: ['unsafe tool'] },
+        ],
+      },
+    }).dashboard).toEqual({
+      tokenCacheVersion: 1,
+      updatedAt: '2026-07-20T01:00:00.000Z',
+      version: '0.3.11',
+      since: '2026-07-01',
+      days: [{ ...validDay, tools: ['claude-code', 'codex'] }],
+    });
+  });
+
+  it('sorts, deduplicates, and retains only the latest 370 token days', () => {
+    const days = Array.from({ length: 372 }, (_, index) => {
+      const date = new Date(Date.UTC(2025, 0, 1 + index)).toISOString().slice(0, 10);
+      return {
+        date,
+        normalized: index,
+        input: index,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        tools: ['codex'],
+      };
+    });
+    days.push({ ...days[200]!, normalized: 999, input: 999 });
+
+    const normalized = normalizeSettings({
+      dashboard: {
+        tokenCacheVersion: 1,
+        updatedAt: '2026-07-20T01:00:00Z',
+        version: '0.3.11',
+        since: '2025-01-01',
+        days: days.reverse(),
+      },
+    }).dashboard.days;
+
+    expect(normalized).toHaveLength(370);
+    expect(normalized[0]?.date).toBe('2025-01-03');
+    expect(normalized.at(-1)?.date).toBe('2026-01-07');
+    expect(normalized.find((day) => day.date === days.find(
+      (day) => day.normalized === 999,
+    )?.date)?.normalized).toBe(200);
   });
 
   it('migrates a complete legacy custom endpoint without changing its provider', () => {
