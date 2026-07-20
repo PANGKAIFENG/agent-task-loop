@@ -5,6 +5,7 @@ import {
   FileSystemAdapter,
   Menu,
   Notice,
+  Platform,
   Plugin,
   PluginSettingTab,
   Setting,
@@ -35,6 +36,21 @@ import { CaptureCandidatesModal } from './capture-candidates-modal.js';
 import { CaptureController } from './capture-controller.js';
 import { formatCodexHandoff } from './codex-handoff.js';
 import { ConfirmationController } from './confirmation-controller.js';
+import { createReadOnlyDingTalkCalDavClient } from './dingtalk-caldav-client.js';
+import { DingTalkCalendarController } from './dingtalk-calendar-controller.js';
+import {
+  createDingTalkCredentialStore,
+  readLegacyDingTalkKeychainPassword,
+  type DingTalkCredentialStore,
+} from './dingtalk-credential-store.js';
+import {
+  DingTalkCalendarPluginLifecycle,
+  formatDingTalkSyncResult,
+} from './dingtalk-calendar-plugin.js';
+import {
+  DingTalkCalendarWriter,
+  type DingTalkCalendarFileSystem,
+} from './dingtalk-calendar-writer.js';
 import { TaskConfirmationModal } from './confirmation-modal.js';
 import { QuickCaptureModal } from './quick-capture-modal.js';
 import {
@@ -125,6 +141,9 @@ export default class AgentTaskLoopPlugin extends Plugin {
   private syncScanInFlight: Promise<void> | null = null;
   private taskLifecycleReconciliation: TaskLifecycleReconciliationController | null = null;
   private contributionRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private dingtalkCalendarController: DingTalkCalendarController | null = null;
+  private dingtalkCalendarLifecycle: DingTalkCalendarPluginLifecycle | null = null;
+  private dingtalkCredentialStore: DingTalkCredentialStore | null = null;
 
   override async onload(): Promise<void> {
     this.settings = normalizeSettings(await this.loadData());
@@ -224,6 +243,8 @@ export default class AgentTaskLoopPlugin extends Plugin {
         return eligible;
       },
     });
+
+    this.initializeDingTalkCalendar();
 
     this.addSettingTab(new AgentTaskLoopSettingTab(this));
   }
@@ -338,6 +359,94 @@ export default class AgentTaskLoopPlugin extends Plugin {
       homeDirectory: homedir(),
       runnerPath: paths.runnerPath,
     }));
+  }
+
+  getDingTalkCredentialStore(): DingTalkCredentialStore {
+    if (this.dingtalkCredentialStore === null) {
+      this.dingtalkCredentialStore = createDingTalkCredentialStore({
+        secretStorage: this.app.secretStorage,
+        readLegacyKeychain: readLegacyDingTalkKeychainPassword,
+      });
+    }
+    return this.dingtalkCredentialStore;
+  }
+
+  getDingTalkCalendarController(): DingTalkCalendarController {
+    if (this.dingtalkCalendarController !== null) return this.dingtalkCalendarController;
+    const adapter = this.app.vault.adapter;
+    const fileSystem: DingTalkCalendarFileSystem = {
+      exists: async (path) => adapter.exists(path),
+      ensureDirectory: async (path) => {
+        let directory = '';
+        for (const segment of path.split('/').filter((value) => value !== '')) {
+          directory = directory === '' ? segment : `${directory}/${segment}`;
+          if (!(await adapter.exists(directory))) await adapter.mkdir(directory);
+        }
+      },
+      listMarkdownFiles: async () => (
+        this.app.vault.getMarkdownFiles().map((file) => file.path)
+      ),
+      read: async (path) => adapter.read(path),
+      create: async (path, content) => {
+        await this.app.vault.create(path, content);
+      },
+      modify: async (path, content) => {
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (!(file instanceof TFile)) throw new Error('DingTalk calendar task file not found');
+        await this.app.vault.modify(file, content);
+      },
+    };
+    this.dingtalkCalendarController = new DingTalkCalendarController({
+      client: createReadOnlyDingTalkCalDavClient(),
+      writer: new DingTalkCalendarWriter({ fileSystem }),
+      credentialStore: this.getDingTalkCredentialStore(),
+      getSettings: () => this.settings.dingtalkCalendar,
+      saveSettings: async (settings) => {
+        this.settings.dingtalkCalendar = settings;
+        await this.saveSettings();
+      },
+    });
+    return this.dingtalkCalendarController;
+  }
+
+  async testDingTalkCalendarConnection(): Promise<string> {
+    const summary = await this.getDingTalkCalendarController().testConnection();
+    return summary.calendarName;
+  }
+
+  syncDingTalkCalendarNow(): Promise<void> {
+    return this.dingtalkCalendarLifecycle?.run('manual') ?? Promise.resolve();
+  }
+
+  async clearDingTalkCalendarImportHistory(): Promise<void> {
+    await this.getDingTalkCalendarController().clearImportHistory();
+  }
+
+  private initializeDingTalkCalendar(): void {
+    const lifecycle = new DingTalkCalendarPluginLifecycle({
+      isDesktop: Platform.isDesktopApp,
+      isEnabled: () => this.settings.dingtalkCalendar.enabled,
+      sync: () => this.getDingTalkCalendarController().sync(),
+      addCommand: (command) => {
+        this.addCommand(command);
+      },
+      onLayoutReady: (callback) => {
+        this.app.workspace.onLayoutReady(callback);
+      },
+      registerInterval: (callback, milliseconds) => {
+        this.registerInterval(window.setInterval(callback, milliseconds));
+      },
+      onSuccess: (result, source) => {
+        if (source === 'manual' || result.errors > 0) {
+          new Notice(formatDingTalkSyncResult(result));
+        }
+      },
+      onError: (message) => {
+        new Notice(message);
+      },
+    });
+    this.dingtalkCalendarLifecycle = lifecycle;
+    lifecycle.start();
   }
 
   private applyTaskCardTheme(): void {
@@ -628,6 +737,7 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
     containerEl.addClass('atl-settings');
     this.renderVaultAccess(containerEl);
     this.renderContributionData(containerEl);
+    this.renderDingTalkCalendar(containerEl);
     this.renderBackground(containerEl);
     this.renderBoard(containerEl);
     if (!this.refreshing && !this.statusLoaded) {
@@ -661,6 +771,107 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName('Token 数据')
       .setDesc('自动读取本机 OpenToken 的每日汇总，只保存日期和聚合数字，不保存会话内容或凭据。未检测到时，请通过原安装来源安装或更新 OpenToken。');
+  }
+
+  private renderDingTalkCalendar(containerEl: HTMLElement): void {
+    containerEl.createEl('h2', { text: '钉钉日历' });
+    containerEl.createEl('p', {
+      cls: 'setting-item-description atl-calendar-warning',
+      text: '只从钉钉读取，不会创建、修改或删除钉钉日程。',
+    });
+    const calendar = this.atlPlugin.settings.dingtalkCalendar;
+    new Setting(containerEl)
+      .setName('启用日历同步')
+      .setDesc('启动 Obsidian 时同步一次，此后每 15 分钟同步。')
+      .addToggle((toggle) => toggle
+        .setValue(calendar.enabled)
+        .onChange(async (value) => {
+          calendar.enabled = value;
+          await this.atlPlugin.saveSettings();
+        }));
+    new Setting(containerEl)
+      .setName('CalDAV 地址')
+      .setDesc('填写钉钉提供的 HTTPS CalDAV 服务地址。')
+      .addText((input) => {
+        input.inputEl.type = 'url';
+        input
+          .setPlaceholder('https://calendar.example.com/caldav')
+          .setValue(calendar.serverUrl)
+          .onChange(async (value) => {
+            calendar.serverUrl = value.trim();
+            await this.atlPlugin.saveSettings();
+          });
+      });
+    new Setting(containerEl)
+      .setName('账号')
+      .setDesc('钉钉 CalDAV 账号。')
+      .addText((input) => input
+        .setPlaceholder('name@example.com')
+        .setValue(calendar.username)
+        .onChange(async (value) => {
+          calendar.username = value.trim();
+          await this.atlPlugin.saveSettings();
+        }));
+    new Setting(containerEl)
+      .setName('密码')
+      .setDesc('保存到 Obsidian SecretStorage，不写入插件 data.json；留空不会修改。')
+      .addText((input) => {
+        input.inputEl.type = 'password';
+        input
+          .setPlaceholder('输入或更新密码')
+          .setValue('')
+          .onChange(async (value) => {
+            if (value !== '') {
+              await this.atlPlugin.getDingTalkCredentialStore().setPassword(value);
+            }
+          });
+      });
+    new Setting(containerEl)
+      .setName('同步范围')
+      .setDesc('只读取主日历，从今天到未来 90 天；钉钉改动会覆盖远端托管字段。');
+    new Setting(containerEl)
+      .setName('本地使用方式')
+      .setDesc('导入到 TaskNotes/DingTalk，使用 scheduled 展示；可在 TaskNotes 日历中拖动本地副本。');
+
+    const actions = new Setting(containerEl)
+      .setName('连接与同步')
+      .setDesc(calendar.lastResult === null
+        ? '尚未同步'
+        : formatDingTalkSyncResult(calendar.lastResult));
+    actions.addButton((button) => button
+      .setButtonText('测试连接')
+      .onClick(async () => {
+        try {
+          const name = await this.atlPlugin.testDingTalkCalendarConnection();
+          new Notice(`连接成功，已识别主日历：${name}`);
+        } catch (error) {
+          new Notice(errorMessage(error, '连接失败，请检查设置后重试'));
+        }
+      }));
+    actions.addButton((button) => button
+      .setCta()
+      .setButtonText('立即同步')
+      .setIcon('refresh-cw')
+      .onClick(() => this.atlPlugin.syncDingTalkCalendarNow()));
+
+    let clearArmed = false;
+    new Setting(containerEl)
+      .setName('清除导入记录')
+      .setDesc('只清除同步 ledger，不删除 TaskNotes/DingTalk 中已有的本地文件。')
+      .addButton((button) => button
+        .setWarning()
+        .setButtonText('清除记录')
+        .onClick(async () => {
+          if (!clearArmed) {
+            clearArmed = true;
+            button.setButtonText('再次点击确认清除');
+            new Notice('再次点击确认；已有日历文件不会被删除');
+            return;
+          }
+          await this.atlPlugin.clearDingTalkCalendarImportHistory();
+          new Notice('钉钉日历导入记录已清除，本地文件未删除');
+          this.display();
+        }));
   }
 
   private renderBackground(containerEl: HTMLElement): void {

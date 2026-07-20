@@ -8,6 +8,67 @@ import {
 } from '../../../src/obsidian-plugin/settings.js';
 
 describe('normalizeSettings', () => {
+  it('normalizes DingTalk calendar state without retaining persisted passwords', () => {
+    const settings = normalizeSettings({
+      dingtalkCalendar: {
+        stateVersion: 1,
+        enabled: true,
+        serverUrl: 'https://calendar.example.com/caldav',
+        username: 'user@example.com',
+        password: 'must-not-survive',
+        calendarId: 'another-calendar',
+        syncWindowDays: 365,
+        intervalMinutes: 1,
+        syncToken: 'token-1',
+        lastSuccessfulSyncAt: '2026-07-20T01:00:00Z',
+        lastError: 'offline',
+        events: {},
+      },
+    });
+
+    expect(settings.dingtalkCalendar).toEqual({
+      stateVersion: 1,
+      enabled: true,
+      serverUrl: 'https://calendar.example.com/caldav',
+      username: 'user@example.com',
+      calendarId: 'primary',
+      syncWindowDays: 90,
+      intervalMinutes: 15,
+      syncToken: 'token-1',
+      lastSuccessfulSyncAt: '2026-07-20T01:00:00.000Z',
+      lastResult: null,
+      lastError: 'offline',
+      events: {},
+    });
+    expect(settings.dingtalkCalendar).not.toHaveProperty('password');
+  });
+
+  it('rejects insecure remote DingTalk endpoints and malformed ledgers', () => {
+    expect(normalizeSettings({
+      dingtalkCalendar: {
+        stateVersion: 1,
+        enabled: true,
+        serverUrl: 'http://calendar.example.com/caldav',
+        username: 42,
+        syncToken: { private: 'value' },
+        events: { unsafe: { password: 'leak' } },
+      },
+    }).dingtalkCalendar).toEqual({
+      stateVersion: 1,
+      enabled: false,
+      serverUrl: '',
+      username: '',
+      calendarId: 'primary',
+      syncWindowDays: 90,
+      intervalMinutes: 15,
+      syncToken: null,
+      lastSuccessfulSyncAt: null,
+      lastResult: null,
+      lastError: null,
+      events: {},
+    });
+  });
+
   it('migrates v0.1 settings and supplies conservative background defaults', () => {
     expect(normalizeSettings({ allowVaultManagement: true })).toEqual({
       allowVaultManagement: true,
@@ -34,6 +95,20 @@ describe('normalizeSettings', () => {
         version: null,
         since: null,
         days: [],
+      },
+      dingtalkCalendar: {
+        stateVersion: 1,
+        enabled: false,
+        serverUrl: '',
+        username: '',
+        calendarId: 'primary',
+        syncWindowDays: 90,
+        intervalMinutes: 15,
+        syncToken: null,
+        lastSuccessfulSyncAt: null,
+        lastResult: null,
+        lastError: null,
+        events: {},
       },
     });
   });
@@ -83,6 +158,20 @@ describe('normalizeSettings', () => {
         version: null,
         since: null,
         days: [],
+      },
+      dingtalkCalendar: {
+        stateVersion: 1,
+        enabled: false,
+        serverUrl: '',
+        username: '',
+        calendarId: 'primary',
+        syncWindowDays: 90,
+        intervalMinutes: 15,
+        syncToken: null,
+        lastSuccessfulSyncAt: null,
+        lastResult: null,
+        lastError: null,
+        events: {},
       },
     });
   });

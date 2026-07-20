@@ -240,6 +240,13 @@
   margin: 8px 0 0;
 }
 
+.atl-calendar-warning {
+  border-left: 3px solid var(--color-green);
+  color: var(--text-normal);
+  margin: 10px 0 4px;
+  padding: 7px 10px;
+}
+
 .atl-status-badge {
   border: 1px solid var(--background-modifier-border);
   border-radius: 6px;
