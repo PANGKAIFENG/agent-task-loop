@@ -57,6 +57,11 @@ function formatTime(value: string): string {
     : '--';
 }
 
+function mondayBasedWeekday(date: string): number {
+  const weekday = new Date(`${date}T12:00:00Z`).getUTCDay();
+  return weekday === 0 ? 7 : weekday;
+}
+
 function lineChart(values: number[], label: string): SVGSVGElement {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.classList.add('atl-contribution-chart-svg');
@@ -162,7 +167,7 @@ export class WorkContributionView extends ItemView {
     identity.append(element(
       'p',
       'atl-contribution-subtitle',
-      '像看 GitHub 一样，看见每天真正完成的工作。',
+      '看见每天完成了什么，也看见时间花在了哪里。',
     ));
     const sources = element('div', 'atl-contribution-sources');
     sources.append(element(
@@ -245,7 +250,9 @@ export class WorkContributionView extends ItemView {
     const scroller = element('div', 'atl-contribution-heatmap-scroll');
     const grid = element('div', 'atl-contribution-heatmap');
     grid.setAttribute('aria-label', '每日任务完成贡献图');
-    for (const day of snapshot.days) {
+    const firstDay = snapshot.days[0];
+    const firstRow = firstDay === undefined ? 1 : mondayBasedWeekday(firstDay.date);
+    for (const [index, day] of snapshot.days.entries()) {
       const button = element('button', `atl-contribution-day atl-contribution-level-${day.level}`);
       button.type = 'button';
       button.dataset.date = day.date;
@@ -254,8 +261,8 @@ export class WorkContributionView extends ItemView {
         `${day.date}，${day.completed} 个完成任务，${day.projectCount} 个项目`,
       );
       button.title = `${day.date} · ${day.completed} 个完成任务`;
-      const weekday = new Date(`${day.date}T12:00:00Z`).getUTCDay();
-      button.style.gridRow = String(weekday === 0 ? 7 : weekday);
+      button.style.gridRow = String(mondayBasedWeekday(day.date));
+      button.style.gridColumn = String(Math.floor((firstRow - 1 + index) / 7) + 1);
       if (state.selectedDate === day.date) {
         button.classList.add('is-selected');
         button.setAttribute('aria-current', 'date');
