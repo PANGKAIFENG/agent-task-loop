@@ -1152,6 +1152,52 @@ describe('MarkdownProjectRepository', () => {
 });
 
 describe('FileAuditLog', () => {
+  it('lists audit events inside a bounded timestamp range', async () => {
+    const root = await makeVault();
+    const audit = new FileAuditLog(root, { timeZone: 'Asia/Shanghai' });
+    await audit.append({
+      event: 'task.reviewed',
+      at: '2026-07-18T23:59:59+08:00',
+      taskId: 'old',
+    });
+    await audit.append({
+      event: 'task.reviewed',
+      at: '2026-07-19T00:00:00+08:00',
+      taskId: 'first',
+    });
+    await audit.append({
+      event: 'task.lifecycle_reconciled',
+      at: '2026-07-19T10:30:00Z',
+      taskId: 'second',
+    });
+    await audit.append({
+      event: 'task.reviewed',
+      at: '2026-07-20T00:00:00+08:00',
+      taskId: 'next',
+    });
+
+    await expect(audit.listBetween({
+      fromInclusive: '2026-07-19T00:00:00+08:00',
+      toExclusive: '2026-07-20T00:00:00+08:00',
+    })).resolves.toEqual([
+      expect.objectContaining({ taskId: 'first' }),
+      expect.objectContaining({ taskId: 'second' }),
+    ]);
+  });
+
+  it.each([
+    ['invalid', '2026-07-20T00:00:00+08:00'],
+    ['2026-07-20T00:00:00+08:00', '2026-07-20T00:00:00+08:00'],
+    ['2026-07-21T00:00:00+08:00', '2026-07-20T00:00:00+08:00'],
+  ])('rejects an invalid bounded audit range', async (fromInclusive, toExclusive) => {
+    const root = await makeVault();
+
+    await expect(new FileAuditLog(root).listBetween({
+      fromInclusive,
+      toExclusive,
+    })).rejects.toMatchObject({ code: 'invalid_audit_event' });
+  });
+
   it('appends daily JSONL and supports daily counts and task history', async () => {
     const root = await makeVault();
     const audit = new FileAuditLog(root);

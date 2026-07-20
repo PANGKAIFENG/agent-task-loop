@@ -62,6 +62,10 @@ export interface AuditLog {
     localDate: string;
     mode?: 'automatic' | 'manual';
   }): Promise<number>;
+  listBetween(query: {
+    fromInclusive: string;
+    toExclusive: string;
+  }): Promise<AuditEvent[]>;
   listForTask(taskId: string): Promise<AuditEvent[]>;
   latest(query: { events: readonly string[] }): Promise<AuditEvent | null>;
 }

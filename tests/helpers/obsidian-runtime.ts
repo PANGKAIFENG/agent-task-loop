@@ -1,5 +1,30 @@
 export class App {}
 
+export class WorkspaceLeaf {
+  readonly app = new App();
+  view: unknown = null;
+
+  async setViewState(state: unknown): Promise<void> {
+    void state;
+  }
+}
+
+export class ItemView {
+  readonly app: App;
+  readonly containerEl = document.createElement('div');
+  readonly contentEl = document.createElement('div');
+
+  constructor(readonly leaf: WorkspaceLeaf) {
+    this.app = leaf.app;
+    this.containerEl.append(this.contentEl);
+    leaf.view = this;
+  }
+}
+
+export function setIcon(element: HTMLElement, icon: string): void {
+  element.dataset.icon = icon;
+}
+
 export class ButtonComponent {
   readonly buttonEl = document.createElement('button');
 

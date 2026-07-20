@@ -4,12 +4,14 @@ import type {
   BackgroundSettings,
   BackgroundState,
 } from './background-runtime-controller.js';
+import type { DailyTokenUsage } from './opentoken-adapter.js';
 
 export interface AtlPluginSettings {
   allowVaultManagement: boolean;
   taskCardThemeEnabled: boolean;
   capture: CaptureState;
   background: BackgroundSettings;
+  dashboard: DashboardTokenCache;
 }
 
 export interface CaptureState {
@@ -17,6 +19,14 @@ export interface CaptureState {
   lastSuccessfulScanAt: string | null;
   reviewedFingerprints: string[];
   processedRecordFingerprints: string[];
+}
+
+export interface DashboardTokenCache {
+  tokenCacheVersion: 1;
+  updatedAt: string | null;
+  version: string | null;
+  since: string | null;
+  days: DailyTokenUsage[];
 }
 
 export const MAX_REVIEWED_FINGERPRINTS = 10_000;
@@ -48,6 +58,13 @@ export const DEFAULT_SETTINGS: AtlPluginSettings = {
     processedRecordFingerprints: [],
   },
   background: DEFAULT_BACKGROUND_SETTINGS,
+  dashboard: {
+    tokenCacheVersion: 1,
+    updatedAt: null,
+    version: null,
+    since: null,
+    days: [],
+  },
 };
 
 function stringValue(value: unknown): string {
@@ -112,6 +129,92 @@ function timestampValue(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+}
+
+function localDateValue(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (match === null) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year
+    && date.getUTCMonth() === month - 1
+    && date.getUTCDate() === day
+    ? value
+    : null;
+}
+
+function tokenNumberValue(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isSafeInteger(value)
+    && value >= 0;
+}
+
+function normalizeTokenDay(value: unknown): DailyTokenUsage | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const day = value as Record<string, unknown>;
+  const date = localDateValue(day.date);
+  const numericKeys = [
+    'normalized',
+    'input',
+    'output',
+    'cacheRead',
+    'cacheWrite',
+  ] as const;
+  if (
+    date === null
+    || numericKeys.some((key) => !tokenNumberValue(day[key]))
+    || !Array.isArray(day.tools)
+    || day.tools.some((tool) => (
+      typeof tool !== 'string'
+      || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(tool)
+    ))
+  ) {
+    return null;
+  }
+  return {
+    date,
+    normalized: day.normalized as number,
+    input: day.input as number,
+    output: day.output as number,
+    cacheRead: day.cacheRead as number,
+    cacheWrite: day.cacheWrite as number,
+    tools: [...new Set(day.tools as string[])].sort(),
+  };
+}
+
+function normalizeDashboard(value: unknown): DashboardTokenCache {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return { ...DEFAULT_SETTINGS.dashboard, days: [] };
+  }
+  const raw = value as Record<string, unknown>;
+  if (raw.tokenCacheVersion !== 1) {
+    return { ...DEFAULT_SETTINGS.dashboard, days: [] };
+  }
+  const byDate = new Map<string, DailyTokenUsage>();
+  if (Array.isArray(raw.days)) {
+    for (const value of raw.days) {
+      const day = normalizeTokenDay(value);
+      if (day !== null) byDate.set(day.date, day);
+    }
+  }
+  const days = [...byDate.values()]
+    .sort((left, right) => left.date.localeCompare(right.date))
+    .slice(-370);
+  return {
+    tokenCacheVersion: 1,
+    updatedAt: timestampValue(raw.updatedAt),
+    version: typeof raw.version === 'string'
+      && /^[A-Za-z0-9._-]{1,64}$/.test(raw.version)
+      ? raw.version
+      : null,
+    since: localDateValue(raw.since),
+    days,
+  };
 }
 
 export interface ModelServiceConfiguration {
@@ -185,6 +288,7 @@ export function normalizeSettings(value: unknown): AtlPluginSettings {
   const rawCapture = root.capture !== null && typeof root.capture === 'object'
     ? root.capture as Record<string, unknown>
     : {};
+  const dashboard = normalizeDashboard(root.dashboard);
   const currentCaptureState = rawCapture.captureStateVersion === 2;
   const roots = Array.isArray(rawBackground.allowedLocalRoots)
     ? rawBackground.allowedLocalRoots.filter((path): path is string => (
@@ -232,6 +336,7 @@ export function normalizeSettings(value: unknown): AtlPluginSettings {
         ? Number(rawBackground.dailyLimit)
         : DEFAULT_BACKGROUND_SETTINGS.dailyLimit,
     },
+    dashboard,
   };
 }
 
