@@ -93,7 +93,7 @@ function occurrence(
   recurrenceId: string | null,
 ): DingTalkCalendarOccurrence {
   const remoteSnapshot = snapshot(event, start, end);
-  const identityPart = recurrenceId ?? remoteSnapshot.start;
+  const identityPart = recurrenceId ?? 'single';
   return {
     eventKeyHash: digest(`${calendarId}|${event.uid}|${identityPart}`),
     remoteUid: event.uid,

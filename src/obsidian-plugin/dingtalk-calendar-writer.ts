@@ -5,9 +5,16 @@ import {
 } from '../storage/frontmatter.js';
 import type { DingTalkCalendarOccurrence } from './dingtalk-calendar-parser.js';
 import { mergeDingTalkOccurrence } from './dingtalk-calendar-merge.js';
-import type { DingTalkEventLedgerEntry } from './dingtalk-calendar-types.js';
+import type {
+  DingTalkEventLedgerEntry,
+  DingTalkRemoteSnapshot,
+} from './dingtalk-calendar-types.js';
 
 const IMPORT_DIRECTORY = 'TaskNotes/DingTalk';
+
+function importFileName(eventKeyHash: string): string {
+  return `${eventKeyHash.replace(':', '-')}.md`;
+}
 
 export interface DingTalkCalendarFileSystem {
   exists(path: string): Promise<boolean>;
@@ -74,6 +81,33 @@ function hasEventIdentity(document: TaskDocument, eventKeyHash: string): boolean
   return document.data.dingtalk_event_key_hash === eventKeyHash;
 }
 
+function snapshotFromUntrackedDocument(
+  document: TaskDocument,
+  next: DingTalkRemoteSnapshot,
+): DingTalkRemoteSnapshot {
+  const scheduled = typeof document.data.scheduled === 'string'
+    ? document.data.scheduled
+    : next.start;
+  const estimate = typeof document.data.timeEstimate === 'number'
+    && Number.isFinite(document.data.timeEstimate)
+    && document.data.timeEstimate > 0
+    ? document.data.timeEstimate
+    : null;
+  const startMilliseconds = Date.parse(scheduled);
+  const state = document.data.dingtalk_state === 'cancelled' ? 'cancelled' : 'active';
+  return {
+    title: typeof document.data.title === 'string' ? document.data.title : next.title,
+    start: scheduled,
+    end: estimate !== null && Number.isFinite(startMilliseconds)
+      ? new Date(startMilliseconds + estimate * 60_000).toISOString()
+      : null,
+    allDay: /^\d{4}-\d{2}-\d{2}$/u.test(scheduled),
+    description: next.description === null ? '' : null,
+    location: next.location === null ? '' : null,
+    state,
+  };
+}
+
 export class DingTalkCalendarWriter {
   private readonly fileSystem: DingTalkCalendarFileSystem;
   private readonly clock: () => Date;
@@ -118,7 +152,7 @@ export class DingTalkCalendarWriter {
     }
 
     if (taskPath === null) {
-      const path = `${IMPORT_DIRECTORY}/${occurrence.eventKeyHash}.md`;
+      const path = `${IMPORT_DIRECTORY}/${importFileName(occurrence.eventKeyHash)}`;
       const merged = mergeDingTalkOccurrence({
         current: null,
         previousRemote: null,
@@ -143,7 +177,8 @@ export class DingTalkCalendarWriter {
     const current = parseTaskDocument(await this.fileSystem.read(taskPath));
     const merged = mergeDingTalkOccurrence({
       current,
-      previousRemote: previous?.remoteSnapshot ?? null,
+      previousRemote: previous?.remoteSnapshot
+        ?? snapshotFromUntrackedDocument(current, occurrence.snapshot),
       nextRemote: occurrence.snapshot,
       cancelledBySync: previous?.cancelledBySync ?? false,
     });

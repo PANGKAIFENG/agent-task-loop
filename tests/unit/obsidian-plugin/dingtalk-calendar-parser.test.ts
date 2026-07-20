@@ -99,6 +99,26 @@ describe('parseDingTalkCalendarObjects', () => {
     expect(after?.snapshot.title).toBe('Renamed review');
   });
 
+  it('keeps a non-recurring event identity stable when DingTalk reschedules it', async () => {
+    const data = await fixture('simple-events.ics');
+    const before = parseDingTalkCalendarObjects({
+      calendarId: 'primary',
+      objects: [{ href: '/before.ics', etag: 'etag-1', data }],
+      window,
+    }).occurrences[0];
+    const rescheduled = data
+      .replace('DTSTART;TZID=Asia/Shanghai:20260720T140000', 'DTSTART;TZID=Asia/Shanghai:20260720T160000')
+      .replace('DTEND;TZID=Asia/Shanghai:20260720T150000', 'DTEND;TZID=Asia/Shanghai:20260720T170000');
+    const after = parseDingTalkCalendarObjects({
+      calendarId: 'primary',
+      objects: [{ href: '/after.ics', etag: 'etag-2', data: rescheduled }],
+      window,
+    }).occurrences[0];
+
+    expect(after?.eventKeyHash).toBe(before?.eventKeyHash);
+    expect(after?.snapshot.start).toBe('2026-07-20T16:00:00+08:00');
+  });
+
   it('reports a malformed resource without dropping valid resources', async () => {
     const result = parseDingTalkCalendarObjects({
       calendarId: 'primary',

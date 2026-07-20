@@ -307,7 +307,7 @@ git commit -m "feat: merge DingTalk calendar changes"
 Use a synthetic adapter rooted in `mkdtemp()` and verify:
 
 ```ts
-expect(createdPath).toBe(`TaskNotes/DingTalk/${occurrence.eventKeyHash}.md`);
+expect(createdPath).toBe(`TaskNotes/DingTalk/${occurrence.eventKeyHash.replace(':', '-')}.md`);
 expect(parsed.data).toMatchObject({
   type: 'task',
   status: 'inbox',

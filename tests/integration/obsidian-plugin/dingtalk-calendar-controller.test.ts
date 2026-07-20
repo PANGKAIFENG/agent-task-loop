@@ -66,7 +66,7 @@ function entry(value: DingTalkCalendarOccurrence): DingTalkEventLedgerEntry {
     recurrenceId: value.recurrenceId,
     href: value.href,
     etag: value.etag,
-    taskPath: `TaskNotes/DingTalk/${value.eventKeyHash}.md`,
+    taskPath: `TaskNotes/DingTalk/${value.eventKeyHash.replace(':', '-')}.md`,
     remoteSnapshotHash: value.snapshotHash,
     remoteSnapshot: value.snapshot,
     lastSeenAt: '2026-07-20T01:00:00.000Z',

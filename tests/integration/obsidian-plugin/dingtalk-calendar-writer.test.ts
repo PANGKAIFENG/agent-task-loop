@@ -81,7 +81,7 @@ describe('DingTalkCalendarWriter', () => {
     const result = await writer.apply(occurrence(), undefined);
 
     expect(result.action).toBe('added');
-    expect(result.entry.taskPath).toBe(`TaskNotes/DingTalk/sha256:${'a'.repeat(64)}.md`);
+    expect(result.entry.taskPath).toBe(`TaskNotes/DingTalk/sha256-${'a'.repeat(64)}.md`);
     expect(result.entry.taskPath).not.toContain('10_Tasks');
     const document = parseTaskDocument(await readFile(
       join(root, result.entry.taskPath!),
@@ -178,6 +178,47 @@ describe('DingTalkCalendarWriter', () => {
     const repeated = await writer.apply(occurrence(), deleted.entry);
     expect(repeated.action).toBe('tombstoned');
     expect(await markdownFiles(root)).toEqual([]);
+  });
+
+  it('reassociates an existing file after ledger reset without erasing local fields', async () => {
+    const writer = new DingTalkCalendarWriter({
+      fileSystem: nodeFileSystem(),
+      clock: () => new Date('2026-07-20T03:30:00Z'),
+    });
+    const first = await writer.apply(occurrence(), undefined);
+    const path = first.entry.taskPath!;
+    const current = parseTaskDocument(await readFile(join(root, path), 'utf8'));
+    current.data.project = 'Local project';
+    current.data.priority = 'high';
+    await writeFile(
+      join(root, path),
+      (await import('../../../src/storage/frontmatter.js')).serializeTaskDocument(
+        current.data,
+        `${current.body}\nLocal preparation note.\n`,
+      ),
+      'utf8',
+    );
+
+    const reimported = await writer.apply(occurrence({
+      snapshotHash: `sha256:${'c'.repeat(64)}`,
+      snapshot: {
+        ...occurrence().snapshot,
+        title: 'Renamed remotely',
+        start: '2026-07-20T17:00:00+08:00',
+        end: '2026-07-20T18:30:00+08:00',
+      },
+    }), undefined);
+
+    expect(reimported.action).toBe('updated');
+    const document = parseTaskDocument(await readFile(join(root, path), 'utf8'));
+    expect(document.data).toMatchObject({
+      title: 'Renamed remotely',
+      scheduled: '2026-07-20T17:00:00+08:00',
+      timeEstimate: 90,
+      project: 'Local project',
+      priority: 'high',
+    });
+    expect(document.body).toContain('Local preparation note.');
   });
 
   it('does not advance the returned snapshot when a file update fails', async () => {
