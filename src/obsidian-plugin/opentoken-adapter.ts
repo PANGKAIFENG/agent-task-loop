@@ -1,6 +1,6 @@
+import { execFile } from 'node:child_process';
 import { join } from 'node:path';
 
-import { execa } from 'execa';
 import { z } from 'zod';
 
 export interface DailyTokenUsage {
@@ -214,6 +214,24 @@ export class OpenTokenAdapter {
 export function createOpenTokenAdapter(
   homeDirectory: string,
 ): OpenTokenAdapter {
+  const executeFile = (
+    executable: string,
+    args: string[],
+    options: { timeout: number; maxBuffer: number },
+  ): Promise<{ stdout: string; stderr: string }> => new Promise((resolve, reject) => {
+    execFile(executable, args, {
+      shell: false,
+      timeout: options.timeout,
+      maxBuffer: options.maxBuffer,
+      encoding: 'utf8',
+    }, (error, stdout, stderr) => {
+      if (error !== null) {
+        reject(error);
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+  });
   return new OpenTokenAdapter({
     homeDirectory,
     pathExists: async (path) => {
@@ -227,9 +245,9 @@ export function createOpenTokenAdapter(
     },
     resolveOnPath: async () => {
       try {
-        const result = await execa('/usr/bin/which', ['opentoken'], {
-          shell: false,
+        const result = await executeFile('/usr/bin/which', ['opentoken'], {
           timeout: 5_000,
+          maxBuffer: 64 * 1024,
         });
         const path = result.stdout.trim();
         return path.startsWith('/') ? path : null;
@@ -238,8 +256,7 @@ export function createOpenTokenAdapter(
       }
     },
     execute: async (executable, args, options) => {
-      const result = await execa(executable, args, options);
-      return { stdout: result.stdout, stderr: result.stderr };
+      return executeFile(executable, args, options);
     },
     now: () => new Date(),
   });

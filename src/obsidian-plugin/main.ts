@@ -9,6 +9,7 @@ import {
   PluginSettingTab,
   Setting,
   TFile,
+  WorkspaceLeaf,
   type TAbstractFile,
   type ButtonComponent,
 } from 'obsidian';
@@ -35,7 +36,18 @@ import { formatCodexHandoff } from './codex-handoff.js';
 import { ConfirmationController } from './confirmation-controller.js';
 import { TaskConfirmationModal } from './confirmation-modal.js';
 import { QuickCaptureModal } from './quick-capture-modal.js';
-import { createObsidianServiceContext } from './service-context.js';
+import {
+  createObsidianReadServiceContext,
+  createObsidianServiceContext,
+} from './service-context.js';
+import {
+  ContributionDashboardController,
+} from './contribution-dashboard-controller.js';
+import { createOpenTokenAdapter } from './opentoken-adapter.js';
+import {
+  WORK_CONTRIBUTION_VIEW_TYPE,
+  WorkContributionView,
+} from './work-contribution-view.js';
 import {
   backgroundActionState,
   DEFAULT_SETTINGS,
@@ -100,11 +112,17 @@ function errorMessage(error: unknown, fallback: string): string {
     : fallback;
 }
 
+function isContributionDataPath(path: string): boolean {
+  return isAtlTaskPath(path)
+    || /^10_Tasks\/Audit\/\d{4}-\d{2}-\d{2}\.jsonl$/u.test(path);
+}
+
 export default class AgentTaskLoopPlugin extends Plugin {
   settings: AtlPluginSettings = DEFAULT_SETTINGS;
   readonly boardAppearance = new BoardAppearanceController();
   private syncScanInFlight: Promise<void> | null = null;
   private taskLifecycleReconciliation: TaskLifecycleReconciliationController | null = null;
+  private contributionRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
   override async onload(): Promise<void> {
     this.settings = normalizeSettings(await this.loadData());
@@ -115,11 +133,19 @@ export default class AgentTaskLoopPlugin extends Plugin {
     this.register(() => document.body.classList.remove(CARD_THEME_CLASS));
     this.initializeTaskLifecycleReconciliation();
 
+    this.registerView(
+      WORK_CONTRIBUTION_VIEW_TYPE,
+      (leaf) => this.createContributionView(leaf),
+    );
+
     this.addRibbonIcon('square-pen', 'ATL：新建任务', () => {
       this.openQuickCapture();
     });
     this.addRibbonIcon('list-restart', 'ATL：从同步助手获取待办', () => {
       void this.scanSyncAssistant();
+    });
+    this.addRibbonIcon('chart-no-axes-combined', 'ATL：个人工作贡献', () => {
+      void this.activateContributionView();
     });
 
     this.addCommand({
@@ -132,6 +158,13 @@ export default class AgentTaskLoopPlugin extends Plugin {
       name: '从同步助手获取待办',
       callback: () => {
         void this.scanSyncAssistant();
+      },
+    });
+    this.addCommand({
+      id: 'open-work-contribution',
+      name: '打开个人工作贡献',
+      callback: () => {
+        void this.activateContributionView();
       },
     });
 
@@ -151,6 +184,26 @@ export default class AgentTaskLoopPlugin extends Plugin {
           .onClick(() => this.copyTaskForCodex(file)));
       },
     ));
+
+    this.registerEvent(this.app.vault.on('modify', (file) => {
+      this.scheduleContributionRefresh(file.path);
+    }));
+    this.registerEvent(this.app.vault.on('create', (file) => {
+      this.scheduleContributionRefresh(file.path);
+    }));
+    this.registerEvent(this.app.vault.on('delete', (file) => {
+      this.scheduleContributionRefresh(file.path);
+    }));
+    this.registerEvent(this.app.vault.on('rename', (file, oldPath) => {
+      this.scheduleContributionRefresh(file.path);
+      this.scheduleContributionRefresh(oldPath);
+    }));
+    this.register(() => {
+      if (this.contributionRefreshTimer !== null) {
+        clearTimeout(this.contributionRefreshTimer);
+        this.contributionRefreshTimer = null;
+      }
+    });
 
     this.registerEvent(this.app.metadataCache.on('changed', (file) => {
       if (!this.settings.allowVaultManagement || !isAtlTaskPath(file.path)) return;
@@ -176,6 +229,86 @@ export default class AgentTaskLoopPlugin extends Plugin {
   async saveSettings(): Promise<void> {
     this.applyTaskCardTheme();
     await this.saveData(this.settings);
+  }
+
+  private createContributionView(leaf: WorkspaceLeaf): WorkContributionView {
+    return new WorkContributionView(leaf, {
+      createController: () => this.createContributionController(),
+      openTask: (taskId) => this.openContributionTask(taskId),
+      openArtifact: (artifactRef) => this.openContributionArtifact(artifactRef),
+      openSettings: () => this.openPluginSettings(),
+    });
+  }
+
+  private createContributionController(): ContributionDashboardController {
+    const paths = this.localPluginPaths();
+    if (paths === null) {
+      throw new Error('Agent Task Loop 个人工作贡献仅支持桌面版本地 Vault');
+    }
+    return new ContributionDashboardController({
+      context: createObsidianReadServiceContext(paths.root, {
+        timeZone: 'Asia/Shanghai',
+      }),
+      openToken: createOpenTokenAdapter(homedir()),
+      getTokenCache: () => this.settings.dashboard,
+      saveTokenCache: async (cache) => {
+        this.settings.dashboard = cache;
+        await this.saveSettings();
+      },
+      clock: () => new Date(),
+      timeZone: 'Asia/Shanghai',
+    });
+  }
+
+  private async activateContributionView(): Promise<void> {
+    const existing = this.app.workspace.getLeavesOfType(WORK_CONTRIBUTION_VIEW_TYPE)[0];
+    const leaf = existing ?? this.app.workspace.getLeaf('tab');
+    await leaf.setViewState({ type: WORK_CONTRIBUTION_VIEW_TYPE, active: true });
+    await this.app.workspace.revealLeaf(leaf);
+  }
+
+  private scheduleContributionRefresh(path: string): void {
+    if (!isContributionDataPath(path)) return;
+    if (this.contributionRefreshTimer !== null) clearTimeout(this.contributionRefreshTimer);
+    this.contributionRefreshTimer = setTimeout(() => {
+      this.contributionRefreshTimer = null;
+      for (const leaf of this.app.workspace.getLeavesOfType(WORK_CONTRIBUTION_VIEW_TYPE)) {
+        const view = leaf.view;
+        if (view instanceof WorkContributionView) void view.refreshContribution();
+      }
+    }, 250);
+  }
+
+  private async openContributionTask(taskId: string): Promise<void> {
+    const file = this.app.vault.getMarkdownFiles().find((candidate) => (
+      taskIdFromPath(candidate.path) === taskId
+    ));
+    if (file === undefined) {
+      new Notice('找不到这项任务文件');
+      return;
+    }
+    await this.app.workspace.getLeaf(false).openFile(file);
+  }
+
+  private async openContributionArtifact(artifactRef: string): Promise<void> {
+    if (!/^Artifacts\/[^/]+\/[^/]+\.md$/u.test(artifactRef)) {
+      new Notice('Agent 产出链接无效');
+      return;
+    }
+    const file = this.app.vault.getAbstractFileByPath(`10_Tasks/${artifactRef}`);
+    if (!(file instanceof TFile)) {
+      new Notice('找不到这项 Agent 产出');
+      return;
+    }
+    await this.app.workspace.getLeaf(false).openFile(file);
+  }
+
+  private openPluginSettings(): void {
+    const setting = (this.app as typeof this.app & {
+      setting?: { open(): void; openTabById?(id: string): void };
+    }).setting;
+    setting?.open();
+    setting?.openTabById?.(this.manifest.id);
   }
 
   localPluginPaths(): LocalPluginPaths | null {
