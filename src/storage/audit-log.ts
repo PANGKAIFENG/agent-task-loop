@@ -280,6 +280,37 @@ export class FileAuditLog implements AuditLog {
       ));
   }
 
+  async listBetween(query: {
+    fromInclusive: string;
+    toExclusive: string;
+  }): Promise<AuditEvent[]> {
+    if (
+      !isRfc3339Timestamp(query.fromInclusive)
+      || !isRfc3339Timestamp(query.toExclusive)
+    ) {
+      throw new InvalidAuditEventError();
+    }
+    const from = Date.parse(query.fromInclusive);
+    const to = Date.parse(query.toExclusive);
+    if (from >= to) {
+      throw new InvalidAuditEventError();
+    }
+    const boundary = this.readBoundary();
+    const paths = await listSafeRegularFiles(boundary, '*.jsonl');
+    const events = (await Promise.all(
+      paths.map((path) => readAuditFile(path, boundary)),
+    )).flat();
+    return events
+      .map((event, index) => ({ event, index, timestamp: Date.parse(event.at) }))
+      .filter(({ timestamp }) => timestamp >= from && timestamp < to)
+      .sort((left, right) => (
+        left.timestamp - right.timestamp
+        || left.event.at.localeCompare(right.event.at)
+        || left.index - right.index
+      ))
+      .map(({ event }) => event);
+  }
+
   async latest(query: { events: readonly string[] }): Promise<AuditEvent | null> {
     const selected = new Set(query.events);
     if (selected.size === 0 || [...selected].some((event) => event === '')) {
