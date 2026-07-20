@@ -29,7 +29,6 @@ export interface DingTalkCalendarControllerDependencies {
 
 function syncWindow(now: Date, days: number): { start: Date; end: Date } {
   const start = new Date(now);
-  start.setHours(0, 0, 0, 0);
   return {
     start,
     end: new Date(start.getTime() + days * DAY_MILLISECONDS),
@@ -112,6 +111,7 @@ export class DingTalkCalendarController {
   }
 
   private async runSync(): Promise<DingTalkSyncResult> {
+    const started = this.clock();
     const settings = this.dependencies.getSettings();
     const password = await this.dependencies.credentialStore.getPassword();
     const connection = configuredConnection(settings, password);
@@ -120,9 +120,9 @@ export class DingTalkCalendarController {
       throw new Error(CONFIGURATION_ERROR);
     }
 
-    const startedAt = this.clock().toISOString();
+    const startedAt = started.toISOString();
     const result = initialResult(startedAt);
-    const window = syncWindow(this.clock(), settings.syncWindowDays);
+    const window = syncWindow(started, settings.syncWindowDays);
     let fetched;
     try {
       fetched = await this.dependencies.client.fetchPrimaryCalendar({

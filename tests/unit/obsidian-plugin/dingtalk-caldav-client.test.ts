@@ -1,3 +1,5 @@
+import { createServer } from 'node:http';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -42,6 +44,248 @@ function createFactory(options?: {
 }
 
 describe('read-only DingTalk CalDAV client', () => {
+  it('uses the desktop Node transport instead of the CORS-restricted renderer fetch', async () => {
+    const requests: Array<{ method: string; path: string; body: string }> = [];
+    const server = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk: Buffer) => chunks.push(chunk));
+      request.on('end', () => {
+        requests.push({
+          method: request.method ?? '',
+          path: request.url ?? '',
+          body: Buffer.concat(chunks).toString('utf8'),
+        });
+        if (request.url === '/dav/redirect') {
+          response.writeHead(302, { Location: '/dav/principals/' });
+          response.end();
+          return;
+        }
+        response.writeHead(207, { 'Content-Type': 'application/xml; charset=utf-8' });
+        response.end('<d:multistatus xmlns:d="DAV:" />');
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    if (address === null || typeof address === 'string') {
+      server.close();
+      throw new Error('Test DAV server did not expose a TCP port');
+    }
+
+    const rendererFetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(
+      new TypeError('Failed to fetch'),
+    );
+    vi.stubGlobal('fetch', rendererFetch);
+    const factory: DingTalkCalDavClientFactory = async (input) => {
+      const response = await input.fetch?.(
+        `http://127.0.0.1:${address.port}/dav/redirect`,
+        {
+          method: 'PROPFIND',
+          headers: { Depth: '0' },
+          body: '<d:propfind xmlns:d="DAV:" />',
+        },
+      );
+      expect(response?.status).toBe(207);
+      expect(response?.url).toBe(`http://127.0.0.1:${address.port}/dav/principals/`);
+      expect(response?.headers.get('content-type')).toContain('application/xml');
+      expect(await response?.text()).toContain('multistatus');
+      const manual = await input.fetch?.(
+        `http://127.0.0.1:${address.port}/dav/redirect`,
+        { method: 'PROPFIND', redirect: 'manual' },
+      );
+      expect(manual?.status).toBe(302);
+      expect(manual?.headers.get('location')).toBe('/dav/principals/');
+      return {
+        createAccount: async () => ({
+          accountType: 'caldav',
+          serverUrl: input.serverUrl,
+          rootUrl: input.serverUrl,
+          principalUrl: `${input.serverUrl}/principal`,
+          homeUrl: `${input.serverUrl}/home`,
+        }),
+        fetchCalendars: async () => [{
+          url: `${input.serverUrl}/primary/`,
+          displayName: '主日历',
+          components: ['VEVENT'],
+        }] as never,
+        fetchCalendarObjects: async () => [] as never,
+      };
+    };
+
+    try {
+      const client = createReadOnlyDingTalkCalDavClient({ factory });
+      await client.testConnection({
+        serverUrl: `http://127.0.0.1:${address.port}`,
+        username: 'synthetic-user',
+        password: 'synthetic-password',
+      });
+
+      expect(rendererFetch).not.toHaveBeenCalled();
+      expect(requests).toEqual([
+        {
+          method: 'PROPFIND',
+          path: '/dav/redirect',
+          body: '<d:propfind xmlns:d="DAV:" />',
+        },
+        {
+          method: 'PROPFIND',
+          path: '/dav/principals/',
+          body: '<d:propfind xmlns:d="DAV:" />',
+        },
+        {
+          method: 'PROPFIND',
+          path: '/dav/redirect',
+          body: '',
+        },
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error === undefined ? resolve() : reject(error));
+      });
+    }
+  });
+
+  it('rejects DAV requests and redirects outside the configured origin', async () => {
+    let foreignHits = 0;
+    const foreignServer = createServer((_request, response) => {
+      foreignHits += 1;
+      response.writeHead(207, { 'Content-Type': 'application/xml' });
+      response.end('<d:multistatus xmlns:d="DAV:" />');
+    });
+    await new Promise<void>((resolve, reject) => {
+      foreignServer.once('error', reject);
+      foreignServer.listen(0, '127.0.0.1', resolve);
+    });
+    const foreignAddress = foreignServer.address();
+    if (foreignAddress === null || typeof foreignAddress === 'string') {
+      foreignServer.close();
+      throw new Error('Foreign test server did not expose a TCP port');
+    }
+
+    const originServer = createServer((_request, response) => {
+      response.writeHead(302, {
+        Location: `http://127.0.0.1:${foreignAddress.port}/credentials`,
+      });
+      response.end();
+    });
+    await new Promise<void>((resolve, reject) => {
+      originServer.once('error', reject);
+      originServer.listen(0, '127.0.0.1', resolve);
+    });
+    const originAddress = originServer.address();
+    if (originAddress === null || typeof originAddress === 'string') {
+      originServer.close();
+      foreignServer.close();
+      throw new Error('Origin test server did not expose a TCP port');
+    }
+
+    const factory: DingTalkCalDavClientFactory = async (input) => {
+      await expect(input.fetch?.(
+        `http://127.0.0.1:${foreignAddress.port}/direct`,
+        { method: 'PROPFIND' },
+      )).rejects.toThrow('origin');
+      await expect(input.fetch?.(
+        `http://127.0.0.1:${originAddress.port}/redirect`,
+        { method: 'PROPFIND' },
+      )).rejects.toThrow('origin');
+      return {
+        createAccount: async () => ({
+          accountType: 'caldav',
+          serverUrl: input.serverUrl,
+          rootUrl: input.serverUrl,
+          principalUrl: `${input.serverUrl}/principal`,
+          homeUrl: `${input.serverUrl}/home`,
+        }),
+        fetchCalendars: async () => [{
+          url: `${input.serverUrl}/primary/`,
+          displayName: '主日历',
+          components: ['VEVENT'],
+        }] as never,
+        fetchCalendarObjects: async () => [] as never,
+      };
+    };
+
+    try {
+      const client = createReadOnlyDingTalkCalDavClient({ factory });
+      await client.testConnection({
+        serverUrl: `http://127.0.0.1:${originAddress.port}`,
+        username: 'synthetic-user',
+        password: 'synthetic-password',
+      });
+      expect(foreignHits).toBe(0);
+    } finally {
+      await Promise.all([
+        new Promise<void>((resolve, reject) => {
+          originServer.close((error) => error === undefined ? resolve() : reject(error));
+        }),
+        new Promise<void>((resolve, reject) => {
+          foreignServer.close((error) => error === undefined ? resolve() : reject(error));
+        }),
+      ]);
+    }
+  });
+
+  it('rejects malformed redirect locations instead of leaving the request pending', async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(302, { Location: 'http://[invalid' });
+      response.end();
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    if (address === null || typeof address === 'string') {
+      server.close();
+      throw new Error('Test DAV server did not expose a TCP port');
+    }
+
+    const factory: DingTalkCalDavClientFactory = async (input) => {
+      const request = input.fetch?.(
+        `http://127.0.0.1:${address.port}/redirect`,
+        { method: 'PROPFIND' },
+      );
+      await expect(Promise.race([
+        request,
+        new Promise((_, reject) => setTimeout(
+          () => reject(new Error('CalDAV transport remained pending')),
+          250,
+        )),
+      ])).rejects.toThrow('Invalid URL');
+      return {
+        createAccount: async () => ({
+          accountType: 'caldav',
+          serverUrl: input.serverUrl,
+          rootUrl: input.serverUrl,
+          principalUrl: `${input.serverUrl}/principal`,
+          homeUrl: `${input.serverUrl}/home`,
+        }),
+        fetchCalendars: async () => [{
+          url: `${input.serverUrl}/primary/`,
+          displayName: '主日历',
+          components: ['VEVENT'],
+        }] as never,
+        fetchCalendarObjects: async () => [] as never,
+      };
+    };
+
+    try {
+      const client = createReadOnlyDingTalkCalDavClient({ factory });
+      await client.testConnection({
+        serverUrl: `http://127.0.0.1:${address.port}`,
+        username: 'synthetic-user',
+        password: 'synthetic-password',
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error === undefined ? resolve() : reject(error));
+      });
+    }
+  });
+
   it('discovers the primary calendar and bounds the event query', async () => {
     const { calls, factory } = createFactory();
     const client = createReadOnlyDingTalkCalDavClient({ factory });
@@ -67,12 +311,18 @@ describe('read-only DingTalk CalDAV client', () => {
 
   it('uses Basic credentials and rejects any write method at the transport boundary', async () => {
     const fetchCalls: Array<{ method: string; headers: HeadersInit | undefined }> = [];
+    const transport = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(null, {
+      status: 204,
+    }));
     const factory: DingTalkCalDavClientFactory = async (input) => {
       const fetch = input.fetch;
       expect(fetch).toBeDefined();
       await expect(fetch?.('https://calendar.example.com', { method: 'PUT' })).rejects.toThrow(
         'read-only',
       );
+      await expect(fetch?.(new Request('https://calendar.example.com', {
+        method: 'PUT',
+      }))).rejects.toThrow('read-only');
       fetchCalls.push({ method: 'PROPFIND', headers: input.fetchOptions?.headers });
       return {
         createAccount: async () => ({
@@ -90,7 +340,7 @@ describe('read-only DingTalk CalDAV client', () => {
         fetchCalendarObjects: async () => [] as never,
       };
     };
-    const client = createReadOnlyDingTalkCalDavClient({ factory });
+    const client = createReadOnlyDingTalkCalDavClient({ factory, fetch: transport });
     await client.testConnection({
       serverUrl: 'https://calendar.example.com/caldav',
       username: 'user@example.com',
@@ -101,6 +351,7 @@ describe('read-only DingTalk CalDAV client', () => {
     expect(fetchCalls[0]?.headers).toMatchObject({
       Authorization: `Basic ${Buffer.from('user@example.com:synthetic-password').toString('base64')}`,
     });
+    expect(transport).not.toHaveBeenCalled();
   });
 
   it('rejects insecure remote URLs and ambiguous calendars', async () => {
