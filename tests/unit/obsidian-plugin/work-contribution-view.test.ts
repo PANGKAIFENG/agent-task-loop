@@ -26,6 +26,7 @@ function state(overrides: Partial<ContributionDashboardState> = {}): Contributio
         days: [
           { date: '2026-07-19', completed: 1, projectCount: 1, level: 1 },
           { date: '2026-07-20', completed: 2, projectCount: 1, level: 2 },
+          { date: '2026-07-21', completed: 0, projectCount: 0, level: 0 },
         ],
         projectSummaries: [{
           projectId: 'atl',
@@ -115,7 +116,7 @@ describe('WorkContributionView', () => {
       .toBe('看见每天完成了什么，也看见时间花在了哪里。');
     expect(view.contentEl.querySelectorAll('.atl-contribution-kpi')).toHaveLength(4);
     expect(view.contentEl.querySelectorAll('.atl-contribution-range')).toHaveLength(3);
-    expect(view.contentEl.querySelectorAll('.atl-contribution-day')).toHaveLength(2);
+    expect(view.contentEl.querySelectorAll('.atl-contribution-day')).toHaveLength(3);
     expect(view.contentEl.querySelectorAll('.atl-contribution-chart')).toHaveLength(2);
     expect(view.contentEl.textContent).toContain('Agent Task Loop');
     expect(view.contentEl.textContent).toContain('Build dashboard');
@@ -131,11 +132,16 @@ describe('WorkContributionView', () => {
     const monday = view.contentEl.querySelector<HTMLButtonElement>(
       '[data-date="2026-07-20"]',
     );
+    const tuesday = view.contentEl.querySelector<HTMLButtonElement>(
+      '[data-date="2026-07-21"]',
+    );
 
     expect(sunday?.style.gridRow).toBe('7');
     expect(sunday?.style.gridColumn).toBe('1');
     expect(monday?.style.gridRow).toBe('1');
     expect(monday?.style.gridColumn).toBe('2');
+    expect(tuesday?.style.gridRow).toBe('2');
+    expect(tuesday?.style.gridColumn).toBe('2');
   });
 
   it('supports range, date, refresh, task, and artifact actions', async () => {
