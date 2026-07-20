@@ -163,7 +163,11 @@ describe('OpenTokenAdapter', () => {
 
   it('maps timeout and process errors without exposing stderr', async () => {
     const privateValue = 'synthetic-private-stderr';
-    const timedOut = Object.assign(new Error(privateValue), { timedOut: true });
+    const timedOut = Object.assign(new Error(privateValue), {
+      code: null,
+      killed: true,
+      signal: 'SIGTERM',
+    });
     const failed = new Error(privateValue);
     const makeAdapter = (error: Error) => new OpenTokenAdapter({
       homeDirectory: '/Users/test',

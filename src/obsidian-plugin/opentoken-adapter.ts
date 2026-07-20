@@ -106,9 +106,18 @@ function parseVersion(stdout: string): string {
 }
 
 function mapExecutionError(error: unknown): OpenTokenAdapterError {
-  if (typeof error === 'object' && error !== null && 'timedOut' in error
-    && (error as { timedOut?: unknown }).timedOut === true) {
-    return new OpenTokenAdapterError('timeout');
+  if (typeof error === 'object' && error !== null) {
+    const processError = error as {
+      code?: unknown;
+      killed?: unknown;
+      signal?: unknown;
+      timedOut?: unknown;
+    };
+    if (processError.timedOut === true
+      || processError.code === 'ETIMEDOUT'
+      || (processError.killed === true && processError.signal === 'SIGTERM')) {
+      return new OpenTokenAdapterError('timeout');
+    }
   }
   return new OpenTokenAdapterError('process_failed');
 }

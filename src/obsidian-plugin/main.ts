@@ -20,6 +20,7 @@ import { createClaudeStructuredExecutor } from '../runner/claude-driver.js';
 import { captureTask } from '../services/capture-task.js';
 import type { ServiceContext } from '../services/service-context.js';
 import { createVaultWriteAuthorization } from '../storage/task-paths.js';
+import { parseArtifactReference } from '../storage/artifact-reference.js';
 import {
   BackgroundRuntimeController,
   createBackgroundRuntimeDependencies,
@@ -58,6 +59,7 @@ import {
   type AtlPluginSettings,
 } from './settings.js';
 import { readSyncSourceRecords } from './sync-source-reader.js';
+import { resolveSystemTimeZone } from './system-time-zone.js';
 import {
   TaskLifecycleReconciliationController,
 } from './task-lifecycle-reconciliation-controller.js';
@@ -235,7 +237,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
     return new WorkContributionView(leaf, {
       createController: () => this.createContributionController(),
       openTask: (taskId) => this.openContributionTask(taskId),
-      openArtifact: (artifactRef) => this.openContributionArtifact(artifactRef),
+      openArtifact: (artifactRef, taskId) => this.openContributionArtifact(artifactRef, taskId),
       openSettings: () => this.openPluginSettings(),
     });
   }
@@ -245,9 +247,10 @@ export default class AgentTaskLoopPlugin extends Plugin {
     if (paths === null) {
       throw new Error('Agent Task Loop 个人工作贡献仅支持桌面版本地 Vault');
     }
+    const timeZone = resolveSystemTimeZone();
     return new ContributionDashboardController({
       context: createObsidianReadServiceContext(paths.root, {
-        timeZone: 'Asia/Shanghai',
+        timeZone,
       }),
       openToken: createOpenTokenAdapter(homedir()),
       getTokenCache: () => this.settings.dashboard,
@@ -256,7 +259,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
         await this.saveSettings();
       },
       clock: () => new Date(),
-      timeZone: 'Asia/Shanghai',
+      timeZone,
     });
   }
 
@@ -290,8 +293,8 @@ export default class AgentTaskLoopPlugin extends Plugin {
     await this.app.workspace.getLeaf(false).openFile(file);
   }
 
-  private async openContributionArtifact(artifactRef: string): Promise<void> {
-    if (!/^Artifacts\/[^/]+\/[^/]+\.md$/u.test(artifactRef)) {
+  private async openContributionArtifact(artifactRef: string, taskId: string): Promise<void> {
+    if (parseArtifactReference(artifactRef, taskId) === null) {
       new Notice('Agent 产出链接无效');
       return;
     }
@@ -624,6 +627,7 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
     containerEl.empty();
     containerEl.addClass('atl-settings');
     this.renderVaultAccess(containerEl);
+    this.renderContributionData(containerEl);
     this.renderBackground(containerEl);
     this.renderBoard(containerEl);
     if (!this.refreshing && !this.statusLoaded) {
@@ -647,6 +651,16 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
       cls: 'setting-item-description atl-settings-note',
       text: 'ATL 只管理 10_Tasks 下的任务数据与自己的后台配置，不会修改其他 Obsidian 笔记。',
     });
+  }
+
+  private renderContributionData(containerEl: HTMLElement): void {
+    containerEl.createEl('h2', { text: '个人工作贡献' });
+    new Setting(containerEl)
+      .setName('任务贡献数据')
+      .setDesc('来自 ATL 可审计的任务完成记录；不依赖 OpenToken，也不会修改任务。');
+    new Setting(containerEl)
+      .setName('Token 数据')
+      .setDesc('自动读取本机 OpenToken 的每日汇总，只保存日期和聚合数字，不保存会话内容或凭据。未检测到时，请通过原安装来源安装或更新 OpenToken。');
   }
 
   private renderBackground(containerEl: HTMLElement): void {

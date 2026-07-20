@@ -86,10 +86,15 @@ function cache(): DashboardTokenCache {
 function deferred<T>(): {
   promise: Promise<T>;
   resolve: (value: T) => void;
+  reject: (reason?: unknown) => void;
 } {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => { resolve = done; });
-  return { promise, resolve };
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
 }
 
 describe('ContributionDashboardController', () => {
@@ -115,6 +120,27 @@ describe('ContributionDashboardController', () => {
     await controller.waitForTokenRefresh();
     expect(controller.getState().token.status).toBe('ready');
     expect(saveTokenCache).toHaveBeenCalledOnce();
+  });
+
+  it('loads the full audit history for streak and coverage calculations', async () => {
+    const listBetween = vi.fn(async () => []);
+    const controller = new ContributionDashboardController({
+      context: context({
+        audit: { listBetween } as unknown as ServiceContext['audit'],
+      }),
+      openToken: { preview: async () => snapshot() },
+      getTokenCache: cache,
+      saveTokenCache: async () => undefined,
+      clock: () => NOW,
+      timeZone: 'Asia/Shanghai',
+    });
+
+    await controller.initialize();
+
+    expect(listBetween).toHaveBeenCalledWith({
+      fromInclusive: '1970-01-01T00:00:00.000Z',
+      toExclusive: '2026-07-22T02:00:00.000Z',
+    });
   });
 
   it('keeps task contribution available when OpenToken is missing', async () => {
@@ -153,6 +179,26 @@ describe('ContributionDashboardController', () => {
       status: 'stale',
       errorCode: 'process_failed',
       snapshot: { version: '0.3.11' },
+    });
+  });
+
+  it('keeps a fresh token snapshot when cache persistence fails', async () => {
+    const fresh = snapshot();
+    const controller = new ContributionDashboardController({
+      context: context(),
+      openToken: { preview: async () => fresh },
+      getTokenCache: () => ({ ...cache(), days: [] }),
+      saveTokenCache: async () => { throw new Error('disk full'); },
+      clock: () => NOW,
+      timeZone: 'Asia/Shanghai',
+    });
+
+    await controller.initialize();
+    await controller.waitForTokenRefresh();
+
+    expect(controller.getState().token).toMatchObject({
+      status: 'ready',
+      snapshot: fresh,
     });
   });
 
@@ -218,6 +264,57 @@ describe('ContributionDashboardController', () => {
     await controller.waitForTokenRefresh();
     expect(preview).toHaveBeenCalledOnce();
     expect(preview).toHaveBeenCalledWith('2025-07-21');
+  });
+
+  it('queues a wider token scan selected while the initial scan is running', async () => {
+    const initialRefresh = deferred<ReturnType<typeof snapshot>>();
+    const preview = vi.fn()
+      .mockImplementationOnce(async () => initialRefresh.promise)
+      .mockResolvedValueOnce(snapshot('2025-07-21'));
+    const controller = new ContributionDashboardController({
+      context: context(),
+      openToken: { preview },
+      getTokenCache: () => ({ ...cache(), days: [] }),
+      saveTokenCache: async () => { throw new Error('disk full'); },
+      clock: () => NOW,
+      timeZone: 'Asia/Shanghai',
+    });
+
+    await controller.initialize();
+    await controller.setRange('1y');
+    initialRefresh.resolve(snapshot('2026-04-28'));
+    await controller.waitForTokenRefresh();
+
+    expect(preview).toHaveBeenCalledTimes(2);
+    expect(preview).toHaveBeenLastCalledWith('2025-07-21');
+    expect(controller.getState().token.snapshot?.since).toBe('2025-07-21');
+  });
+
+  it('retries a queued wider scan after the initial token scan fails', async () => {
+    const initialRefresh = deferred<ReturnType<typeof snapshot>>();
+    const preview = vi.fn()
+      .mockImplementationOnce(async () => initialRefresh.promise)
+      .mockResolvedValueOnce(snapshot('2025-07-21'));
+    const controller = new ContributionDashboardController({
+      context: context(),
+      openToken: { preview },
+      getTokenCache: () => ({ ...cache(), days: [] }),
+      saveTokenCache: async () => undefined,
+      clock: () => NOW,
+      timeZone: 'Asia/Shanghai',
+    });
+
+    await controller.initialize();
+    await controller.setRange('1y');
+    initialRefresh.reject(new OpenTokenAdapterError('timeout'));
+    await controller.waitForTokenRefresh();
+
+    expect(preview).toHaveBeenCalledTimes(2);
+    expect(preview).toHaveBeenLastCalledWith('2025-07-21');
+    expect(controller.getState().token).toMatchObject({
+      status: 'ready',
+      snapshot: { since: '2025-07-21' },
+    });
   });
 });
 

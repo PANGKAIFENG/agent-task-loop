@@ -134,6 +134,7 @@ describe('WorkContributionView', () => {
       '[data-date="2026-07-19"]',
     );
     expect(day?.getAttribute('aria-label')).toContain('1 个完成任务');
+    expect(day?.style.gridRow).toBe('7');
     fireEvent.click(day!);
     expect(controller.setSelectedDate).toHaveBeenCalledWith('2026-07-19');
 
@@ -149,7 +150,10 @@ describe('WorkContributionView', () => {
     fireEvent.click(view.contentEl.querySelector<HTMLButtonElement>(
       '[data-artifact-ref]',
     )!);
-    expect(openArtifact).toHaveBeenCalledWith('Artifacts/task-a/attempt-001.md');
+    expect(openArtifact).toHaveBeenCalledWith(
+      'Artifacts/task-a/attempt-001.md',
+      'task-a',
+    );
   });
 
   it('keeps contribution visible when OpenToken is missing', async () => {
@@ -162,6 +166,17 @@ describe('WorkContributionView', () => {
     expect(view.contentEl.textContent).toContain('今日完成');
     expect(view.contentEl.textContent).toContain('未检测到 OpenToken');
     expect(view.contentEl.textContent).toContain('Build dashboard');
+  });
+
+  it('shows a clear source error when ATL contribution data cannot be read', async () => {
+    const failed = state({
+      contribution: { status: 'error', snapshot: null, errorCode: 'query_failed' },
+    });
+    const { view } = setup(failed);
+    await view.onOpen();
+
+    expect(view.contentEl.textContent).toContain('ATL 任务读取失败');
+    expect(view.contentEl.textContent).not.toContain('ATL 任务读取中');
   });
 
   it('shows OpenToken recovery when the selected day has no outputs', async () => {

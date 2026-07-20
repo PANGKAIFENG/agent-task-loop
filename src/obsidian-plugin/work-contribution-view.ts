@@ -11,7 +11,7 @@ export const WORK_CONTRIBUTION_VIEW_TYPE = 'atl-work-contribution';
 export interface WorkContributionViewDependencies {
   createController: () => ContributionDashboardController;
   openTask: (taskId: string) => Promise<void> | void;
-  openArtifact: (artifactRef: string) => Promise<void> | void;
+  openArtifact: (artifactRef: string, taskId: string) => Promise<void> | void;
   openSettings: () => Promise<void> | void;
 }
 
@@ -90,6 +90,16 @@ function tokenStatusText(state: ContributionDashboardState): string {
   }
 }
 
+function contributionStatusText(state: ContributionDashboardState): string {
+  switch (state.contribution.status) {
+    case 'ready': return 'ATL 任务已读取';
+    case 'error': return state.contribution.snapshot === null
+      ? 'ATL 任务读取失败'
+      : 'ATL 任务数据可能已过期';
+    case 'loading': return 'ATL 任务读取中';
+  }
+}
+
 export class WorkContributionView extends ItemView {
   private readonly dependencies: WorkContributionViewDependencies;
   private controller: ContributionDashboardController | null = null;
@@ -158,7 +168,7 @@ export class WorkContributionView extends ItemView {
     sources.append(element(
       'span',
       `atl-contribution-source atl-contribution-source-${state.contribution.status}`,
-      state.contribution.status === 'ready' ? 'ATL 任务已读取' : 'ATL 任务读取中',
+      contributionStatusText(state),
     ));
     sources.append(element(
       'span',
@@ -223,7 +233,13 @@ export class WorkContributionView extends ItemView {
     const area = section('工作贡献', 'atl-contribution-heatmap-section');
     const snapshot = state.contribution.snapshot;
     if (snapshot === null) {
-      area.body.append(element('p', 'atl-contribution-empty', '正在读取完成记录…'));
+      area.body.append(element(
+        'p',
+        'atl-contribution-empty',
+        state.contribution.status === 'error'
+          ? '暂时无法读取完成记录，请稍后刷新。'
+          : '正在读取完成记录…',
+      ));
       return area.root;
     }
     const scroller = element('div', 'atl-contribution-heatmap-scroll');
@@ -238,6 +254,8 @@ export class WorkContributionView extends ItemView {
         `${day.date}，${day.completed} 个完成任务，${day.projectCount} 个项目`,
       );
       button.title = `${day.date} · ${day.completed} 个完成任务`;
+      const weekday = new Date(`${day.date}T12:00:00Z`).getUTCDay();
+      button.style.gridRow = String(weekday === 0 ? 7 : weekday);
       if (state.selectedDate === day.date) {
         button.classList.add('is-selected');
         button.setAttribute('aria-current', 'date');
@@ -356,7 +374,7 @@ export class WorkContributionView extends ItemView {
         artifact.title = '打开 Agent 产出';
         setIcon(artifact, 'file-check-2');
         artifact.addEventListener('click', () => {
-          void this.dependencies.openArtifact(output.artifactRef!);
+          void this.dependencies.openArtifact(output.artifactRef!, output.taskId);
         });
         row.append(artifact);
       }

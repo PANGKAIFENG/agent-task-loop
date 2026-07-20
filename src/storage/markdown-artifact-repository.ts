@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import YAML from 'yaml';
 
 import { artifactResultSchema } from '../domain/artifact.js';
+import { parseArtifactReference } from './artifact-reference.js';
 import type { ArtifactRepository } from './contracts.js';
 import {
   atomicCreateTextFile,
@@ -174,26 +175,6 @@ function renderArtifact(
   ].join('\n');
 }
 
-function artifactRefParts(ref: string): {
-  taskId: string;
-  filename: string;
-  attempt: number;
-} | null {
-  const match = /^Artifacts\/([^/]+)\/(attempt-(\d{3,})\.md)$/.exec(ref);
-  const attempt = Number(match?.[3]);
-  if (
-    match === null
-    || match[1] === undefined
-    || match[2] === undefined
-    || !isSafePathSegment(match[1])
-    || !Number.isSafeInteger(attempt)
-    || attempt <= 0
-  ) {
-    return null;
-  }
-  return { taskId: match[1], filename: match[2], attempt };
-}
-
 export class MarkdownArtifactRepository implements ArtifactRepository {
   readonly root: string;
   readonly tasksRoot: string;
@@ -268,7 +249,7 @@ export class MarkdownArtifactRepository implements ArtifactRepository {
   }
 
   async readSummary(ref: string): ReturnType<ArtifactRepository['readSummary']> {
-    const parts = artifactRefParts(ref);
+    const parts = parseArtifactReference(ref);
     if (parts === null) {
       throw new InvalidArtifactReferenceError();
     }

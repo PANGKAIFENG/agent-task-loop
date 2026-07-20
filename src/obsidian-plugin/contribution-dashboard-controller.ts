@@ -99,6 +99,7 @@ export class ContributionDashboardController {
   private state: ContributionDashboardState;
   private disposed = false;
   private tokenRefresh: Promise<void> | null = null;
+  private pendingTokenSince: string | null = null;
   private allRefresh: Promise<void> | null = null;
 
   constructor(dependencies: ContributionDashboardDependencies) {
@@ -172,7 +173,9 @@ export class ContributionDashboardController {
   }
 
   async waitForTokenRefresh(): Promise<void> {
-    await (this.tokenRefresh ?? Promise.resolve());
+    while (this.tokenRefresh !== null) {
+      await this.tokenRefresh;
+    }
   }
 
   dispose(): void {
@@ -183,7 +186,7 @@ export class ContributionDashboardController {
   private async loadContribution(): Promise<void> {
     const now = this.dependencies.clock();
     try {
-      const from = new Date(now.getTime() - 370 * 86_400_000).toISOString();
+      const from = new Date(0).toISOString();
       const to = new Date(now.getTime() + 2 * 86_400_000).toISOString();
       const [tasks, projects, auditEvents] = await Promise.all([
         this.dependencies.context.tasks.list(),
@@ -221,11 +224,24 @@ export class ContributionDashboardController {
 
   private startTokenRefresh(since: string): Promise<void> {
     if (this.disposed) return Promise.resolve();
-    if (this.tokenRefresh !== null) return this.tokenRefresh;
+    if (this.tokenRefresh !== null) {
+      if (this.pendingTokenSince === null || since < this.pendingTokenSince) {
+        this.pendingTokenSince = since;
+      }
+      return this.tokenRefresh;
+    }
     this.patch({ refreshing: true });
     const operation = this.loadToken(since).finally(() => {
       if (this.tokenRefresh === operation) this.tokenRefresh = null;
-      if (!this.disposed) this.patch({ refreshing: false });
+      const pendingSince = this.pendingTokenSince;
+      this.pendingTokenSince = null;
+      if (!this.disposed) {
+        this.patch({ refreshing: false });
+        if (pendingSince !== null && this.state.token.errorCode !== 'missing'
+          && !this.tokenCovers(pendingSince)) {
+          void this.startTokenRefresh(pendingSince);
+        }
+      }
     });
     this.tokenRefresh = operation;
     return operation;
@@ -235,7 +251,11 @@ export class ContributionDashboardController {
     try {
       const snapshot = await this.dependencies.openToken.preview(since);
       if (this.disposed) return;
-      await this.dependencies.saveTokenCache(cacheFromSnapshot(snapshot));
+      try {
+        await this.dependencies.saveTokenCache(cacheFromSnapshot(snapshot));
+      } catch {
+        // Cache persistence must not invalidate a successful read-only snapshot.
+      }
       if (this.disposed) return;
       this.patch({
         token: { status: 'ready', snapshot, errorCode: null },
