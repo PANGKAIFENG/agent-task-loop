@@ -19,13 +19,31 @@ export function createObsidianServiceContext(
   writeAuthorization: VaultWriteAuthorization,
   options: ObsidianServiceContextOptions = {},
 ): ServiceContext {
+  return createContext(root, writeAuthorization, options);
+}
+
+export function createObsidianReadServiceContext(
+  root: string,
+  options: ObsidianServiceContextOptions = {},
+): ServiceContext {
+  return createContext(root, undefined, options);
+}
+
+function createContext(
+  root: string,
+  writeAuthorization: VaultWriteAuthorization | undefined,
+  options: ObsidianServiceContextOptions,
+): ServiceContext {
   const clock = options.clock ?? (() => new Date());
+  const repositoryOptions = writeAuthorization === undefined
+    ? {}
+    : { writeAuthorization };
   return {
-    tasks: new MarkdownTaskRepository(root, { writeAuthorization }),
-    artifacts: new MarkdownArtifactRepository(root, { writeAuthorization }),
-    projects: new MarkdownProjectRepository(root, { writeAuthorization }),
+    tasks: new MarkdownTaskRepository(root, repositoryOptions),
+    artifacts: new MarkdownArtifactRepository(root, repositoryOptions),
+    projects: new MarkdownProjectRepository(root, repositoryOptions),
     audit: new FileAuditLog(root, {
-      writeAuthorization,
+      ...repositoryOptions,
       ...(options.timeZone === undefined ? {} : { timeZone: options.timeZone }),
     }),
     clock,
