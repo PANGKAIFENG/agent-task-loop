@@ -1,4 +1,6 @@
 import { Buffer } from 'node:buffer';
+import { request as httpRequest, type IncomingHttpHeaders } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
 
 import {
@@ -57,6 +59,8 @@ const READ_ONLY_METHODS = new Set([
   'PROPFIND',
   'REPORT',
 ]);
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+const MAX_REDIRECTS = 10;
 
 function loopbackHostname(hostname: string): boolean {
   return hostname === 'localhost'
@@ -94,14 +98,139 @@ function normalizedConnection(input: DingTalkCalDavConnection): DingTalkCalDavCo
   };
 }
 
-function readOnlyFetch(fetchImplementation: typeof globalThis.fetch): typeof globalThis.fetch {
+function assertAllowedOrigin(url: URL, allowedOrigin: string): void {
+  if (url.origin !== allowedOrigin) {
+    throw new Error('DingTalk CalDAV transport rejected cross-origin request');
+  }
+}
+
+function readOnlyFetch(
+  fetchImplementation: typeof globalThis.fetch,
+  allowedOrigin: string,
+): typeof globalThis.fetch {
   return async (input, init) => {
-    const method = (init?.method ?? 'GET').toUpperCase();
+    const request = new Request(input, init);
+    const method = request.method.toUpperCase();
     if (!READ_ONLY_METHODS.has(method)) {
       throw new Error(`DingTalk CalDAV transport is read-only; rejected ${method}`);
     }
-    return fetchImplementation(input, init);
+    assertAllowedOrigin(new URL(request.url), allowedOrigin);
+    return fetchImplementation(request);
   };
+}
+
+function toResponseHeaders(headers: IncomingHttpHeaders): Headers {
+  const result = new Headers();
+  for (const [name, value] of Object.entries(headers)) {
+    if (Array.isArray(value)) {
+      for (const item of value) result.append(name, item);
+    } else if (value !== undefined) {
+      result.append(name, String(value));
+    }
+  }
+  return result;
+}
+
+function redirectedMethod(status: number, method: string): string {
+  if (status === 303 && method !== 'HEAD') return 'GET';
+  if ((status === 301 || status === 302) && method === 'POST') return 'GET';
+  return method;
+}
+
+async function sendNodeDavRequest(
+  request: Request,
+  allowedOrigin: string,
+  redirectCount: number,
+): Promise<Response> {
+  const url = new URL(request.url);
+  assertAllowedOrigin(url, allowedOrigin);
+  const body = request.body === null
+    ? undefined
+    : Buffer.from(await request.arrayBuffer());
+  const headers = Object.fromEntries(request.headers.entries());
+  if (body !== undefined && !request.headers.has('content-length')) {
+    headers['content-length'] = String(body.byteLength);
+  }
+
+  return new Promise<Response>((resolve, reject) => {
+    const send = url.protocol === 'https:' ? httpsRequest : httpRequest;
+    const outgoing = send(url, {
+      method: request.method,
+      headers,
+      signal: request.signal,
+    }, (incoming) => {
+      const chunks: Buffer[] = [];
+      incoming.on('data', (chunk: Buffer | string) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      });
+      incoming.once('error', reject);
+      incoming.once('end', () => {
+        try {
+          const status = incoming.statusCode ?? 500;
+          const responseHeaders = toResponseHeaders(incoming.headers);
+          const location = responseHeaders.get('location');
+          if (REDIRECT_STATUSES.has(status) && location !== null) {
+            if (request.redirect === 'error') {
+              reject(new TypeError('DingTalk CalDAV transport rejected redirect'));
+              return;
+            }
+            if (request.redirect === 'follow') {
+              if (redirectCount >= MAX_REDIRECTS) {
+                reject(new TypeError('DingTalk CalDAV transport exceeded redirect limit'));
+                return;
+              }
+              const redirectUrl = new URL(location, request.url);
+              assertAllowedOrigin(redirectUrl, allowedOrigin);
+              const method = redirectedMethod(status, request.method);
+              const redirectHeaders = new Headers(request.headers);
+              const dropsBody = method === 'GET' || method === 'HEAD';
+              if (dropsBody) {
+                redirectHeaders.delete('content-length');
+                redirectHeaders.delete('content-type');
+              }
+              const redirectInit: RequestInit = {
+                method,
+                headers: redirectHeaders,
+                redirect: request.redirect,
+                signal: request.signal,
+              };
+              if (!dropsBody && body !== undefined) redirectInit.body = body;
+              resolve(sendNodeDavRequest(
+                new Request(redirectUrl, redirectInit),
+                allowedOrigin,
+                redirectCount + 1,
+              ));
+              return;
+            }
+          }
+          const hasNoBody = request.method === 'HEAD'
+            || status === 204
+            || status === 205
+            || status === 304;
+          const response = new Response(hasNoBody ? null : Buffer.concat(chunks), {
+            status,
+            statusText: incoming.statusMessage ?? '',
+            headers: responseHeaders,
+          });
+          Object.defineProperty(response, 'url', { value: request.url });
+          Object.defineProperty(response, 'redirected', { value: redirectCount > 0 });
+          resolve(response);
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    outgoing.once('error', reject);
+    outgoing.end(body);
+  });
+}
+
+function createNodeDavFetch(allowedOrigin: string): typeof globalThis.fetch {
+  return async (input, init) => sendNodeDavRequest(
+    new Request(input, init),
+    allowedOrigin,
+    0,
+  );
 }
 
 function displayName(calendar: DAVCalendar): string {
@@ -157,7 +286,6 @@ export function createReadOnlyDingTalkCalDavClient(dependencies: {
   fetch?: typeof globalThis.fetch;
 } = {}): ReadOnlyDingTalkCalDavClient {
   const factory = dependencies.factory ?? createDAVClient;
-  const fetchImplementation = dependencies.fetch ?? globalThis.fetch;
 
   async function connect(input: DingTalkCalDavConnection): Promise<{
     client: Awaited<ReturnType<DingTalkCalDavClientFactory>>;
@@ -167,6 +295,8 @@ export function createReadOnlyDingTalkCalDavClient(dependencies: {
     connection: DingTalkCalDavConnection;
   }> {
     const connection = normalizedConnection(input);
+    const allowedOrigin = new URL(connection.serverUrl).origin;
+    const fetchImplementation = dependencies.fetch ?? createNodeDavFetch(allowedOrigin);
     const authorization = `Basic ${Buffer.from(
       `${connection.username}:${connection.password}`,
       'utf8',
@@ -179,7 +309,7 @@ export function createReadOnlyDingTalkCalDavClient(dependencies: {
       },
       authMethod: 'Basic',
       defaultAccountType: 'caldav',
-      fetch: readOnlyFetch(fetchImplementation),
+      fetch: readOnlyFetch(fetchImplementation, allowedOrigin),
       fetchOptions: {
         headers: { Authorization: authorization },
       },

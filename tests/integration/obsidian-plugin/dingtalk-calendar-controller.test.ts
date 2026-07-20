@@ -93,6 +93,8 @@ function dependencies(options: {
   apply?: (value: DingTalkCalendarOccurrence, previous?: DingTalkEventLedgerEntry) => Promise<DingTalkCalendarWriteResult>;
   fetch?: () => Promise<DingTalkFetchedCalendar>;
   password?: string | null;
+  getPassword?: () => Promise<string | null>;
+  clock?: () => Date;
 } = {}) {
   let current = options.initial ?? settings();
   const saveSettings = vi.fn(async (next: DingTalkCalendarSettings) => {
@@ -117,11 +119,14 @@ function dependencies(options: {
   const controller = new DingTalkCalendarController({
     client,
     writer,
-    credentialStore: { getPassword: async () => options.password ?? 'synthetic-password' },
+    credentialStore: {
+      getPassword: options.getPassword
+        ?? (async () => options.password ?? 'synthetic-password'),
+    },
     getSettings: () => current,
     saveSettings,
     parse,
-    clock: () => new Date('2026-07-20T04:00:00.000Z'),
+    clock: options.clock ?? (() => new Date('2026-07-20T04:00:00.000Z')),
   });
   return { controller, client, apply, parse, saveSettings, current: () => current };
 }
@@ -138,6 +143,8 @@ describe('DingTalkCalendarController', () => {
       password: 'synthetic-password',
     }));
     const query = vi.mocked(context.client.fetchPrimaryCalendar).mock.calls[0]?.[0];
+    expect(query!.windowStart.toISOString()).toBe('2026-07-20T04:00:00.000Z');
+    expect(query!.windowEnd.toISOString()).toBe('2026-10-18T04:00:00.000Z');
     expect((query!.windowEnd.getTime() - query!.windowStart.getTime()) / 86_400_000).toBe(90);
     expect(context.current().events[occurrence().eventKeyHash]).toBeDefined();
     expect(context.current()).toMatchObject({
@@ -160,6 +167,22 @@ describe('DingTalkCalendarController', () => {
     release(fetched());
     await first;
     expect(context.client.fetchPrimaryCalendar).toHaveBeenCalledTimes(1);
+  });
+
+  it('anchors the query window before credential lookup can delay the sync', async () => {
+    let now = new Date('2026-07-20T04:00:00.000Z');
+    const context = dependencies({
+      clock: () => now,
+      getPassword: async () => {
+        now = new Date('2026-07-20T04:00:05.000Z');
+        return 'synthetic-password';
+      },
+    });
+
+    await context.controller.sync();
+
+    const query = vi.mocked(context.client.fetchPrimaryCalendar).mock.calls[0]?.[0];
+    expect(query?.windowStart.toISOString()).toBe('2026-07-20T04:00:00.000Z');
   });
 
   it('keeps failed snapshots retryable while saving successful occurrences', async () => {
