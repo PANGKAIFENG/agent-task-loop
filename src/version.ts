@@ -1,1 +1,1 @@
-export const ATL_VERSION = '0.5.1';
+export const ATL_VERSION = '0.5.2';

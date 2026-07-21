@@ -828,7 +828,7 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
       });
     new Setting(containerEl)
       .setName('同步范围')
-      .setDesc('只读取主日历，从同步时刻到未来 90 天；钉钉改动会覆盖远端托管字段。');
+      .setDesc('只读取主日历，回看最近 7 天并覆盖未来 90 天；个别历史日期失败不会阻断其他日期。');
     new Setting(containerEl)
       .setName('本地使用方式')
       .setDesc('导入到 TaskNotes/DingTalk，使用 scheduled 展示；可在 TaskNotes 日历中拖动本地副本。');

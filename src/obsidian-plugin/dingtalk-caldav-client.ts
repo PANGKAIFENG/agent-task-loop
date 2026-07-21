@@ -44,6 +44,7 @@ export interface DingTalkFetchedCalendar {
     etag: string | null;
     data: string;
   }>;
+  readErrors: number;
   syncToken: string | null;
 }
 
@@ -61,6 +62,8 @@ const READ_ONLY_METHODS = new Set([
 ]);
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const MAX_REDIRECTS = 10;
+const DAY_MILLISECONDS = 86_400_000;
+const MAX_DINGTALK_RANGE_DAYS = 90;
 
 function loopbackHostname(hostname: string): boolean {
   return hostname === 'localhost'
@@ -333,28 +336,50 @@ export function createReadOnlyDingTalkCalDavClient(dependencies: {
     client: Awaited<ReturnType<DingTalkCalDavClientFactory>>,
     primary: DAVCalendar,
     input: DingTalkCalendarQuery,
-  ): Promise<DAVCalendarObject[]> {
-    const query = {
-      calendar: primary,
-      timeRange: {
-        start: input.windowStart.toISOString(),
-        end: input.windowEnd.toISOString(),
-      },
-      expand: false,
-      // DingTalk may expose event resources without an .ics suffix.
-      urlFilter: () => true,
-    };
-    const ranged = await client.fetchCalendarObjects(query);
-    if (ranged.length > 0) return ranged;
+  ): Promise<{ objects: DAVCalendarObject[]; readErrors: number }> {
+    const ranged: DAVCalendarObject[] = [];
+    let rangeStart = input.windowStart.getTime();
+    const rangeLimit = MAX_DINGTALK_RANGE_DAYS * DAY_MILLISECONDS;
+    const futureRangeStart = Math.max(rangeStart, input.windowEnd.getTime() - rangeLimit);
+    let readErrors = 0;
+    while (rangeStart < input.windowEnd.getTime()) {
+      const rangeEnd = rangeStart < futureRangeStart
+        ? Math.min(rangeStart + DAY_MILLISECONDS, futureRangeStart)
+        : Math.min(rangeStart + rangeLimit, input.windowEnd.getTime());
+      try {
+        ranged.push(...await client.fetchCalendarObjects({
+          calendar: primary,
+          timeRange: {
+            start: new Date(rangeStart).toISOString(),
+            end: new Date(rangeEnd).toISOString(),
+          },
+          expand: false,
+          // DingTalk may expose event resources without an .ics suffix.
+          urlFilter: () => true,
+        }));
+      } catch {
+        readErrors += 1;
+      }
+      rangeStart = rangeEnd;
+    }
+    if (ranged.length > 0) {
+      return {
+        objects: [...new Map(ranged.map((object) => [object.url, object])).values()],
+        readErrors,
+      };
+    }
 
     // Some DingTalk CalDAV deployments accept the REPORT but ignore its
     // VEVENT time-range filter. Fetch the collection once and let the local
     // parser apply the same bounded window before writing anything.
-    return client.fetchCalendarObjects({
-      calendar: primary,
-      expand: false,
-      urlFilter: () => true,
-    });
+    return {
+      objects: await client.fetchCalendarObjects({
+        calendar: primary,
+        expand: false,
+        urlFilter: () => true,
+      }),
+      readErrors: 0,
+    };
   }
 
   return {
@@ -377,14 +402,15 @@ export function createReadOnlyDingTalkCalDavClient(dependencies: {
         throw new Error('钉钉日历同步时间范围无效');
       }
       const { client, primary } = await connect(input);
-      const objects = await fetchObjectsWithCompatibility(client, primary, input);
+      const fetched = await fetchObjectsWithCompatibility(client, primary, input);
       return {
         calendar: {
           id: 'primary',
           displayName: displayName(primary) || '主日历',
           url: primary.url,
         },
-        objects: normalizeObjects(objects),
+        objects: normalizeObjects(fetched.objects),
+        readErrors: fetched.readErrors,
         syncToken: typeof primary.syncToken === 'string' ? primary.syncToken : null,
       };
     },

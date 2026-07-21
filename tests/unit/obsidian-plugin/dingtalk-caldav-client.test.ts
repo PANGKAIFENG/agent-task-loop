@@ -352,6 +352,138 @@ describe('read-only DingTalk CalDAV client', () => {
     expect(typeof calls[1]?.urlFilter).toBe('function');
   });
 
+  it('falls back to a collection read when DingTalk rejects the time-range query', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const factory: DingTalkCalDavClientFactory = async (input) => ({
+      createAccount: async () => ({
+        accountType: 'caldav',
+        serverUrl: input.serverUrl,
+        rootUrl: input.serverUrl,
+        principalUrl: `${input.serverUrl}/principal`,
+        homeUrl: `${input.serverUrl}/home`,
+      }),
+      fetchCalendars: async () => [{
+        url: `${input.serverUrl}/primary/`,
+        displayName: '主日历',
+        components: ['VEVENT'],
+      }] as never,
+      fetchCalendarObjects: async (query) => {
+        calls.push(query as Record<string, unknown>);
+        if ('timeRange' in (query as Record<string, unknown>)) {
+          throw new Error('synthetic time-range rejection');
+        }
+        return [{
+          url: `${input.serverUrl}/primary/event-without-ics-suffix`,
+          etag: 'etag-1',
+          data: 'BEGIN:VCALENDAR\nEND:VCALENDAR',
+        }] as never;
+      },
+    });
+    const client = createReadOnlyDingTalkCalDavClient({ factory });
+
+    const result = await client.fetchPrimaryCalendar({
+      serverUrl: 'https://calendar.example.com/caldav',
+      username: 'user@example.com',
+      password: 'synthetic-password',
+      windowStart: new Date('2026-07-13T00:00:00Z'),
+      windowEnd: new Date('2026-10-19T00:00:00Z'),
+    });
+
+    expect(result.objects).toHaveLength(1);
+    expect(result.readErrors).toBe(0);
+    expect(calls).toHaveLength(10);
+    expect(calls.slice(0, -1).every((call) => 'timeRange' in call)).toBe(true);
+    expect(calls.at(-1)).not.toHaveProperty('timeRange');
+  });
+
+  it('splits a long sync window into bounded DingTalk time-range queries', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const factory: DingTalkCalDavClientFactory = async (input) => ({
+      createAccount: async () => ({
+        accountType: 'caldav',
+        serverUrl: input.serverUrl,
+        rootUrl: input.serverUrl,
+        principalUrl: `${input.serverUrl}/principal`,
+        homeUrl: `${input.serverUrl}/home`,
+      }),
+      fetchCalendars: async () => [{
+        url: `${input.serverUrl}/primary/`,
+        displayName: '主日历',
+        components: ['VEVENT'],
+      }] as never,
+      fetchCalendarObjects: async (query) => {
+        calls.push(query as Record<string, unknown>);
+        return [{
+          url: `${input.serverUrl}/primary/event-${calls.length}`,
+          etag: `etag-${calls.length}`,
+          data: 'BEGIN:VCALENDAR\nEND:VCALENDAR',
+        }] as never;
+      },
+    });
+    const client = createReadOnlyDingTalkCalDavClient({ factory });
+
+    const result = await client.fetchPrimaryCalendar({
+      serverUrl: 'https://calendar.example.com/caldav',
+      username: 'user@example.com',
+      password: 'synthetic-password',
+      windowStart: new Date('2026-07-14T00:00:00Z'),
+      windowEnd: new Date('2026-10-20T00:00:00Z'),
+    });
+
+    expect(result.objects).toHaveLength(9);
+    expect(result.readErrors).toBe(0);
+    expect(calls).toHaveLength(9);
+    expect(calls[0]).toHaveProperty('timeRange', {
+      start: '2026-07-14T00:00:00.000Z',
+      end: '2026-07-15T00:00:00.000Z',
+    });
+    expect(calls[8]).toHaveProperty('timeRange', {
+      start: '2026-07-22T00:00:00.000Z',
+      end: '2026-10-20T00:00:00.000Z',
+    });
+  });
+
+  it('returns successful ranges while counting failed historical ranges', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const factory: DingTalkCalDavClientFactory = async (input) => ({
+      createAccount: async () => ({
+        accountType: 'caldav',
+        serverUrl: input.serverUrl,
+        rootUrl: input.serverUrl,
+        principalUrl: `${input.serverUrl}/principal`,
+        homeUrl: `${input.serverUrl}/home`,
+      }),
+      fetchCalendars: async () => [{
+        url: `${input.serverUrl}/primary/`,
+        displayName: '主日历',
+        components: ['VEVENT'],
+      }] as never,
+      fetchCalendarObjects: async (query) => {
+        calls.push(query as Record<string, unknown>);
+        if (calls.length === 1) throw new Error('synthetic historical failure');
+        return [{
+          url: `${input.serverUrl}/primary/event-${calls.length}`,
+          etag: `etag-${calls.length}`,
+          data: 'BEGIN:VCALENDAR\nEND:VCALENDAR',
+        }] as never;
+      },
+    });
+    const client = createReadOnlyDingTalkCalDavClient({ factory });
+
+    const result = await client.fetchPrimaryCalendar({
+      serverUrl: 'https://calendar.example.com/caldav',
+      username: 'user@example.com',
+      password: 'synthetic-password',
+      windowStart: new Date('2026-07-14T00:00:00Z'),
+      windowEnd: new Date('2026-10-14T00:00:00Z'),
+    });
+
+    expect(result.objects).toHaveLength(2);
+    expect(result.readErrors).toBe(1);
+    expect(calls).toHaveLength(3);
+    expect(calls.every((call) => 'timeRange' in call)).toBe(true);
+  });
+
   it('uses Basic credentials and rejects any write method at the transport boundary', async () => {
     const fetchCalls: Array<{ method: string; headers: HeadersInit | undefined }> = [];
     const transport = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(null, {
