@@ -14,6 +14,7 @@ import type {
 import type { DingTalkCalendarWriter } from './dingtalk-calendar-writer.js';
 
 const DAY_MILLISECONDS = 86_400_000;
+const SYNC_LOOKBACK_DAYS = 7;
 const CONFIGURATION_ERROR = '请先补全钉钉日历连接设置';
 const CONNECTION_ERROR = '钉钉日历连接失败，请检查连接设置后重试';
 
@@ -29,9 +30,11 @@ export interface DingTalkCalendarControllerDependencies {
 
 function syncWindow(now: Date, days: number): { start: Date; end: Date } {
   const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - SYNC_LOOKBACK_DAYS);
   return {
     start,
-    end: new Date(start.getTime() + days * DAY_MILLISECONDS),
+    end: new Date(now.getTime() + days * DAY_MILLISECONDS),
   };
 }
 
@@ -153,7 +156,7 @@ export class DingTalkCalendarController {
     }
 
     const events = { ...settings.events };
-    result.errors += parsed.issues.length;
+    result.errors += fetched.readErrors + parsed.issues.length;
     for (const occurrence of parsed.occurrences) {
       const previous = settings.events[occurrence.eventKeyHash];
       try {
@@ -183,7 +186,7 @@ export class DingTalkCalendarController {
       lastResult: result,
       lastError: complete
         ? null
-        : `同步完成，但有 ${result.errors} 个日程未能处理，将在下次重试`,
+        : `同步完成，但有 ${result.errors} 项读取或处理失败，将在下次重试`,
     });
     return result;
   }
