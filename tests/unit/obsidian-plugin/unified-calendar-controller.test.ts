@@ -73,8 +73,11 @@ describe('UnifiedCalendarController', () => {
       expect.objectContaining({ type: 'tasknotesCalendar', name: '统一日历' }),
       expect.objectContaining({ type: 'tasknotesTaskList', name: '待排期任务' }),
     ]));
-    expect(JSON.stringify(parsed.views.find((view) => view.name === '待排期任务')))
-      .toContain('date(scheduled).isEmpty()');
+    const unscheduledView = JSON.stringify(
+      parsed.views.find((view) => view.name === '待排期任务'),
+    );
+    expect(unscheduledView).toContain('(scheduled == false) || (scheduled == null)');
+    expect(unscheduledView).not.toContain('date(scheduled)');
   });
 
   it('is idempotent and never overwrites an existing user Base', async () => {
