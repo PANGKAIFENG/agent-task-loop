@@ -5,9 +5,10 @@ import {
   extractTaskCandidates,
 } from '../../../src/obsidian-plugin/candidate-extractor.js';
 import type { SyncSourceRecord } from '../../../src/obsidian-plugin/sync-source-reader.js';
-import type {
-  ClaudeStructuredExecutor,
-  ClaudeStructuredInput,
+import {
+  ClaudeDriverError,
+  type ClaudeStructuredExecutor,
+  type ClaudeStructuredInput,
 } from '../../../src/runner/claude-driver.js';
 
 function record(index: number, content = `#待办 调研工具 ${index}`): SyncSourceRecord {
@@ -116,11 +117,32 @@ describe('extractTaskCandidates', () => {
       sourceRecordFingerprint: record(1).fingerprint,
       sourceQuote: '引'.repeat(301),
     }],
-  ])('rejects %s in model output', async (_label, candidate) => {
+  ])('skips %s in model output', async (_label, candidate) => {
     const executor = fakeExecutor([{ candidates: [candidate] }]);
 
-    await expect(extractTaskCandidates({ records: [record(1)], executor }))
-      .rejects.toThrow();
+    await expect(extractTaskCandidates({
+      records: [record(1, '普通记录，没有明确待办标记。')],
+      executor,
+    })).resolves.toEqual([]);
+  });
+
+  it('uses the explicit todo fallback when a candidate has an unknown fingerprint', async () => {
+    const source = record(1, '#待办 调研真实存在的工具');
+    const executor = fakeExecutor([{ candidates: [{
+      title: '调研真实存在的工具',
+      summary: '模型引用了不存在的来源记录。',
+      priority: 'normal',
+      topicKey: '工具调研',
+      sourceRecordFingerprint: 'f'.repeat(64),
+      sourceQuote: source.content,
+    }] }]);
+
+    await expect(extractTaskCandidates({ records: [source], executor }))
+      .resolves.toEqual([expect.objectContaining({
+        title: '调研真实存在的工具',
+        sourceRecordFingerprint: source.fingerprint,
+        sourceQuote: source.content,
+      })]);
   });
 
   it('propagates non-JSON structured-executor failures without partial output', async () => {
@@ -128,9 +150,44 @@ describe('extractTaskCandidates', () => {
 
     await expect(extractTaskCandidates({ records: [record(1)], executor }))
       .rejects.toThrow('Claude returned invalid JSON');
+    expect(executor.execute).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects a source quote that is not present in the referenced record', async () => {
+  it('retries one transient Claude timeout before returning candidates', async () => {
+    const source = record(1);
+    const executor = fakeExecutor([
+      new ClaudeDriverError('claude_timeout'),
+      { candidates: [{
+        title: '调研工具 1',
+        summary: '比较工具能力与适用场景。',
+        priority: 'normal',
+        topicKey: '工具-1-调研',
+        sourceRecordFingerprint: source.fingerprint,
+        sourceQuote: source.content,
+      }] },
+    ]);
+
+    await expect(extractTaskCandidates({ records: [source], executor }))
+      .resolves.toHaveLength(1);
+    expect(executor.execute).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips a candidate whose source quote is not present in the referenced record', async () => {
+    const source = record(1, '后续评估真实存在的工具');
+    const executor = fakeExecutor([{ candidates: [{
+      title: '调研不存在的工具',
+      summary: '模型幻觉出的候选。',
+      priority: 'normal',
+      topicKey: '工具调研',
+      sourceRecordFingerprint: source.fingerprint,
+      sourceQuote: '后续评估原文中不存在的工具',
+    }] }]);
+
+    await expect(extractTaskCandidates({ records: [source], executor }))
+      .resolves.toEqual([]);
+  });
+
+  it('uses the explicit todo fallback when a candidate source quote is invalid', async () => {
     const source = record(1, '#待办 调研真实存在的工具');
     const executor = fakeExecutor([{ candidates: [{
       title: '调研不存在的工具',
@@ -142,7 +199,11 @@ describe('extractTaskCandidates', () => {
     }] }]);
 
     await expect(extractTaskCandidates({ records: [source], executor }))
-      .rejects.toThrow('source quote');
+      .resolves.toEqual([expect.objectContaining({
+        title: '调研真实存在的工具',
+        sourceRecordFingerprint: source.fingerprint,
+        sourceQuote: '#待办 调研真实存在的工具',
+      })]);
   });
 
   it('processes every bounded batch and combines the results', async () => {
