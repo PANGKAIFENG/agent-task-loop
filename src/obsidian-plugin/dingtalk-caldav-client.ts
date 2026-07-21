@@ -329,6 +329,34 @@ export function createReadOnlyDingTalkCalDavClient(dependencies: {
     };
   }
 
+  async function fetchObjectsWithCompatibility(
+    client: Awaited<ReturnType<DingTalkCalDavClientFactory>>,
+    primary: DAVCalendar,
+    input: DingTalkCalendarQuery,
+  ): Promise<DAVCalendarObject[]> {
+    const query = {
+      calendar: primary,
+      timeRange: {
+        start: input.windowStart.toISOString(),
+        end: input.windowEnd.toISOString(),
+      },
+      expand: false,
+      // DingTalk may expose event resources without an .ics suffix.
+      urlFilter: () => true,
+    };
+    const ranged = await client.fetchCalendarObjects(query);
+    if (ranged.length > 0) return ranged;
+
+    // Some DingTalk CalDAV deployments accept the REPORT but ignore its
+    // VEVENT time-range filter. Fetch the collection once and let the local
+    // parser apply the same bounded window before writing anything.
+    return client.fetchCalendarObjects({
+      calendar: primary,
+      expand: false,
+      urlFilter: () => true,
+    });
+  }
+
   return {
     async testConnection(input) {
       const { calendars, primary, connection } = await connect(input);
@@ -349,14 +377,7 @@ export function createReadOnlyDingTalkCalDavClient(dependencies: {
         throw new Error('钉钉日历同步时间范围无效');
       }
       const { client, primary } = await connect(input);
-      const objects = await client.fetchCalendarObjects({
-        calendar: primary,
-        timeRange: {
-          start: input.windowStart.toISOString(),
-          end: input.windowEnd.toISOString(),
-        },
-        expand: false,
-      });
+      const objects = await fetchObjectsWithCompatibility(client, primary, input);
       return {
         calendar: {
           id: 'primary',
