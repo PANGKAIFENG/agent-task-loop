@@ -309,6 +309,49 @@ describe('read-only DingTalk CalDAV client', () => {
     });
   });
 
+  it('falls back to a collection read when DingTalk ignores the time-range filter', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const factory: DingTalkCalDavClientFactory = async (input) => ({
+      createAccount: async () => ({
+        accountType: 'caldav',
+        serverUrl: input.serverUrl,
+        rootUrl: input.serverUrl,
+        principalUrl: `${input.serverUrl}/principal`,
+        homeUrl: `${input.serverUrl}/home`,
+      }),
+      fetchCalendars: async () => [{
+        url: `${input.serverUrl}/primary/`,
+        displayName: '主日历',
+        components: ['VEVENT'],
+      }] as never,
+      fetchCalendarObjects: async (query) => {
+        calls.push(query as Record<string, unknown>);
+        if ('timeRange' in (query as Record<string, unknown>)) return [] as never;
+        return [{
+          url: `${input.serverUrl}/primary/event-without-ics-suffix`,
+          etag: 'etag-1',
+          data: 'BEGIN:VCALENDAR\nEND:VCALENDAR',
+        }] as never;
+      },
+    });
+    const client = createReadOnlyDingTalkCalDavClient({ factory });
+    const result = await client.fetchPrimaryCalendar({
+      serverUrl: 'https://calendar.example.com/caldav',
+      username: 'user@example.com',
+      password: 'synthetic-password',
+      windowStart: new Date('2026-07-20T00:00:00Z'),
+      windowEnd: new Date('2026-10-18T00:00:00Z'),
+    });
+
+    expect(result.objects).toHaveLength(1);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toMatchObject({ expand: false });
+    expect(calls[0]).toHaveProperty('timeRange');
+    expect(calls[1]).not.toHaveProperty('timeRange');
+    expect(typeof calls[0]?.urlFilter).toBe('function');
+    expect(typeof calls[1]?.urlFilter).toBe('function');
+  });
+
   it('uses Basic credentials and rejects any write method at the transport boundary', async () => {
     const fetchCalls: Array<{ method: string; headers: HeadersInit | undefined }> = [];
     const transport = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(null, {
