@@ -1,5 +1,5 @@
 import { homedir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, join, relative, sep } from 'node:path';
 
 import {
   FileSystemAdapter,
@@ -84,6 +84,11 @@ import {
   isAtlTaskPath,
   taskIdFromPath,
 } from './task-eligibility.js';
+import {
+  ATL_UNIFIED_CALENDAR_PATH,
+  UnifiedCalendarController,
+} from './unified-calendar-controller.js';
+import { UnifiedCalendarPluginLifecycle } from './unified-calendar-plugin.js';
 import { runWithPersistentFeedback } from './persistent-operation-feedback.js';
 import { enrichTask } from './task-enrichment.js';
 
@@ -139,6 +144,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
   settings: AtlPluginSettings = DEFAULT_SETTINGS;
   readonly boardAppearance = new BoardAppearanceController();
   private syncScanInFlight: Promise<void> | null = null;
+  private unifiedCalendarOpenInFlight: Promise<void> | null = null;
   private taskLifecycleReconciliation: TaskLifecycleReconciliationController | null = null;
   private contributionRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private dingtalkCalendarController: DingTalkCalendarController | null = null;
@@ -165,6 +171,15 @@ export default class AgentTaskLoopPlugin extends Plugin {
     this.addRibbonIcon('list-restart', 'ATL：从同步助手获取待办', () => {
       void this.scanSyncAssistant();
     });
+    new UnifiedCalendarPluginLifecycle({
+      addRibbonIcon: (icon, title, callback) => {
+        this.addRibbonIcon(icon, title, callback);
+      },
+      addCommand: (command) => {
+        this.addCommand(command);
+      },
+      open: () => this.openUnifiedCalendar(),
+    }).start();
     this.addRibbonIcon('chart-no-axes-combined', 'ATL：个人工作贡献', () => {
       void this.activateContributionView();
     });
@@ -416,6 +431,48 @@ export default class AgentTaskLoopPlugin extends Plugin {
 
   syncDingTalkCalendarNow(): Promise<void> {
     return this.dingtalkCalendarLifecycle?.run('manual') ?? Promise.resolve();
+  }
+
+  openUnifiedCalendar(): Promise<void> {
+    if (this.unifiedCalendarOpenInFlight !== null) {
+      return this.unifiedCalendarOpenInFlight;
+    }
+    const opening = this.performOpenUnifiedCalendar().finally(() => {
+      if (this.unifiedCalendarOpenInFlight === opening) {
+        this.unifiedCalendarOpenInFlight = null;
+      }
+    });
+    this.unifiedCalendarOpenInFlight = opening;
+    return opening;
+  }
+
+  private async performOpenUnifiedCalendar(): Promise<void> {
+    const adapter = this.app.vault.adapter;
+    if (!(adapter instanceof FileSystemAdapter)) {
+      new Notice('ATL 统一日历仅支持桌面版本地 Vault');
+      return;
+    }
+    const root = adapter.getBasePath();
+    const vaultPath = (path: string) => relative(root, path).split(sep).join('/');
+    const controller = new UnifiedCalendarController({
+      mkdir: async (path) => adapter.mkdir(vaultPath(path)),
+      create: async (path, content) => {
+        await this.app.vault.create(vaultPath(path), content);
+      },
+      read: async (path) => adapter.read(vaultPath(path)),
+    });
+
+    try {
+      const result = await controller.ensure(root);
+      const file = this.app.vault.getAbstractFileByPath(ATL_UNIFIED_CALENDAR_PATH);
+      if (!(file instanceof TFile)) {
+        throw new Error('统一日历已创建，但 Obsidian 尚未识别该文件，请稍后重试');
+      }
+      await this.app.workspace.getLeaf(false).openFile(file);
+      if (result.created) new Notice('已创建 ATL 统一日历');
+    } catch (error) {
+      new Notice(errorMessage(error, '无法打开 ATL 统一日历'));
+    }
   }
 
   async clearDingTalkCalendarImportHistory(): Promise<void> {
@@ -1044,6 +1101,14 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
 
   private renderBoard(containerEl: HTMLElement): void {
     containerEl.createEl('h2', { text: '任务看板' });
+    new Setting(containerEl)
+      .setName('统一任务日历')
+      .setDesc('同时查看本地任务和钉钉日程；未设置计划时间的任务在“待排期任务”中。')
+      .addButton((button) => button
+        .setCta()
+        .setButtonText('打开统一日历')
+        .setIcon('calendar-range')
+        .onClick(() => this.atlPlugin.openUnifiedCalendar()));
     new Setting(containerEl)
       .setName('ATL 紧凑卡片')
       .setDesc('在 TaskNotes 看板中优先显示项目、计划时间、截止时间和优先级。')
