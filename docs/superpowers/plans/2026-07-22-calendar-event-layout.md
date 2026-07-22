@@ -148,7 +148,7 @@ git commit -m "fix(obsidian): contain long calendar titles"
 
 - [ ] **Step 1: Write failing version expectations**
 
-Change version assertions from `0.5.3` to `0.5.4` in the version and packaged-runner tests.
+Change version assertions to `0.5.5` in the version and packaged-runner tests. `0.5.4` was published by the legacy unscheduled-value fix while this branch was in progress.
 
 - [ ] **Step 2: Run version tests and verify RED**
 
@@ -156,11 +156,11 @@ Change version assertions from `0.5.3` to `0.5.4` in the version and packaged-ru
 pnpm vitest run tests/unit/version.test.ts tests/integration/runner/packaged-runner.test.ts
 ```
 
-Expected: FAIL because production metadata still reports `0.5.3`.
+Expected: FAIL because production metadata still reports `0.5.4`.
 
 - [ ] **Step 3: Update release metadata and user documentation**
 
-Set the package, both manifests, `ATL_VERSION`, and `versions.json` to `0.5.4`. Document that applying the ATL recommended board layout makes concurrent events non-overlapping and long calendar titles compact, while TaskNotes remains an independent plugin.
+Set the package, both manifests, `ATL_VERSION`, and `versions.json` to `0.5.5`. Document that applying the ATL recommended board layout makes concurrent events non-overlapping and long calendar titles compact, while TaskNotes remains an independent plugin.
 
 - [ ] **Step 4: Run version tests and full quality checks**
 
@@ -179,7 +179,7 @@ Expected: every command exits zero; Vitest reports no failing files or tests.
 
 ```bash
 git add README.md docs/operations/obsidian-plugin.md package.json manifest.json src/obsidian-plugin/manifest.json src/version.ts versions.json tests/unit/version.test.ts tests/integration/runner/packaged-runner.test.ts
-git commit -m "chore: prepare v0.5.4 release"
+git commit -m "chore: prepare v0.5.5 release"
 ```
 
 ### Task 4: Install, visually verify, and publish
@@ -202,4 +202,4 @@ Open the weekly TaskNotes calendar and verify long titles show an ellipsis, conc
 
 - [ ] **Step 4: Review and publish**
 
-Run a final independent review over the complete branch, fix all critical or important findings, push `codex/fix-calendar-event-layout`, open a PR linked to issue `#56`, merge after checks, tag `v0.5.4`, and publish the release bundle and concise user-facing release notes.
+Run a final independent review over the complete branch, fix all critical or important findings, push `codex/fix-calendar-event-layout`, open a PR linked to issue `#56`, merge after checks, tag `v0.5.5`, and publish the release bundle and concise user-facing release notes.
