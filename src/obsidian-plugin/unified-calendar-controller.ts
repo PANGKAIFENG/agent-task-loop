@@ -50,7 +50,7 @@ views:
       and:
         - status != "done"
         - status != "cancelled"
-        - date(scheduled).isEmpty()
+        - (scheduled == false) || (scheduled == null)
     order:
       - status
       - project_id
