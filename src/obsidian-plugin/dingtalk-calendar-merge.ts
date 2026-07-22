@@ -4,6 +4,7 @@ import type { DingTalkRemoteSnapshot } from './dingtalk-calendar-types.js';
 const MANAGED_START = '<!-- ATL_DINGTALK_MANAGED_START -->';
 const MANAGED_END = '<!-- ATL_DINGTALK_MANAGED_END -->';
 const MANAGED_PATTERN = /<!-- ATL_DINGTALK_MANAGED_START -->[\s\S]*?<!-- ATL_DINGTALK_MANAGED_END -->/u;
+const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/u;
 
 export interface DingTalkCalendarMergeResult {
   document: TaskDocument;
@@ -53,26 +54,63 @@ function updateManagedRegion(body: string, snapshot: DingTalkRemoteSnapshot): st
   return `\n\n${region}\n\n${suffix}`;
 }
 
-function sameRemoteSnapshot(
-  previous: DingTalkRemoteSnapshot,
-  next: DingTalkRemoteSnapshot,
-): boolean {
-  return previous.title === next.title
-    && previous.start === next.start
-    && previous.end === next.end
-    && previous.allDay === next.allDay
-    && previous.description === next.description
-    && previous.location === next.location
-    && previous.state === next.state;
+function localDate(syncTime: Date, timeZone: string): string {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(syncTime).map((part) => [part.type, part.value]));
+  return `${parts.year ?? ''}-${parts.month ?? ''}-${parts.day ?? ''}`;
 }
 
-function newDocument(snapshot: DingTalkRemoteSnapshot): TaskDocument {
+function eventHasEnded(
+  snapshot: DingTalkRemoteSnapshot,
+  syncTime: Date,
+  timeZone: string,
+): boolean {
+  if (snapshot.end === null || !Number.isFinite(syncTime.getTime())) return false;
+  if (snapshot.allDay) {
+    if (
+      !DATE_ONLY_PATTERN.test(snapshot.start)
+      || !DATE_ONLY_PATTERN.test(snapshot.end)
+      || snapshot.end <= snapshot.start
+    ) return false;
+    return localDate(syncTime, timeZone) >= snapshot.end;
+  }
+  const start = Date.parse(snapshot.start);
+  const end = Date.parse(snapshot.end);
+  return Number.isFinite(start)
+    && Number.isFinite(end)
+    && end > start
+    && end <= syncTime.getTime();
+}
+
+function shouldAutoComplete(
+  snapshot: DingTalkRemoteSnapshot,
+  status: unknown,
+  syncTime: Date,
+  timeZone: string,
+): boolean {
+  if (snapshot.state !== 'active') return false;
+  if (status === 'done' || status === 'cancelled') return false;
+  return eventHasEnded(snapshot, syncTime, timeZone);
+}
+
+function newDocument(
+  snapshot: DingTalkRemoteSnapshot,
+  syncTime: Date,
+  timeZone: string,
+): TaskDocument {
   const estimate = timeEstimate(snapshot);
+  const initialStatus = snapshot.state === 'cancelled' ? 'cancelled' : 'inbox';
   return {
     data: {
       type: 'task',
       title: snapshot.title,
-      status: snapshot.state === 'cancelled' ? 'cancelled' : 'inbox',
+      status: shouldAutoComplete(snapshot, initialStatus, syncTime, timeZone)
+        ? 'done'
+        : initialStatus,
       scheduled: snapshot.start,
       ...(estimate === null ? {} : { timeEstimate: estimate }),
       origin: 'dingtalk_caldav',
@@ -88,9 +126,11 @@ export function mergeDingTalkOccurrence(input: {
   previousRemote: DingTalkRemoteSnapshot | null;
   nextRemote: DingTalkRemoteSnapshot;
   cancelledBySync: boolean;
+  syncTime: Date;
+  timeZone: string;
 }): DingTalkCalendarMergeResult {
   if (input.current === null || input.previousRemote === null) {
-    const document = newDocument(input.nextRemote);
+    const document = newDocument(input.nextRemote, input.syncTime, input.timeZone);
     return {
       document,
       changed: true,
@@ -142,15 +182,20 @@ export function mergeDingTalkOccurrence(input: {
   ) {
     body = updateManagedRegion(body, next);
   }
+  if (shouldAutoComplete(
+    next,
+    input.current.data.status,
+    input.syncTime,
+    input.timeZone,
+  )) {
+    data.status = 'done';
+  }
 
   const document = { data, body };
   return {
     document,
-    changed: !sameRemoteSnapshot(previous, next)
-      && (
-        JSON.stringify(document.data) !== JSON.stringify(input.current.data)
-        || document.body !== input.current.body
-      ),
+    changed: JSON.stringify(document.data) !== JSON.stringify(input.current.data)
+      || document.body !== input.current.body,
     overriddenLocalFields,
     cancelledBySync,
   };
