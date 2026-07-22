@@ -5,7 +5,7 @@ import { ATL_VERSION } from '../../src/version.js';
 
 describe('ATL_VERSION', () => {
   it('reports the current release version', () => {
-    expect(ATL_VERSION).toBe('0.5.5');
+    expect(ATL_VERSION).toBe('0.5.6');
   });
 
   it('matches the package version', () => {
