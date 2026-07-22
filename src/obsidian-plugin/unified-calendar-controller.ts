@@ -7,7 +7,7 @@ import {
   sep,
 } from 'node:path';
 
-import { parse } from 'yaml';
+import { parse, stringify } from 'yaml';
 
 export const ATL_UNIFIED_CALENDAR_PATH = '10_Tasks/Views/统一日历.base';
 
@@ -67,6 +67,7 @@ export interface UnifiedCalendarFileSystem {
   mkdir(path: string): Promise<void>;
   create(path: string, content: string): Promise<void>;
   read(path: string): Promise<string>;
+  write(path: string, content: string): Promise<void>;
 }
 
 export interface UnifiedCalendarResult {
@@ -81,14 +82,44 @@ export class UnifiedCalendarError extends Error {
   }
 }
 
-function validateBase(content: string): void {
+function parseBase(content: string): Record<string, unknown> & { views: unknown[] } {
   try {
     const document = parse(content) as unknown;
     if (document === null || typeof document !== 'object') throw new Error('invalid');
-    if (!Array.isArray((document as { views?: unknown }).views)) throw new Error('invalid');
+    const views = (document as { views?: unknown }).views;
+    if (!Array.isArray(views)) throw new Error('invalid');
+    return document as Record<string, unknown> & { views: unknown[] };
   } catch {
     throw new UnifiedCalendarError('统一日历文件格式无效，ATL 未做任何修改。');
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function migratedCalendarContent(content: string): string | undefined {
+  const document = parseBase(content);
+  const calendars = document.views.filter((view): view is Record<string, unknown> => (
+    isRecord(view)
+    && view.type === 'tasknotesCalendar'
+    && view.name === '统一日历'
+  ));
+  if (calendars.length !== 1) return undefined;
+
+  const calendar = calendars[0];
+  if (calendar === undefined) return undefined;
+  const options = calendar.options;
+  if (options !== undefined && !isRecord(options)) {
+    throw new UnifiedCalendarError('统一日历文件格式无效，ATL 未做任何修改。');
+  }
+  if (isRecord(options) && options.slotEventOverlap === false) return undefined;
+
+  calendar.options = {
+    ...(isRecord(options) ? options : {}),
+    slotEventOverlap: false,
+  };
+  return stringify(document, { lineWidth: 0 });
 }
 
 function pathSegments(vaultRoot: string, targetDirectory: string): string[] {
@@ -142,7 +173,13 @@ export class UnifiedCalendarController {
     const root = await canonicalVaultRoot(vaultRoot);
     const path = join(vaultRoot, ATL_UNIFIED_CALENDAR_PATH);
     if (await safeExistingPath(path, root, 'file')) {
-      validateBase(await this.fileSystem.read(path));
+      const content = await this.fileSystem.read(path);
+      const migrated = migratedCalendarContent(content);
+      if (migrated !== undefined) {
+        await safeExistingPath(path, root, 'file');
+        await this.fileSystem.write(path, migrated);
+        await safeExistingPath(path, root, 'file');
+      }
       return { path, created: false };
     }
 
@@ -169,7 +206,13 @@ export class UnifiedCalendarController {
       if (!(await safeExistingPath(path, root, 'file'))) {
         throw new UnifiedCalendarError('统一日历路径不安全，ATL 未做任何修改。');
       }
-      validateBase(await this.fileSystem.read(path));
+      const content = await this.fileSystem.read(path);
+      const migrated = migratedCalendarContent(content);
+      if (migrated !== undefined) {
+        await safeExistingPath(path, root, 'file');
+        await this.fileSystem.write(path, migrated);
+        await safeExistingPath(path, root, 'file');
+      }
       return { path, created: false };
     }
   }

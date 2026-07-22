@@ -21,15 +21,19 @@ describe('calendar event layout styles', () => {
       new URL('../../../src/obsidian-plugin/styles.css', import.meta.url),
       'utf8',
     );
-    const containerSelectors = [
-      '.fc-timegrid-event',
+    const eventSelector = `${CALENDAR_SELECTOR_PREFIX}.fc-timegrid-event`;
+    const clippingContainerSelectors = [
       '.fc-event-main',
       '.fc-event-main-frame',
       '.fc-event-title-container',
     ].map((selector) => `${CALENDAR_SELECTOR_PREFIX}${selector}`);
     const titleSelector = `${CALENDAR_SELECTOR_PREFIX}.fc-event-title`;
 
-    for (const selector of containerSelectors) {
+    const eventDeclarations = declarationsFor(css, eventSelector);
+    expect(eventDeclarations, eventSelector).toContain('min-width: 0;');
+    expect(eventDeclarations, eventSelector).not.toContain('overflow: hidden;');
+
+    for (const selector of clippingContainerSelectors) {
       const declarations = declarationsFor(css, selector);
       expect(declarations, selector).toContain('min-width: 0;');
       expect(declarations, selector).toContain('overflow: hidden;');
@@ -43,7 +47,8 @@ describe('calendar event layout styles', () => {
     expect(titleDeclarations, titleSelector).toContain('white-space: nowrap;');
 
     const calendarDeclarations = [
-      ...containerSelectors.map((selector) => declarationsFor(css, selector)),
+      eventDeclarations,
+      ...clippingContainerSelectors.map((selector) => declarationsFor(css, selector)),
       titleDeclarations,
     ].join('\n');
     expect(calendarDeclarations).not.toMatch(

@@ -42,7 +42,7 @@ The event time remains visible as a separate line when TaskNotes renders it. Use
 
 ### Existing and new views
 
-New ATL unified calendars receive the option at creation time. Existing task-board calendars receive it when the user applies the ATL recommended layout, using the current backup and restore workflow. During this release's local verification, the updated preset will be applied to the test Vault through the Obsidian UI.
+New ATL unified calendars receive the option at creation time. When ATL opens an existing `统一日历.base`, it adds the option only when the file contains exactly one `tasknotesCalendar` view named `统一日历`; it preserves the remaining fields and does not rewrite files that are already current or do not contain that managed view. Existing task-board calendars receive the option when the user applies the ATL recommended layout, using the current backup and restore workflow. During this release's local verification, the updated preset will be applied to the test Vault through the Obsidian UI.
 
 ## Error Handling
 
@@ -56,6 +56,7 @@ New ATL unified calendars receive the option at creation time. Existing task-boa
 Automated tests will prove:
 
 - A newly generated unified calendar sets `slotEventOverlap: false`.
+- An existing ATL unified calendar missing the option is migrated without replacing its other fields.
 - Applying the recommended board preset sets the same option on the existing calendar view.
 - Preset status distinguishes an older overlapping calendar from the updated layout.
 - Ambiguous calendar views are rejected without modifying the Base or backup.
