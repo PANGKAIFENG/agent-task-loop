@@ -120,6 +120,236 @@ describe('DingTalkCalendarWriter', () => {
     expect(await markdownFiles(root)).toHaveLength(1);
   });
 
+  it('marks an already-ended active event done on its first import', async () => {
+    const writer = new DingTalkCalendarWriter({
+      fileSystem: nodeFileSystem(),
+      clock: () => new Date('2026-07-20T03:00:00Z'),
+    });
+
+    const result = await writer.apply(occurrence({
+      snapshot: {
+        ...occurrence().snapshot,
+        start: '2026-07-20T09:00:00+08:00',
+        end: '2026-07-20T10:00:00+08:00',
+      },
+    }), undefined);
+
+    expect(result.action).toBe('added');
+    const document = parseTaskDocument(await readFile(
+      join(root, result.entry.taskPath!),
+      'utf8',
+    ));
+    expect(document.data.status).toBe('done');
+  });
+
+  it('completes an existing event after its end even when the remote snapshot is unchanged', async () => {
+    let now = new Date('2026-07-20T06:30:00Z');
+    const writer = new DingTalkCalendarWriter({
+      fileSystem: nodeFileSystem(),
+      clock: () => now,
+    });
+    const first = await writer.apply(occurrence(), undefined);
+    const beforeEnd = parseTaskDocument(await readFile(
+      join(root, first.entry.taskPath!),
+      'utf8',
+    ));
+    expect(beforeEnd.data.status).toBe('inbox');
+
+    now = new Date('2026-07-20T07:01:00Z');
+    const completed = await writer.apply(occurrence(), first.entry);
+
+    expect(completed.action).toBe('updated');
+    const afterEnd = parseTaskDocument(await readFile(
+      join(root, first.entry.taskPath!),
+      'utf8',
+    ));
+    expect(afterEnd.data.status).toBe('done');
+  });
+
+  it('leaves future events and events without a valid end incomplete', async () => {
+    const writer = new DingTalkCalendarWriter({
+      fileSystem: nodeFileSystem(),
+      clock: () => new Date('2026-07-20T08:00:00Z'),
+    });
+    const future = await writer.apply(occurrence({
+      snapshot: {
+        ...occurrence().snapshot,
+        start: '2026-07-20T18:00:00+08:00',
+        end: '2026-07-20T19:00:00+08:00',
+      },
+    }), undefined);
+    const noEnd = await writer.apply(occurrence({
+      eventKeyHash: `sha256:${'c'.repeat(64)}`,
+      remoteUid: 'no-end@example.com',
+      href: '/primary/no-end.ics',
+      snapshotHash: `sha256:${'d'.repeat(64)}`,
+      snapshot: {
+        ...occurrence().snapshot,
+        end: null,
+      },
+    }), undefined);
+    const invalidEnd = await writer.apply(occurrence({
+      eventKeyHash: `sha256:${'e'.repeat(64)}`,
+      remoteUid: 'invalid-end@example.com',
+      href: '/primary/invalid-end.ics',
+      snapshotHash: `sha256:${'f'.repeat(64)}`,
+      snapshot: {
+        ...occurrence().snapshot,
+        end: 'not-a-date',
+      },
+    }), undefined);
+
+    for (const result of [future, noEnd, invalidEnd]) {
+      const document = parseTaskDocument(await readFile(
+        join(root, result.entry.taskPath!),
+        'utf8',
+      ));
+      expect(document.data.status).toBe('inbox');
+    }
+  });
+
+  it('does not complete an event whose end is not after its start', async () => {
+    const writer = new DingTalkCalendarWriter({
+      fileSystem: nodeFileSystem(),
+      clock: () => new Date('2026-07-20T08:00:00Z'),
+    });
+
+    const result = await writer.apply(occurrence({
+      snapshot: {
+        ...occurrence().snapshot,
+        start: '2026-07-20T18:00:00+08:00',
+        end: '2026-07-20T10:00:00+08:00',
+      },
+    }), undefined);
+
+    const document = parseTaskDocument(await readFile(
+      join(root, result.entry.taskPath!),
+      'utf8',
+    ));
+    expect(document.data.status).toBe('inbox');
+  });
+
+  it('completes an all-day event after its local end date begins', async () => {
+    const writer = new DingTalkCalendarWriter({
+      fileSystem: nodeFileSystem(),
+      clock: () => new Date('2026-07-21T16:30:00Z'),
+      timeZone: 'Asia/Shanghai',
+    });
+
+    const result = await writer.apply(occurrence({
+      snapshot: {
+        ...occurrence().snapshot,
+        start: '2026-07-21',
+        end: '2026-07-22',
+        allDay: true,
+      },
+    }), undefined);
+
+    const document = parseTaskDocument(await readFile(
+      join(root, result.entry.taskPath!),
+      'utf8',
+    ));
+    expect(document.data.status).toBe('done');
+  });
+
+  it('keeps an ended remote cancellation cancelled', async () => {
+    const writer = new DingTalkCalendarWriter({
+      fileSystem: nodeFileSystem(),
+      clock: () => new Date('2026-07-20T08:00:00Z'),
+    });
+
+    const result = await writer.apply(occurrence({
+      snapshot: {
+        ...occurrence().snapshot,
+        state: 'cancelled',
+      },
+    }), undefined);
+
+    const document = parseTaskDocument(await readFile(
+      join(root, result.entry.taskPath!),
+      'utf8',
+    ));
+    expect(document.data.status).toBe('cancelled');
+  });
+
+  it('does not auto-complete a status restored from remote cancellation in the same merge', async () => {
+    let now = new Date('2026-07-20T06:30:00Z');
+    const writer = new DingTalkCalendarWriter({
+      fileSystem: nodeFileSystem(),
+      clock: () => now,
+    });
+    const cancelledOccurrence = occurrence({
+      snapshotHash: `sha256:${'c'.repeat(64)}`,
+      snapshot: {
+        ...occurrence().snapshot,
+        state: 'cancelled',
+      },
+    });
+    const cancelled = await writer.apply(cancelledOccurrence, undefined);
+
+    now = new Date('2026-07-20T07:01:00Z');
+    const restored = await writer.apply(occurrence({
+      snapshotHash: `sha256:${'d'.repeat(64)}`,
+    }), cancelled.entry);
+
+    expect(restored.action).toBe('updated');
+    const document = parseTaskDocument(await readFile(
+      join(root, restored.entry.taskPath!),
+      'utf8',
+    ));
+    expect(document.data.status).toBe('inbox');
+  });
+
+  it('skips repeated synchronization after an event has been automatically completed', async () => {
+    const writer = new DingTalkCalendarWriter({
+      fileSystem: nodeFileSystem(),
+      clock: () => new Date('2026-07-20T08:00:00Z'),
+    });
+    const first = await writer.apply(occurrence(), undefined);
+
+    const repeated = await writer.apply(occurrence(), first.entry);
+
+    expect(repeated.action).toBe('skipped');
+    const document = parseTaskDocument(await readFile(
+      join(root, first.entry.taskPath!),
+      'utf8',
+    ));
+    expect(document.data.status).toBe('done');
+  });
+
+  it('preserves local notes and unrelated frontmatter when auto-completing', async () => {
+    let now = new Date('2026-07-20T06:30:00Z');
+    const writer = new DingTalkCalendarWriter({
+      fileSystem: nodeFileSystem(),
+      clock: () => now,
+    });
+    const first = await writer.apply(occurrence(), undefined);
+    const path = first.entry.taskPath!;
+    const current = parseTaskDocument(await readFile(join(root, path), 'utf8'));
+    current.data.project = 'Local project';
+    current.data.priority = 'high';
+    await writeFile(
+      join(root, path),
+      (await import('../../../src/storage/frontmatter.js')).serializeTaskDocument(
+        current.data,
+        `${current.body}\nLocal retrospective note.\n`,
+      ),
+      'utf8',
+    );
+
+    now = new Date('2026-07-20T07:01:00Z');
+    const completed = await writer.apply(occurrence(), first.entry);
+
+    expect(completed.action).toBe('updated');
+    const document = parseTaskDocument(await readFile(join(root, path), 'utf8'));
+    expect(document.data).toMatchObject({
+      status: 'done',
+      project: 'Local project',
+      priority: 'high',
+    });
+    expect(document.body).toContain('Local retrospective note.');
+  });
+
   it('finds a moved file and applies a changed remote schedule without erasing local data', async () => {
     const writer = new DingTalkCalendarWriter({
       fileSystem: nodeFileSystem(),

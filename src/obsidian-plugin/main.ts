@@ -413,7 +413,10 @@ export default class AgentTaskLoopPlugin extends Plugin {
     };
     this.dingtalkCalendarController = new DingTalkCalendarController({
       client: createReadOnlyDingTalkCalDavClient(),
-      writer: new DingTalkCalendarWriter({ fileSystem }),
+      writer: new DingTalkCalendarWriter({
+        fileSystem,
+        timeZone: resolveSystemTimeZone(),
+      }),
       credentialStore: this.getDingTalkCredentialStore(),
       getSettings: () => this.settings.dingtalkCalendar,
       saveSettings: async (settings) => {

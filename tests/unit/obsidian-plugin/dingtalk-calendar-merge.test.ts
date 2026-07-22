@@ -15,6 +15,9 @@ const original: DingTalkRemoteSnapshot = {
   state: 'active',
 };
 
+const beforeEvent = new Date('2026-07-20T05:00:00Z');
+const timeZone = 'Asia/Shanghai';
+
 describe('mergeDingTalkOccurrence', () => {
   it('builds a new TaskNotes document without due or ATL execution fields', () => {
     const result = mergeDingTalkOccurrence({
@@ -22,6 +25,8 @@ describe('mergeDingTalkOccurrence', () => {
       previousRemote: null,
       nextRemote: original,
       cancelledBySync: false,
+      syncTime: beforeEvent,
+      timeZone,
     });
 
     expect(result.document.data).toMatchObject({
@@ -46,6 +51,8 @@ describe('mergeDingTalkOccurrence', () => {
       previousRemote: null,
       nextRemote: original,
       cancelledBySync: false,
+      syncTime: beforeEvent,
+      timeZone,
     }).document;
     current.data.scheduled = '2026-07-20T16:00:00+08:00';
     current.data.timeEstimate = 90;
@@ -56,6 +63,8 @@ describe('mergeDingTalkOccurrence', () => {
       previousRemote: original,
       nextRemote: { ...original },
       cancelledBySync: false,
+      syncTime: beforeEvent,
+      timeZone,
     });
 
     expect(result.changed).toBe(false);
@@ -69,6 +78,8 @@ describe('mergeDingTalkOccurrence', () => {
       previousRemote: null,
       nextRemote: original,
       cancelledBySync: false,
+      syncTime: beforeEvent,
+      timeZone,
     }).document;
     current.data.scheduled = '2026-07-20T16:00:00+08:00';
     current.data.project = 'Local project';
@@ -88,6 +99,8 @@ describe('mergeDingTalkOccurrence', () => {
         location: 'Room B',
       },
       cancelledBySync: false,
+      syncTime: beforeEvent,
+      timeZone,
     });
 
     expect(result.document.data).toMatchObject({
@@ -110,6 +123,8 @@ describe('mergeDingTalkOccurrence', () => {
       previousRemote: null,
       nextRemote: original,
       cancelledBySync: false,
+      syncTime: beforeEvent,
+      timeZone,
     }).document;
     const cancelledRemote = { ...original, state: 'cancelled' as const };
     const cancelled = mergeDingTalkOccurrence({
@@ -117,6 +132,8 @@ describe('mergeDingTalkOccurrence', () => {
       previousRemote: original,
       nextRemote: cancelledRemote,
       cancelledBySync: false,
+      syncTime: beforeEvent,
+      timeZone,
     });
     expect(cancelled.document.data.status).toBe('cancelled');
     expect(cancelled.cancelledBySync).toBe(true);
@@ -126,6 +143,8 @@ describe('mergeDingTalkOccurrence', () => {
       previousRemote: cancelledRemote,
       nextRemote: original,
       cancelledBySync: true,
+      syncTime: beforeEvent,
+      timeZone,
     });
     expect(restored.document.data.status).toBe('inbox');
     expect(restored.cancelledBySync).toBe(false);
@@ -136,6 +155,8 @@ describe('mergeDingTalkOccurrence', () => {
       previousRemote: cancelledRemote,
       nextRemote: original,
       cancelledBySync: true,
+      syncTime: beforeEvent,
+      timeZone,
     });
     expect(locallyCompleted.document.data.status).toBe('done');
     expect(locallyCompleted.cancelledBySync).toBe(false);

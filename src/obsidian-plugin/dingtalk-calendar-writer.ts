@@ -9,6 +9,7 @@ import type {
   DingTalkEventLedgerEntry,
   DingTalkRemoteSnapshot,
 } from './dingtalk-calendar-types.js';
+import { resolveSystemTimeZone } from './system-time-zone.js';
 
 const IMPORT_DIRECTORY = 'TaskNotes/DingTalk';
 
@@ -40,6 +41,7 @@ export interface DingTalkCalendarWriteResult {
 export interface DingTalkCalendarWriterOptions {
   fileSystem: DingTalkCalendarFileSystem;
   clock?: () => Date;
+  timeZone?: string;
 }
 
 function createLedgerEntry(
@@ -111,17 +113,20 @@ function snapshotFromUntrackedDocument(
 export class DingTalkCalendarWriter {
   private readonly fileSystem: DingTalkCalendarFileSystem;
   private readonly clock: () => Date;
+  private readonly timeZone: string;
 
   constructor(options: DingTalkCalendarWriterOptions) {
     this.fileSystem = options.fileSystem;
     this.clock = options.clock ?? (() => new Date());
+    this.timeZone = options.timeZone ?? resolveSystemTimeZone();
   }
 
   async apply(
     occurrence: DingTalkCalendarOccurrence,
     previous: DingTalkEventLedgerEntry | undefined,
   ): Promise<DingTalkCalendarWriteResult> {
-    const now = this.clock().toISOString();
+    const syncTime = this.clock();
+    const now = syncTime.toISOString();
     if (previous?.locallyDeletedAt !== null && previous?.locallyDeletedAt !== undefined) {
       return {
         action: 'tombstoned',
@@ -158,6 +163,8 @@ export class DingTalkCalendarWriter {
         previousRemote: null,
         nextRemote: occurrence.snapshot,
         cancelledBySync: false,
+        syncTime,
+        timeZone: this.timeZone,
       });
       const document = addDingTalkIdentity(merged.document, occurrence);
       await this.fileSystem.ensureDirectory(IMPORT_DIRECTORY);
@@ -181,6 +188,8 @@ export class DingTalkCalendarWriter {
         ?? snapshotFromUntrackedDocument(current, occurrence.snapshot),
       nextRemote: occurrence.snapshot,
       cancelledBySync: previous?.cancelledBySync ?? false,
+      syncTime,
+      timeZone: this.timeZone,
     });
     if (merged.changed) {
       const document = addDingTalkIdentity(merged.document, occurrence);
