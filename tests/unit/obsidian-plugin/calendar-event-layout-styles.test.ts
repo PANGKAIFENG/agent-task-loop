@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
 const CALENDAR_SELECTOR_PREFIX =
-  'body.atl-task-card-theme .tasknotes-plugin .advanced-calendar-view ';
+  'body.atl-task-card-theme .tasknotes-plugin.advanced-calendar-view ';
 
 function declarationsFor(css: string, selector: string): string {
   return Array.from(css.matchAll(/([^{}]+)\{([^{}]*)\}/g))
