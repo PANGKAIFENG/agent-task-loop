@@ -157,7 +157,7 @@ ATL 不会在你还没决定时间时自动填成“今天”。没有 `schedule
 | 钉钉日程副本 | `TaskNotes/DingTalk/**` | 不会 |
 | 待排期任务 | 所有未完成且没有 `scheduled` 的 TaskNotes 任务 | 仅作为人工排期入口 |
 
-首次打开时，ATL 会创建 `10_Tasks/Views/统一日历.base`。已存在时只打开，不会覆盖你后来对 Base 做的修改。也可以从命令面板运行“Agent Task Loop: 打开统一日历”，或在“设置 → Agent Task Loop → 任务看板”点击“打开统一日历”。
+首次打开时，ATL 会创建 `10_Tasks/Views/统一日历.base`。如果它是唯一的 ATL“统一日历”视图，旧版本文件会安全补充 `slotEventOverlap: false`，其他字段保持不变；文件已被你同时修改时，ATL 会停止升级而不会覆盖。也可以从命令面板运行“Agent Task Loop: 打开统一日历”，或在“设置 → Agent Task Loop → 任务看板”点击“打开统一日历”。
 
 如果旧版“任务总看板”中的并发日程仍然重叠，到“设置 → Agent Task Loop → 任务看板”重新点击一次“应用人工任务布局”。ATL 只为该 Base 补充公开的日历布局选项，并保留原始 `.atl-backup`。
 

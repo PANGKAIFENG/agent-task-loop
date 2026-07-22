@@ -1,5 +1,16 @@
-import { lstat, realpath, stat } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { constants } from 'node:fs';
 import {
+  lstat,
+  open,
+  realpath,
+  rename,
+  stat,
+  unlink,
+  type FileHandle,
+} from 'node:fs/promises';
+import {
+  basename,
   dirname,
   isAbsolute,
   join,
@@ -67,7 +78,6 @@ export interface UnifiedCalendarFileSystem {
   mkdir(path: string): Promise<void>;
   create(path: string, content: string): Promise<void>;
   read(path: string): Promise<string>;
-  write(path: string, content: string): Promise<void>;
 }
 
 export interface UnifiedCalendarResult {
@@ -147,6 +157,81 @@ async function canonicalVaultRoot(vaultRoot: string): Promise<string> {
   }
 }
 
+export async function replaceFileIfUnchanged(
+  vaultRoot: string,
+  path: string,
+  expectedContent: string,
+  replacementContent: string,
+): Promise<boolean> {
+  let temporaryHandle: FileHandle | undefined;
+  let targetHandle: FileHandle | undefined;
+  let temporaryPath: string | undefined;
+  try {
+    const root = await realpath(vaultRoot);
+    if (!(await stat(root)).isDirectory() || !isAbsolute(path)) return false;
+    const parent = await realpath(dirname(path));
+    if (!isWithin(root, parent) || !(await stat(parent)).isDirectory()) return false;
+
+    temporaryPath = join(parent, `.atl-calendar-${randomUUID()}.tmp`);
+    temporaryHandle = await open(
+      temporaryPath,
+      constants.O_WRONLY
+        | constants.O_CREAT
+        | constants.O_EXCL
+        | constants.O_NOFOLLOW,
+      0o600,
+    );
+    if (!(await temporaryHandle.stat()).isFile()) return false;
+    await temporaryHandle.writeFile(replacementContent, 'utf8');
+    await temporaryHandle.sync();
+    await temporaryHandle.close();
+    temporaryHandle = undefined;
+
+    const canonicalTarget = join(parent, basename(path));
+    targetHandle = await open(
+      canonicalTarget,
+      constants.O_RDONLY | constants.O_NOFOLLOW,
+    );
+    if (!(await targetHandle.stat()).isFile()) return false;
+    if (await targetHandle.readFile('utf8') !== expectedContent) return false;
+    await targetHandle.close();
+    targetHandle = undefined;
+
+    await rename(temporaryPath, canonicalTarget);
+    temporaryPath = undefined;
+    return true;
+  } catch (error) {
+    if (
+      isFileSystemError(error, 'ENOENT')
+      || isFileSystemError(error, 'ELOOP')
+      || isFileSystemError(error, 'ENOTDIR')
+    ) {
+      return false;
+    }
+    throw error;
+  } finally {
+    await targetHandle?.close();
+    await temporaryHandle?.close();
+    if (temporaryPath !== undefined) {
+      await unlink(temporaryPath).catch(() => undefined);
+    }
+  }
+}
+
+async function migrateExistingCalendar(
+  root: string,
+  path: string,
+  content: string,
+): Promise<void> {
+  const migrated = migratedCalendarContent(content);
+  if (migrated === undefined) return;
+  if (!(await replaceFileIfUnchanged(root, path, content, migrated))) {
+    throw new UnifiedCalendarError(
+      '统一日历在升级期间发生变化，ATL 未覆盖你的修改，请重试。',
+    );
+  }
+}
+
 async function safeExistingPath(
   path: string,
   root: string,
@@ -174,12 +259,7 @@ export class UnifiedCalendarController {
     const path = join(vaultRoot, ATL_UNIFIED_CALENDAR_PATH);
     if (await safeExistingPath(path, root, 'file')) {
       const content = await this.fileSystem.read(path);
-      const migrated = migratedCalendarContent(content);
-      if (migrated !== undefined) {
-        await safeExistingPath(path, root, 'file');
-        await this.fileSystem.write(path, migrated);
-        await safeExistingPath(path, root, 'file');
-      }
+      await migrateExistingCalendar(root, path, content);
       return { path, created: false };
     }
 
@@ -207,12 +287,7 @@ export class UnifiedCalendarController {
         throw new UnifiedCalendarError('统一日历路径不安全，ATL 未做任何修改。');
       }
       const content = await this.fileSystem.read(path);
-      const migrated = migratedCalendarContent(content);
-      if (migrated !== undefined) {
-        await safeExistingPath(path, root, 'file');
-        await this.fileSystem.write(path, migrated);
-        await safeExistingPath(path, root, 'file');
-      }
+      await migrateExistingCalendar(root, path, content);
       return { path, created: false };
     }
   }
