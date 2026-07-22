@@ -7,11 +7,15 @@ import {
   parseDingTalkCalendarObjects,
   type DingTalkCalendarParseResult,
 } from './dingtalk-calendar-parser.js';
+import { eventHasEnded } from './dingtalk-calendar-merge.js';
 import type {
   DingTalkCalendarSettings,
+  DingTalkEventLedgerEntry,
+  DingTalkRemoteSnapshot,
   DingTalkSyncResult,
 } from './dingtalk-calendar-types.js';
 import type { DingTalkCalendarWriter } from './dingtalk-calendar-writer.js';
+import { resolveSystemTimeZone } from './system-time-zone.js';
 
 const DAY_MILLISECONDS = 86_400_000;
 const SYNC_LOOKBACK_DAYS = 7;
@@ -20,12 +24,16 @@ const CONNECTION_ERROR = '钉钉日历连接失败，请检查连接设置后重
 
 export interface DingTalkCalendarControllerDependencies {
   client: ReadOnlyDingTalkCalDavClient;
-  writer: Pick<DingTalkCalendarWriter, 'apply' | 'reconcile'>;
+  writer: Pick<
+    DingTalkCalendarWriter,
+    'apply' | 'beginReconciliation' | 'endReconciliation' | 'reconcile'
+  >;
   credentialStore: Pick<DingTalkCredentialStore, 'getPassword'>;
   getSettings: () => DingTalkCalendarSettings;
   saveSettings: (settings: DingTalkCalendarSettings) => Promise<void>;
   parse?: typeof parseDingTalkCalendarObjects;
   clock?: () => Date;
+  timeZone?: string;
 }
 
 function syncWindow(now: Date, days: number): { start: Date; end: Date } {
@@ -68,16 +76,46 @@ function configuredConnection(
   };
 }
 
+function snapshotNeedsLocalCompletion(
+  snapshot: DingTalkRemoteSnapshot,
+  cursor: string | null,
+  through: Date,
+  timeZone: string,
+): boolean {
+  if (
+    snapshot.state !== 'active'
+    || !eventHasEnded(snapshot, through, timeZone)
+  ) return false;
+  return cursor === null
+    || !eventHasEnded(snapshot, new Date(cursor), timeZone);
+}
+
+function needsLocalCompletion(
+  entry: DingTalkEventLedgerEntry,
+  cursor: string | null,
+  through: Date,
+  timeZone: string,
+): boolean {
+  return entry.locallyDeletedAt === null && snapshotNeedsLocalCompletion(
+    entry.remoteSnapshot,
+    cursor,
+    through,
+    timeZone,
+  );
+}
+
 export class DingTalkCalendarController {
   private readonly dependencies: DingTalkCalendarControllerDependencies;
   private readonly parse: typeof parseDingTalkCalendarObjects;
   private readonly clock: () => Date;
+  private readonly timeZone: string;
   private inFlight: Promise<DingTalkSyncResult> | null = null;
 
   constructor(dependencies: DingTalkCalendarControllerDependencies) {
     this.dependencies = dependencies;
     this.parse = dependencies.parse ?? parseDingTalkCalendarObjects;
     this.clock = dependencies.clock ?? (() => new Date());
+    this.timeZone = dependencies.timeZone ?? resolveSystemTimeZone();
   }
 
   async testConnection(): Promise<DingTalkConnectionSummary> {
@@ -106,6 +144,7 @@ export class DingTalkCalendarController {
     await this.dependencies.saveSettings({
       ...current,
       syncToken: null,
+      autoCompleteThrough: null,
       lastSuccessfulSyncAt: null,
       lastResult: null,
       lastError: null,
@@ -157,6 +196,7 @@ export class DingTalkCalendarController {
 
     const events = { ...settings.events };
     const fetchedEventKeys = new Set<string>();
+    let localCompletionFailed = false;
     result.errors += fetched.readErrors + parsed.issues.length;
     for (const occurrence of parsed.occurrences) {
       fetchedEventKeys.add(occurrence.eventKeyHash);
@@ -173,19 +213,36 @@ export class DingTalkCalendarController {
         else result.skipped += 1;
       } catch {
         result.errors += 1;
+        if (snapshotNeedsLocalCompletion(
+          occurrence.snapshot,
+          settings.autoCompleteThrough,
+          started,
+          this.timeZone,
+        )) localCompletionFailed = true;
       }
     }
-    for (const [eventKeyHash, previous] of Object.entries(settings.events)) {
-      if (fetchedEventKeys.has(eventKeyHash)) continue;
-      try {
-        const written = await this.dependencies.writer.reconcile(previous);
-        events[eventKeyHash] = written.entry;
-        result.conflicts += written.conflicts;
-        if (written.action === 'updated') result.updated += 1;
-        else result.skipped += 1;
-      } catch {
-        result.errors += 1;
+    this.dependencies.writer.beginReconciliation();
+    try {
+      for (const [eventKeyHash, previous] of Object.entries(settings.events)) {
+        if (fetchedEventKeys.has(eventKeyHash)) continue;
+        if (!needsLocalCompletion(
+          previous,
+          settings.autoCompleteThrough,
+          started,
+          this.timeZone,
+        )) continue;
+        try {
+          const written = await this.dependencies.writer.reconcile(previous);
+          events[eventKeyHash] = written.entry;
+          result.conflicts += written.conflicts;
+          if (written.action === 'updated') result.updated += 1;
+        } catch {
+          result.errors += 1;
+          localCompletionFailed = true;
+        }
       }
+    } finally {
+      this.dependencies.writer.endReconciliation();
     }
 
     result.finishedAt = this.clock().toISOString();
@@ -193,6 +250,9 @@ export class DingTalkCalendarController {
     await this.dependencies.saveSettings({
       ...settings,
       events,
+      autoCompleteThrough: localCompletionFailed
+        ? settings.autoCompleteThrough
+        : startedAt,
       syncToken: complete
         ? (fetched.syncToken ?? settings.syncToken)
         : settings.syncToken,

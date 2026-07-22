@@ -389,6 +389,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
   getDingTalkCalendarController(): DingTalkCalendarController {
     if (this.dingtalkCalendarController !== null) return this.dingtalkCalendarController;
     const adapter = this.app.vault.adapter;
+    const timeZone = resolveSystemTimeZone();
     const fileSystem: DingTalkCalendarFileSystem = {
       exists: async (path) => adapter.exists(path),
       ensureDirectory: async (path) => {
@@ -415,7 +416,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
       client: createReadOnlyDingTalkCalDavClient(),
       writer: new DingTalkCalendarWriter({
         fileSystem,
-        timeZone: resolveSystemTimeZone(),
+        timeZone,
       }),
       credentialStore: this.getDingTalkCredentialStore(),
       getSettings: () => this.settings.dingtalkCalendar,
@@ -423,6 +424,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
         this.settings.dingtalkCalendar = settings;
         await this.saveSettings();
       },
+      timeZone,
     });
     return this.dingtalkCalendarController;
   }

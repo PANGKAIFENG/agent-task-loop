@@ -64,7 +64,7 @@ function localDate(syncTime: Date, timeZone: string): string {
   return `${parts.year ?? ''}-${parts.month ?? ''}-${parts.day ?? ''}`;
 }
 
-function eventHasEnded(
+export function eventHasEnded(
   snapshot: DingTalkRemoteSnapshot,
   syncTime: Date,
   timeZone: string,

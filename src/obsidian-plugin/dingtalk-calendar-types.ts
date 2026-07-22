@@ -44,6 +44,7 @@ export interface DingTalkCalendarSettings {
   syncWindowDays: 90;
   intervalMinutes: 15;
   syncToken: string | null;
+  autoCompleteThrough: string | null;
   lastSuccessfulSyncAt: string | null;
   lastResult: DingTalkSyncResult | null;
   lastError: string | null;
