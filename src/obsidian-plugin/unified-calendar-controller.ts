@@ -1,16 +1,9 @@
-import { randomUUID } from 'node:crypto';
-import { constants } from 'node:fs';
 import {
   lstat,
-  open,
   realpath,
-  rename,
   stat,
-  unlink,
-  type FileHandle,
 } from 'node:fs/promises';
 import {
-  basename,
   dirname,
   isAbsolute,
   join,
@@ -77,7 +70,7 @@ views:
 export interface UnifiedCalendarFileSystem {
   mkdir(path: string): Promise<void>;
   create(path: string, content: string): Promise<void>;
-  read(path: string): Promise<string>;
+  process(path: string, update: (content: string) => string): Promise<string>;
 }
 
 export interface UnifiedCalendarResult {
@@ -157,79 +150,11 @@ async function canonicalVaultRoot(vaultRoot: string): Promise<string> {
   }
 }
 
-export async function replaceFileIfUnchanged(
-  vaultRoot: string,
-  path: string,
-  expectedContent: string,
-  replacementContent: string,
-): Promise<boolean> {
-  let temporaryHandle: FileHandle | undefined;
-  let targetHandle: FileHandle | undefined;
-  let temporaryPath: string | undefined;
-  try {
-    const root = await realpath(vaultRoot);
-    if (!(await stat(root)).isDirectory() || !isAbsolute(path)) return false;
-    const parent = await realpath(dirname(path));
-    if (!isWithin(root, parent) || !(await stat(parent)).isDirectory()) return false;
-
-    temporaryPath = join(parent, `.atl-calendar-${randomUUID()}.tmp`);
-    temporaryHandle = await open(
-      temporaryPath,
-      constants.O_WRONLY
-        | constants.O_CREAT
-        | constants.O_EXCL
-        | constants.O_NOFOLLOW,
-      0o600,
-    );
-    if (!(await temporaryHandle.stat()).isFile()) return false;
-    await temporaryHandle.writeFile(replacementContent, 'utf8');
-    await temporaryHandle.sync();
-    await temporaryHandle.close();
-    temporaryHandle = undefined;
-
-    const canonicalTarget = join(parent, basename(path));
-    targetHandle = await open(
-      canonicalTarget,
-      constants.O_RDONLY | constants.O_NOFOLLOW,
-    );
-    if (!(await targetHandle.stat()).isFile()) return false;
-    if (await targetHandle.readFile('utf8') !== expectedContent) return false;
-    await targetHandle.close();
-    targetHandle = undefined;
-
-    await rename(temporaryPath, canonicalTarget);
-    temporaryPath = undefined;
-    return true;
-  } catch (error) {
-    if (
-      isFileSystemError(error, 'ENOENT')
-      || isFileSystemError(error, 'ELOOP')
-      || isFileSystemError(error, 'ENOTDIR')
-    ) {
-      return false;
-    }
-    throw error;
-  } finally {
-    await targetHandle?.close();
-    await temporaryHandle?.close();
-    if (temporaryPath !== undefined) {
-      await unlink(temporaryPath).catch(() => undefined);
-    }
-  }
-}
-
 async function migrateExistingCalendar(
-  root: string,
+  fileSystem: UnifiedCalendarFileSystem,
   path: string,
-  content: string,
 ): Promise<void> {
-  const migrated = migratedCalendarContent(content);
-  if (migrated === undefined) return;
-  if (!(await replaceFileIfUnchanged(root, path, content, migrated))) {
-    throw new UnifiedCalendarError(
-      '统一日历在升级期间发生变化，ATL 未覆盖你的修改，请重试。',
-    );
-  }
+  await fileSystem.process(path, (content) => migratedCalendarContent(content) ?? content);
 }
 
 async function safeExistingPath(
@@ -258,8 +183,7 @@ export class UnifiedCalendarController {
     const root = await canonicalVaultRoot(vaultRoot);
     const path = join(vaultRoot, ATL_UNIFIED_CALENDAR_PATH);
     if (await safeExistingPath(path, root, 'file')) {
-      const content = await this.fileSystem.read(path);
-      await migrateExistingCalendar(root, path, content);
+      await migrateExistingCalendar(this.fileSystem, path);
       return { path, created: false };
     }
 
@@ -286,8 +210,7 @@ export class UnifiedCalendarController {
       if (!(await safeExistingPath(path, root, 'file'))) {
         throw new UnifiedCalendarError('统一日历路径不安全，ATL 未做任何修改。');
       }
-      const content = await this.fileSystem.read(path);
-      await migrateExistingCalendar(root, path, content);
+      await migrateExistingCalendar(this.fileSystem, path);
       return { path, created: false };
     }
   }

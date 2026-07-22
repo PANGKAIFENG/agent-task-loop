@@ -16,7 +16,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   ATL_UNIFIED_CALENDAR_PATH,
-  replaceFileIfUnchanged,
   UnifiedCalendarController,
 } from '../../../src/obsidian-plugin/unified-calendar-controller.js';
 
@@ -24,24 +23,17 @@ const roots: string[] = [];
 
 function fileSystem() {
   return {
-    exists: async (path: string) => {
-      try {
-        await stat(path);
-        return true;
-      } catch (error) {
-        if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
-          return false;
-        }
-        throw error;
-      }
-    },
     mkdir: async (path: string) => {
       await mkdir(path);
     },
     create: async (path: string, content: string) => {
       await writeFile(path, content, { encoding: 'utf8', flag: 'wx' });
     },
-    read: async (path: string) => readFile(path, 'utf8'),
+    process: async (path: string, update: (content: string) => string) => {
+      const updated = update(await readFile(path, 'utf8'));
+      await writeFile(path, updated, 'utf8');
+      return updated;
+    },
   };
 }
 
@@ -155,7 +147,7 @@ views:
     expect(await readFile(path, 'utf8')).toBe(existing);
   });
 
-  it('does not overwrite a unified calendar changed while migration is in flight', async () => {
+  it('applies the migration to the latest content through the atomic file processor', async () => {
     const root = await fixture();
     const path = join(root, ATL_UNIFIED_CALENDAR_PATH);
     await mkdir(dirname(path), { recursive: true });
@@ -168,15 +160,21 @@ views:
     const base = fileSystem();
     const controller = new UnifiedCalendarController({
       ...base,
-      read: async (target) => {
-        const content = await base.read(target);
+      process: async (target: string, update: (content: string) => string) => {
         await writeFile(target, concurrentChange, 'utf8');
-        return content;
+        const updated = update(await readFile(target, 'utf8'));
+        await writeFile(target, updated, 'utf8');
+        return updated;
       },
     });
 
-    await expect(controller.ensure(root)).rejects.toThrow('升级期间发生变化');
-    expect(await readFile(path, 'utf8')).toBe(concurrentChange);
+    await expect(controller.ensure(root)).resolves.toEqual({ path, created: false });
+    const migrated = parse(await readFile(path, 'utf8')) as {
+      customField: string;
+      views: Array<{ options?: { slotEventOverlap?: boolean } }>;
+    };
+    expect(migrated.customField).toBe('written-by-user');
+    expect(migrated.views[0]?.options?.slotEventOverlap).toBe(false);
   });
 
   it('coalesces concurrent first-time creation without surfacing EEXIST', async () => {
@@ -219,42 +217,7 @@ views:
     const controller = new UnifiedCalendarController(fileSystem());
 
     await expect(controller.ensure(root)).rejects.toThrow('统一日历路径不安全');
-    await expect(fileSystem().exists(join(outside, 'Views', '统一日历.base')))
-      .resolves.toBe(false);
-  });
-});
-
-describe('replaceFileIfUnchanged', () => {
-  it('atomically replaces a matching regular file', async () => {
-    const root = await fixture();
-    const path = join(root, 'calendar.base');
-    await writeFile(path, 'before', 'utf8');
-
-    await expect(replaceFileIfUnchanged(root, path, 'before', 'after'))
-      .resolves.toBe(true);
-    expect(await readFile(path, 'utf8')).toBe('after');
-  });
-
-  it('preserves a concurrent edit when the expected content is stale', async () => {
-    const root = await fixture();
-    const path = join(root, 'calendar.base');
-    await writeFile(path, 'new user content', 'utf8');
-
-    await expect(replaceFileIfUnchanged(root, path, 'old content', 'ATL content'))
-      .resolves.toBe(false);
-    expect(await readFile(path, 'utf8')).toBe('new user content');
-  });
-
-  it('never follows a target symlink outside the Vault', async () => {
-    const root = await fixture();
-    const outside = await fixture();
-    const outsidePath = join(outside, 'outside.base');
-    const path = join(root, 'calendar.base');
-    await writeFile(outsidePath, 'outside content', 'utf8');
-    await symlink(outsidePath, path);
-
-    await expect(replaceFileIfUnchanged(root, path, 'outside content', 'ATL content'))
-      .resolves.toBe(false);
-    expect(await readFile(outsidePath, 'utf8')).toBe('outside content');
+    await expect(stat(join(outside, 'Views', '统一日历.base')))
+      .rejects.toMatchObject({ code: 'ENOENT' });
   });
 });

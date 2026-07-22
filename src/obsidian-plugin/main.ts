@@ -462,7 +462,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
       create: async (path, content) => {
         await this.app.vault.create(vaultPath(path), content);
       },
-      read: async (path) => adapter.read(vaultPath(path)),
+      process: async (path, update) => adapter.process(vaultPath(path), update),
     });
 
     try {
