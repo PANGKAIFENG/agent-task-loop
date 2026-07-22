@@ -1,5 +1,5 @@
-import { realpath, stat } from 'node:fs/promises';
-import { delimiter } from 'node:path';
+import { mkdir, realpath, stat } from 'node:fs/promises';
+import { delimiter, isAbsolute, join, relative } from 'node:path';
 
 import {
   inspectLaunchAgent,
@@ -107,6 +107,24 @@ async function canonicalDirectory(path: string, label: string): Promise<string> 
   } catch {
     throw new BackgroundRuntimeError(`${label}不存在或不是文件夹。`);
   }
+}
+
+async function ensureVaultDirectory(
+  vaultRoot: string,
+  relativePath: string,
+): Promise<string> {
+  const path = join(vaultRoot, relativePath);
+  await mkdir(path, { recursive: true });
+  const canonical = await canonicalDirectory(path, '会议笔记文件夹');
+  const difference = relative(vaultRoot, canonical);
+  if (
+    difference === ''
+    || difference.startsWith('..')
+    || isAbsolute(difference)
+  ) {
+    throw new BackgroundRuntimeError('会议笔记文件夹必须位于当前 Vault 内。');
+  }
+  return canonical;
 }
 
 export function createBackgroundRuntimeDependencies(options: {
@@ -228,8 +246,9 @@ export class BackgroundRuntimeController {
         '模型服务配置无效，请检查 Model 和 Base URL。',
       );
     }
-    const [vaultRoot, claudeConfigDirectory, ...allowedLocalRoots] = await Promise.all([
-      canonicalDirectory(this.dependencies.vaultRoot, '当前 Vault'),
+    const vaultRoot = await canonicalDirectory(this.dependencies.vaultRoot, '当前 Vault');
+    const [meetingNotesRoot, claudeConfigDirectory, ...allowedLocalRoots] = await Promise.all([
+      ensureVaultDirectory(vaultRoot, '08_Meetings'),
       canonicalDirectory(settings.claudeConfigDirectory, 'Claude 配置文件夹'),
       ...settings.allowedLocalRoots.map((path) => canonicalDirectory(path, '资料来源文件夹')),
     ]);
@@ -249,7 +268,7 @@ export class BackgroundRuntimeController {
         ...(modelService.baseUrl === undefined
           ? {}
           : { ANTHROPIC_BASE_URL: modelService.baseUrl }),
-        ATL_ALLOWED_LOCAL_ROOTS: allowedLocalRoots.join(delimiter),
+        ATL_ALLOWED_LOCAL_ROOTS: [meetingNotesRoot, ...allowedLocalRoots].join(delimiter),
         ATL_DAILY_LIMIT: String(settings.dailyLimit),
       },
     });

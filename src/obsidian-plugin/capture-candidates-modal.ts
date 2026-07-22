@@ -24,6 +24,12 @@ function sourceLabel(candidate: CaptureCandidateView): string {
     : candidate.recordedAt.replace('T', ' ').slice(0, 16);
 }
 
+export interface CaptureCandidatesModalOptions {
+  unselectedExplanation?: string;
+  allowIgnoreUnselected?: boolean;
+  initialSelectedCandidateIds?: readonly string[];
+}
+
 export class CaptureCandidatesModal extends Modal {
   private candidateSelection: CandidateSelectionState;
   private formError = '';
@@ -35,10 +41,12 @@ export class CaptureCandidatesModal extends Modal {
       selectedIds: readonly string[],
       ignoredIds: readonly string[],
     ) => Promise<void>,
+    private readonly options: CaptureCandidatesModalOptions = {},
   ) {
     super(app);
     this.candidateSelection = createCandidateSelection(
       prepared.candidates.map(({ candidateId }) => candidateId),
+      options.initialSelectedCandidateIds,
     );
   }
 
@@ -98,24 +106,27 @@ export class CaptureCandidatesModal extends Modal {
 
     const resolution = contentEl.createDiv({ cls: 'atl-candidate-resolution' });
     resolution.createEl('p', {
-      text: '未勾选的候选会保留，下次扫描仍会出现。',
+      text: this.options.unselectedExplanation
+        ?? '未勾选的候选会保留，下次扫描仍会出现。',
     });
-    const ignoreControl = resolution.createDiv({
-      cls: 'atl-candidate-ignore-unselected',
-    });
-    const ignoreCheckbox = ignoreControl.createEl('input', {
-      type: 'checkbox',
-      attr: { 'aria-label': '忽略所有未选候选' },
-    });
-    ignoreCheckbox.checked = this.candidateSelection.ignoreUnselected;
-    ignoreCheckbox.disabled = this.candidateSelection.submitting;
-    ignoreCheckbox.addEventListener('click', () => {
-      this.candidateSelection = setIgnoreUnselected(
-        this.candidateSelection,
-        !this.candidateSelection.ignoreUnselected,
-      );
-    });
-    ignoreControl.createEl('span', { text: '忽略所有未选候选（以后不再显示）' });
+    if (this.options.allowIgnoreUnselected !== false) {
+      const ignoreControl = resolution.createDiv({
+        cls: 'atl-candidate-ignore-unselected',
+      });
+      const ignoreCheckbox = ignoreControl.createEl('input', {
+        type: 'checkbox',
+        attr: { 'aria-label': '忽略所有未选候选' },
+      });
+      ignoreCheckbox.checked = this.candidateSelection.ignoreUnselected;
+      ignoreCheckbox.disabled = this.candidateSelection.submitting;
+      ignoreCheckbox.addEventListener('click', () => {
+        this.candidateSelection = setIgnoreUnselected(
+          this.candidateSelection,
+          !this.candidateSelection.ignoreUnselected,
+        );
+      });
+      ignoreControl.createEl('span', { text: '忽略所有未选候选（以后不再显示）' });
+    }
 
     const actions = new Setting(contentEl).setClass('atl-modal-actions');
     actions.addButton((button) => button

@@ -1,6 +1,6 @@
 import { mkdtemp, mkdir, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -187,13 +187,32 @@ describe('BackgroundRuntimeController', () => {
         ATL_ALLOW_REAL_WRITES: '1',
         ATL_CLAUDE_BIN: '/resolved/claude',
         ATL_CLAUDE_CONFIG_DIR: await realpath(paths.claudeConfigDirectory),
-        ATL_ALLOWED_LOCAL_ROOTS: await realpath(paths.sourceRoot),
+        ATL_ALLOWED_LOCAL_ROOTS: [
+          await realpath(join(paths.vaultRoot, '08_Meetings')),
+          await realpath(paths.sourceRoot),
+        ].join(delimiter),
         ATL_DAILY_LIMIT: '3',
       }),
     }));
     const environment = vi.mocked(deps.installScheduler).mock.calls[0]?.[0].environment;
     expect(environment).not.toHaveProperty('ATL_CLAUDE_MODEL');
     expect(environment).not.toHaveProperty('ANTHROPIC_BASE_URL');
+  });
+
+  it('allows only meeting notes in the current Vault without extra setup', async () => {
+    const paths = await fixture();
+    const deps = dependencies(paths);
+    const controller = new BackgroundRuntimeController(deps);
+
+    await controller.enable({
+      ...settings(paths),
+      allowedLocalRoots: [],
+    });
+
+    const environment = vi.mocked(deps.installScheduler).mock.calls[0]?.[0].environment;
+    expect(environment?.ATL_ALLOWED_LOCAL_ROOTS).toBe(
+      await realpath(join(paths.vaultRoot, '08_Meetings')),
+    );
   });
 
   it('enables an ATL-specific model and Base URL without persisting credentials', async () => {

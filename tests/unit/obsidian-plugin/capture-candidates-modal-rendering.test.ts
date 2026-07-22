@@ -151,4 +151,59 @@ describe('CaptureCandidatesModal rendering', () => {
       expect(onSubmit).toHaveBeenCalledWith(['candidate-1'], ['candidate-2']);
     });
   });
+
+  it('explains meeting candidates without offering sync-scan ignore controls', async () => {
+    const { CaptureCandidatesModal } = await import(
+      '../../../src/obsidian-plugin/capture-candidates-modal.js'
+    );
+    const modal = new CaptureCandidatesModal(
+      {} as never,
+      preparedCapture(),
+      vi.fn(async () => undefined),
+      {
+        unselectedExplanation: '未勾选的候选会继续保留在会议笔记中。',
+        allowIgnoreUnselected: false,
+        initialSelectedCandidateIds: [],
+      },
+    );
+
+    modal.open();
+
+    expect(modal.contentEl.textContent).toContain(
+      '未勾选的候选会继续保留在会议笔记中',
+    );
+    expect(modal.contentEl.textContent).not.toContain('下次扫描仍会出现');
+    expect(modal.contentEl.querySelector(
+      'input[aria-label="忽略所有未选候选"]',
+    )).toBeNull();
+    expect([...modal.contentEl.querySelectorAll<HTMLInputElement>(
+      'input[type="checkbox"]',
+    )].every((checkbox) => !checkbox.checked)).toBe(true);
+  });
+
+  it('submits no meeting candidates until the user explicitly selects one', async () => {
+    const { CaptureCandidatesModal } = await import(
+      '../../../src/obsidian-plugin/capture-candidates-modal.js'
+    );
+    const onSubmit = vi.fn(async () => undefined);
+    const modal = new CaptureCandidatesModal(
+      {} as never,
+      preparedCapture(),
+      onSubmit,
+      {
+        allowIgnoreUnselected: false,
+        initialSelectedCandidateIds: [],
+      },
+    );
+    modal.open();
+
+    const submit = [...modal.contentEl.querySelectorAll('button')].find((button) => (
+      button.textContent === '将所选任务加入 Inbox'
+    ));
+    submit!.click();
+
+    await vi.waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledWith([], []);
+    });
+  });
 });

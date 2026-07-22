@@ -48,11 +48,82 @@ export class ButtonComponent {
   }
 }
 
+export class TextComponent {
+  readonly inputEl = document.createElement('input');
+
+  setPlaceholder(value: string): this {
+    this.inputEl.placeholder = value;
+    return this;
+  }
+
+  setValue(value: string): this {
+    this.inputEl.value = value;
+    return this;
+  }
+
+  onChange(callback: (value: string) => void): this {
+    this.inputEl.addEventListener('input', () => callback(this.inputEl.value));
+    return this;
+  }
+}
+
+export class TextAreaComponent {
+  readonly inputEl = document.createElement('textarea');
+
+  setPlaceholder(value: string): this {
+    this.inputEl.placeholder = value;
+    return this;
+  }
+
+  setValue(value: string): this {
+    this.inputEl.value = value;
+    return this;
+  }
+
+  onChange(callback: (value: string) => void): this {
+    this.inputEl.addEventListener('input', () => callback(this.inputEl.value));
+    return this;
+  }
+}
+
+export class DropdownComponent {
+  readonly selectEl = document.createElement('select');
+
+  addOption(value: string, label: string): this {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label;
+    this.selectEl.append(option);
+    return this;
+  }
+
+  setValue(value: string): this {
+    this.selectEl.value = value;
+    return this;
+  }
+
+  onChange(callback: (value: string) => void): this {
+    this.selectEl.addEventListener('change', () => callback(this.selectEl.value));
+    return this;
+  }
+}
+
 export class Setting {
   readonly settingEl = document.createElement('div');
 
   constructor(container: HTMLElement) {
+    this.settingEl.classList.add('setting-item');
     container.append(this.settingEl);
+  }
+
+  setName(value: string): this {
+    this.settingEl.dataset.name = value;
+    return this;
+  }
+
+  setDesc(value: string): this {
+    this.settingEl.dataset.description = value;
+    return this;
   }
 
   setClass(value: string): this {
@@ -64,6 +135,27 @@ export class Setting {
     const button = new ButtonComponent();
     callback(button);
     this.settingEl.append(button.buttonEl);
+    return this;
+  }
+
+  addText(callback: (text: TextComponent) => void): this {
+    const text = new TextComponent();
+    callback(text);
+    this.settingEl.append(text.inputEl);
+    return this;
+  }
+
+  addTextArea(callback: (text: TextAreaComponent) => void): this {
+    const text = new TextAreaComponent();
+    callback(text);
+    this.settingEl.append(text.inputEl);
+    return this;
+  }
+
+  addDropdown(callback: (dropdown: DropdownComponent) => void): this {
+    const dropdown = new DropdownComponent();
+    callback(dropdown);
+    this.settingEl.append(dropdown.selectEl);
     return this;
   }
 }
