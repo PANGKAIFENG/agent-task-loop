@@ -166,6 +166,27 @@ describe('DingTalkCalendarWriter', () => {
     expect(afterEnd.data.status).toBe('done');
   });
 
+  it('completes an ended ledger event without pretending it was seen remotely again', async () => {
+    let now = new Date('2026-07-20T06:30:00Z');
+    const writer = new DingTalkCalendarWriter({
+      fileSystem: nodeFileSystem(),
+      clock: () => now,
+    });
+    const first = await writer.apply(occurrence(), undefined);
+    const lastSeenAt = first.entry.lastSeenAt;
+
+    now = new Date('2026-07-20T07:01:00Z');
+    const completed = await writer.reconcile(first.entry);
+
+    expect(completed.action).toBe('updated');
+    expect(completed.entry.lastSeenAt).toBe(lastSeenAt);
+    const document = parseTaskDocument(await readFile(
+      join(root, first.entry.taskPath!),
+      'utf8',
+    ));
+    expect(document.data.status).toBe('done');
+  });
+
   it('leaves future events and events without a valid end incomplete', async () => {
     const writer = new DingTalkCalendarWriter({
       fileSystem: nodeFileSystem(),
@@ -317,7 +338,7 @@ describe('DingTalkCalendarWriter', () => {
     expect(document.data.status).toBe('done');
   });
 
-  it('preserves local notes and unrelated frontmatter when auto-completing', async () => {
+  it('preserves local notes and unrelated frontmatter during local completion', async () => {
     let now = new Date('2026-07-20T06:30:00Z');
     const writer = new DingTalkCalendarWriter({
       fileSystem: nodeFileSystem(),
@@ -338,7 +359,7 @@ describe('DingTalkCalendarWriter', () => {
     );
 
     now = new Date('2026-07-20T07:01:00Z');
-    const completed = await writer.apply(occurrence(), first.entry);
+    const completed = await writer.reconcile(first.entry);
 
     expect(completed.action).toBe('updated');
     const document = parseTaskDocument(await readFile(join(root, path), 'utf8'));
@@ -390,6 +411,39 @@ describe('DingTalkCalendarWriter', () => {
       project: 'Local project',
     });
     expect(document.body).toContain('Local note.');
+  });
+
+  it('builds the moved-file identity index at most once per reconciliation run', async () => {
+    const baseFileSystem = nodeFileSystem();
+    const listMarkdownFiles = vi.fn(baseFileSystem.listMarkdownFiles);
+    const writer = new DingTalkCalendarWriter({
+      fileSystem: { ...baseFileSystem, listMarkdownFiles },
+      clock: () => new Date('2026-07-20T08:00:00Z'),
+    });
+    const firstOccurrence = occurrence();
+    const secondOccurrence = occurrence({
+      eventKeyHash: `sha256:${'c'.repeat(64)}`,
+      remoteUid: 'second-event@example.com',
+      href: '/primary/second.ics',
+      snapshotHash: `sha256:${'d'.repeat(64)}`,
+    });
+    const first = await writer.apply(firstOccurrence, undefined);
+    const second = await writer.apply(secondOccurrence, undefined);
+    const firstMovedPath = 'Personal/Calendar/first.md';
+    const secondMovedPath = 'Personal/Calendar/second.md';
+    await mkdir(dirname(join(root, firstMovedPath)), { recursive: true });
+    await rename(join(root, first.entry.taskPath!), join(root, firstMovedPath));
+    await rename(join(root, second.entry.taskPath!), join(root, secondMovedPath));
+    listMarkdownFiles.mockClear();
+
+    writer.beginReconciliation();
+    const firstResult = await writer.reconcile(first.entry);
+    const secondResult = await writer.reconcile(second.entry);
+    writer.endReconciliation();
+
+    expect(firstResult.entry.taskPath).toBe(firstMovedPath);
+    expect(secondResult.entry.taskPath).toBe(secondMovedPath);
+    expect(listMarkdownFiles).toHaveBeenCalledOnce();
   });
 
   it('records a tombstone after local deletion and does not recreate the file', async () => {

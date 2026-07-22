@@ -79,10 +79,6 @@ function addDingTalkIdentity(
   };
 }
 
-function hasEventIdentity(document: TaskDocument, eventKeyHash: string): boolean {
-  return document.data.dingtalk_event_key_hash === eventKeyHash;
-}
-
 function snapshotFromUntrackedDocument(
   document: TaskDocument,
   next: DingTalkRemoteSnapshot,
@@ -114,11 +110,23 @@ export class DingTalkCalendarWriter {
   private readonly fileSystem: DingTalkCalendarFileSystem;
   private readonly clock: () => Date;
   private readonly timeZone: string;
+  private reconciliationActive = false;
+  private taskPathIndex: Promise<Map<string, string>> | null = null;
 
   constructor(options: DingTalkCalendarWriterOptions) {
     this.fileSystem = options.fileSystem;
     this.clock = options.clock ?? (() => new Date());
     this.timeZone = options.timeZone ?? resolveSystemTimeZone();
+  }
+
+  beginReconciliation(): void {
+    this.reconciliationActive = true;
+    this.taskPathIndex = null;
+  }
+
+  endReconciliation(): void {
+    this.reconciliationActive = false;
+    this.taskPathIndex = null;
   }
 
   async apply(
@@ -211,6 +219,56 @@ export class DingTalkCalendarWriter {
     };
   }
 
+  async reconcile(
+    previous: DingTalkEventLedgerEntry,
+  ): Promise<DingTalkCalendarWriteResult> {
+    if (previous.locallyDeletedAt !== null) {
+      return { action: 'tombstoned', entry: previous, conflicts: 0 };
+    }
+
+    const taskPath = await this.findTaskPath(
+      previous.eventKeyHash,
+      previous.taskPath,
+    );
+    if (taskPath === null) {
+      return {
+        action: 'tombstoned',
+        entry: {
+          ...previous,
+          taskPath: null,
+          locallyDeletedAt: this.clock().toISOString(),
+        },
+        conflicts: 0,
+      };
+    }
+
+    const current = parseTaskDocument(await this.fileSystem.read(taskPath));
+    const merged = mergeDingTalkOccurrence({
+      current,
+      previousRemote: previous.remoteSnapshot,
+      nextRemote: previous.remoteSnapshot,
+      cancelledBySync: previous.cancelledBySync,
+      syncTime: this.clock(),
+      timeZone: this.timeZone,
+    });
+    if (merged.changed) {
+      await this.fileSystem.modify(
+        taskPath,
+        serializeTaskDocument(merged.document.data, merged.document.body),
+      );
+    }
+
+    return {
+      action: merged.changed ? 'updated' : 'skipped',
+      entry: {
+        ...previous,
+        taskPath,
+        cancelledBySync: merged.cancelledBySync,
+      },
+      conflicts: merged.overriddenLocalFields.length,
+    };
+  }
+
   private async findTaskPath(
     eventKeyHash: string,
     recordedPath: string | null | undefined,
@@ -219,15 +277,31 @@ export class DingTalkCalendarWriter {
       if (await this.fileSystem.exists(recordedPath)) return recordedPath;
     }
 
+    const index = this.reconciliationActive
+      ? await this.reconciliationTaskPathIndex()
+      : await this.buildTaskPathIndex();
+    return index.get(eventKeyHash) ?? null;
+  }
+
+  private reconciliationTaskPathIndex(): Promise<Map<string, string>> {
+    this.taskPathIndex ??= this.buildTaskPathIndex();
+    return this.taskPathIndex;
+  }
+
+  private async buildTaskPathIndex(): Promise<Map<string, string>> {
+    const index = new Map<string, string>();
     const paths = await this.fileSystem.listMarkdownFiles();
     for (const path of paths) {
       try {
         const document = parseTaskDocument(await this.fileSystem.read(path));
-        if (hasEventIdentity(document, eventKeyHash)) return path;
+        const identity = document.data.dingtalk_event_key_hash;
+        if (typeof identity === 'string' && !index.has(identity)) {
+          index.set(identity, path);
+        }
       } catch {
         // Unrelated Markdown files may not contain valid task frontmatter.
       }
     }
-    return null;
+    return index;
   }
 }
