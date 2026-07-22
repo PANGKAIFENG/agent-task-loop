@@ -44,6 +44,7 @@ views:
       customDayCount: 3
       firstDay: 1
       slotDuration: 00:30:00
+      slotEventOverlap: false
   - type: tasknotesTaskList
     name: 待排期任务
     filters:

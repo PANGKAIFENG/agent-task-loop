@@ -70,7 +70,11 @@ describe('UnifiedCalendarController', () => {
     };
     expect(parsed.filters.and).toContain('note["type"] == "task"');
     expect(parsed.views).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: 'tasknotesCalendar', name: '统一日历' }),
+      expect.objectContaining({
+        type: 'tasknotesCalendar',
+        name: '统一日历',
+        options: expect.objectContaining({ slotEventOverlap: false }),
+      }),
       expect.objectContaining({ type: 'tasknotesTaskList', name: '待排期任务' }),
     ]));
     const unscheduledView = JSON.stringify(
