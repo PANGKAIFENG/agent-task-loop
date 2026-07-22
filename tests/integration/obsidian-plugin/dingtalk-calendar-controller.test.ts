@@ -92,6 +92,7 @@ function dependencies(options: {
   initial?: DingTalkCalendarSettings;
   parsed?: DingTalkCalendarParseResult;
   apply?: (value: DingTalkCalendarOccurrence, previous?: DingTalkEventLedgerEntry) => Promise<DingTalkCalendarWriteResult>;
+  reconcile?: (previous: DingTalkEventLedgerEntry) => Promise<DingTalkCalendarWriteResult>;
   fetch?: () => Promise<DingTalkFetchedCalendar>;
   password?: string | null;
   getPassword?: () => Promise<string | null>;
@@ -116,7 +117,15 @@ function dependencies(options: {
     entry: entry(next),
     conflicts: 0,
   })));
-  const writer = { apply } as Pick<DingTalkCalendarWriter, 'apply'>;
+  const reconcile = vi.fn(options.reconcile ?? (async (previous) => ({
+    action: 'skipped' as const,
+    entry: previous,
+    conflicts: 0,
+  })));
+  const writer = { apply, reconcile } as Pick<
+    DingTalkCalendarWriter,
+    'apply' | 'reconcile'
+  >;
   const controller = new DingTalkCalendarController({
     client,
     writer,
@@ -129,7 +138,15 @@ function dependencies(options: {
     parse,
     clock: options.clock ?? (() => new Date('2026-07-20T04:00:00.000Z')),
   });
-  return { controller, client, apply, parse, saveSettings, current: () => current };
+  return {
+    controller,
+    client,
+    apply,
+    reconcile,
+    parse,
+    saveSettings,
+    current: () => current,
+  };
 }
 
 describe('DingTalkCalendarController', () => {
@@ -242,6 +259,26 @@ describe('DingTalkCalendarController', () => {
     expect(context.current().events[occurrence().eventKeyHash]).toBeDefined();
     expect(context.current().lastSuccessfulSyncAt).toBeNull();
     expect(context.current().lastError).toContain('2');
+  });
+
+  it('reconciles stored events that are absent from an incremental response', async () => {
+    const stored = occurrence();
+    const previous = entry(stored);
+    const context = dependencies({
+      initial: settings({ events: { [stored.eventKeyHash]: previous } }),
+      parsed: { occurrences: [], issues: [] },
+      reconcile: async (value) => ({
+        action: 'updated',
+        entry: value,
+        conflicts: 0,
+      }),
+    });
+
+    const result = await context.controller.sync();
+
+    expect(context.apply).not.toHaveBeenCalled();
+    expect(context.reconcile).toHaveBeenCalledWith(previous);
+    expect(result).toMatchObject({ updated: 1, skipped: 0, errors: 0 });
   });
 
   it('counts a remote cancellation without deleting the local TaskNotes file', async () => {

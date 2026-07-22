@@ -211,6 +211,56 @@ export class DingTalkCalendarWriter {
     };
   }
 
+  async reconcile(
+    previous: DingTalkEventLedgerEntry,
+  ): Promise<DingTalkCalendarWriteResult> {
+    if (previous.locallyDeletedAt !== null) {
+      return { action: 'tombstoned', entry: previous, conflicts: 0 };
+    }
+
+    const taskPath = await this.findTaskPath(
+      previous.eventKeyHash,
+      previous.taskPath,
+    );
+    if (taskPath === null) {
+      return {
+        action: 'tombstoned',
+        entry: {
+          ...previous,
+          taskPath: null,
+          locallyDeletedAt: this.clock().toISOString(),
+        },
+        conflicts: 0,
+      };
+    }
+
+    const current = parseTaskDocument(await this.fileSystem.read(taskPath));
+    const merged = mergeDingTalkOccurrence({
+      current,
+      previousRemote: previous.remoteSnapshot,
+      nextRemote: previous.remoteSnapshot,
+      cancelledBySync: previous.cancelledBySync,
+      syncTime: this.clock(),
+      timeZone: this.timeZone,
+    });
+    if (merged.changed) {
+      await this.fileSystem.modify(
+        taskPath,
+        serializeTaskDocument(merged.document.data, merged.document.body),
+      );
+    }
+
+    return {
+      action: merged.changed ? 'updated' : 'skipped',
+      entry: {
+        ...previous,
+        taskPath,
+        cancelledBySync: merged.cancelledBySync,
+      },
+      conflicts: merged.overriddenLocalFields.length,
+    };
+  }
+
   private async findTaskPath(
     eventKeyHash: string,
     recordedPath: string | null | undefined,

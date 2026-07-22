@@ -166,6 +166,27 @@ describe('DingTalkCalendarWriter', () => {
     expect(afterEnd.data.status).toBe('done');
   });
 
+  it('completes an ended ledger event without pretending it was seen remotely again', async () => {
+    let now = new Date('2026-07-20T06:30:00Z');
+    const writer = new DingTalkCalendarWriter({
+      fileSystem: nodeFileSystem(),
+      clock: () => now,
+    });
+    const first = await writer.apply(occurrence(), undefined);
+    const lastSeenAt = first.entry.lastSeenAt;
+
+    now = new Date('2026-07-20T07:01:00Z');
+    const completed = await writer.reconcile(first.entry);
+
+    expect(completed.action).toBe('updated');
+    expect(completed.entry.lastSeenAt).toBe(lastSeenAt);
+    const document = parseTaskDocument(await readFile(
+      join(root, first.entry.taskPath!),
+      'utf8',
+    ));
+    expect(document.data.status).toBe('done');
+  });
+
   it('leaves future events and events without a valid end incomplete', async () => {
     const writer = new DingTalkCalendarWriter({
       fileSystem: nodeFileSystem(),

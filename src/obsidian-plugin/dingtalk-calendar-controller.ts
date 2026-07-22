@@ -20,7 +20,7 @@ const CONNECTION_ERROR = '钉钉日历连接失败，请检查连接设置后重
 
 export interface DingTalkCalendarControllerDependencies {
   client: ReadOnlyDingTalkCalDavClient;
-  writer: Pick<DingTalkCalendarWriter, 'apply'>;
+  writer: Pick<DingTalkCalendarWriter, 'apply' | 'reconcile'>;
   credentialStore: Pick<DingTalkCredentialStore, 'getPassword'>;
   getSettings: () => DingTalkCalendarSettings;
   saveSettings: (settings: DingTalkCalendarSettings) => Promise<void>;
@@ -156,8 +156,10 @@ export class DingTalkCalendarController {
     }
 
     const events = { ...settings.events };
+    const fetchedEventKeys = new Set<string>();
     result.errors += fetched.readErrors + parsed.issues.length;
     for (const occurrence of parsed.occurrences) {
+      fetchedEventKeys.add(occurrence.eventKeyHash);
       const previous = settings.events[occurrence.eventKeyHash];
       try {
         const written = await this.dependencies.writer.apply(occurrence, previous);
@@ -168,6 +170,18 @@ export class DingTalkCalendarController {
         if (becameCancelled) result.cancelled += 1;
         else if (written.action === 'added') result.added += 1;
         else if (written.action === 'updated') result.updated += 1;
+        else result.skipped += 1;
+      } catch {
+        result.errors += 1;
+      }
+    }
+    for (const [eventKeyHash, previous] of Object.entries(settings.events)) {
+      if (fetchedEventKeys.has(eventKeyHash)) continue;
+      try {
+        const written = await this.dependencies.writer.reconcile(previous);
+        events[eventKeyHash] = written.entry;
+        result.conflicts += written.conflicts;
+        if (written.action === 'updated') result.updated += 1;
         else result.skipped += 1;
       } catch {
         result.errors += 1;
