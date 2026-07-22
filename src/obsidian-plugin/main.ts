@@ -464,7 +464,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
       create: async (path, content) => {
         await this.app.vault.create(vaultPath(path), content);
       },
-      read: async (path) => adapter.read(vaultPath(path)),
+      process: async (path, update) => adapter.process(vaultPath(path), update),
     });
 
     try {
@@ -1116,7 +1116,7 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
         .onClick(() => this.atlPlugin.openUnifiedCalendar()));
     new Setting(containerEl)
       .setName('ATL 紧凑卡片')
-      .setDesc('在 TaskNotes 看板中优先显示项目、计划时间、截止时间和优先级。')
+      .setDesc('在 TaskNotes 看板中优先显示项目、计划时间、截止时间和优先级，并在日历中单行省略过长标题。')
       .addToggle((toggle) => toggle
         .setValue(this.atlPlugin.settings.taskCardThemeEnabled)
         .onChange(async (value) => {

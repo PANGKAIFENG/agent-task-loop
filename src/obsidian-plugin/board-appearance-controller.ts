@@ -22,6 +22,7 @@ const MANUAL_CARD_SORT = [
   { column: 'tasknotes_manual_order', direction: 'DESC' },
   { column: 'formula.atlPriorityRank', direction: 'ASC' },
 ];
+const SUPPORTED_CALENDAR_NAMES = new Set(['日历', '日历视图']);
 
 function stringArrayEquals(value: unknown, expected: readonly string[]): boolean {
   return Array.isArray(value)
@@ -41,6 +42,11 @@ export interface BoardPresetStatus {
 
 type BaseView = Record<string, unknown>;
 type BaseDocument = Record<string, unknown> & { views: BaseView[] };
+type ParsedBoard = {
+  document: BaseDocument;
+  view: BaseView;
+  calendar: BaseView | undefined;
+};
 
 export class BoardAppearanceError extends Error {
   constructor(message: string) {
@@ -94,26 +100,57 @@ async function readSafeFile(path: string, root: string): Promise<string | null> 
   }
 }
 
-function parseBoard(content: string): { document: BaseDocument; view: BaseView } {
+function isRecord(value: unknown): value is BaseView {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function calendarOptions(calendar: BaseView): BaseView | undefined {
+  if (calendar.options === undefined) return undefined;
+  if (!isRecord(calendar.options)) throw new Error('invalid calendar options');
+  return calendar.options;
+}
+
+function parseBoard(content: string): ParsedBoard {
   try {
     const document = parse(content) as unknown;
-    if (document === null || typeof document !== 'object') throw new Error('invalid');
+    if (!isRecord(document)) throw new Error('invalid');
     const views = (document as { views?: unknown }).views;
     if (!Array.isArray(views)) throw new Error('invalid');
     const matching = views.filter((view): view is BaseView => (
-      view !== null
-      && typeof view === 'object'
-      && (view as BaseView).type === 'tasknotesKanban'
-      && (view as BaseView).name === '任务总看板'
+      isRecord(view)
+      && view.type === 'tasknotesKanban'
+      && view.name === '任务总看板'
     ));
     if (matching.length !== 1) throw new Error('ambiguous');
+    const calendars = views.filter((view): view is BaseView => (
+      isRecord(view)
+      && view.type === 'tasknotesCalendar'
+      && typeof view.name === 'string'
+      && SUPPORTED_CALENDAR_NAMES.has(view.name)
+    ));
+    if (calendars.length > 1) throw new Error('ambiguous');
+    const calendar = calendars[0];
+    if (calendar !== undefined) calendarOptions(calendar);
     return {
       document: document as BaseDocument,
       view: matching[0] as BaseView,
+      calendar,
     };
   } catch {
     throw new BoardAppearanceError('任务总看板配置无效，未做任何修改。');
   }
+}
+
+function calendarPresetApplied(calendar: BaseView | undefined): boolean {
+  return calendar === undefined
+    || calendarOptions(calendar)?.slotEventOverlap === false;
+}
+
+function applyCalendarPreset(calendar: BaseView | undefined): void {
+  if (calendar === undefined) return;
+  const options = calendarOptions(calendar) ?? {};
+  options.slotEventOverlap = false;
+  calendar.options = options;
 }
 
 async function createBackup(path: string, content: string, root: string): Promise<void> {
@@ -193,7 +230,7 @@ export class BoardAppearanceController {
     }
     let applied = false;
     try {
-      const { view } = parseBoard(content);
+      const { view, calendar } = parseBoard(content);
       applied = view.groupBy !== null
         && typeof view.groupBy === 'object'
         && (view.groupBy as BaseView).property === 'status'
@@ -204,7 +241,8 @@ export class BoardAppearanceController {
         && stringArrayEquals(view.order, MANUAL_CARD_FIELDS)
         && sortEquals(view.sort)
         && view.columnWidth === 320
-        && view.cardLayout === 'compact';
+        && view.cardLayout === 'compact'
+        && calendarPresetApplied(calendar);
     } catch {
       applied = false;
     }
@@ -218,7 +256,7 @@ export class BoardAppearanceController {
     if (content === null) {
       throw new BoardAppearanceError('未找到 TaskNotes 任务总看板。');
     }
-    const { document, view } = parseBoard(content);
+    const { document, view, calendar } = parseBoard(content);
     await createBackup(`${basePath}.atl-backup`, content, root);
     view.groupBy = { property: 'status', direction: 'ASC' };
     view.pinnedColumns = 'inbox,ready,in_progress,done';
@@ -228,6 +266,7 @@ export class BoardAppearanceController {
     view.sort = MANUAL_CARD_SORT.map((item) => ({ ...item }));
     view.columnWidth = 320;
     view.cardLayout = 'compact';
+    applyCalendarPreset(calendar);
     await atomicWrite(basePath, stringify(document, { lineWidth: 0 }), root);
   }
 

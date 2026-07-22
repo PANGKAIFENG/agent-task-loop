@@ -9,7 +9,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { parse } from 'yaml';
+import { parse, stringify } from 'yaml';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
@@ -46,6 +46,8 @@ views:
   - type: tasknotesCalendar
     name: 日历
     calendarView: timeGridWeek
+    options:
+      showScheduled: true
 `;
 
 async function fixture(content = original) {
@@ -93,6 +95,10 @@ describe('BoardAppearanceController', () => {
       type: 'tasknotesCalendar',
       name: '日历',
       calendarView: 'timeGridWeek',
+      options: {
+        showScheduled: true,
+        slotEventOverlap: false,
+      },
     });
     expect(await readFile(paths.backupPath, 'utf8')).toBe(original);
 
@@ -125,6 +131,91 @@ describe('BoardAppearanceController', () => {
       available: true,
       applied: false,
       restorable: true,
+    });
+  });
+
+  it('treats a legacy overlapping calendar as not applied until the preset is reapplied', async () => {
+    const paths = await fixture();
+    const controller = new BoardAppearanceController();
+    await controller.applyRecommendedPreset(paths.vaultRoot);
+
+    const document = parse(await readFile(paths.basePath, 'utf8')) as {
+      views: Array<Record<string, unknown>>;
+    };
+    const calendar = document.views.find((view) => view.name === '日历');
+    expect(calendar).toBeDefined();
+    if (calendar === undefined) throw new Error('missing calendar fixture');
+    calendar.options = { showScheduled: true };
+    await writeFile(paths.basePath, stringify(document, { lineWidth: 0 }), 'utf8');
+
+    await expect(controller.status(paths.vaultRoot)).resolves.toMatchObject({
+      available: true,
+      applied: false,
+    });
+
+    await controller.applyRecommendedPreset(paths.vaultRoot);
+    await expect(controller.status(paths.vaultRoot)).resolves.toMatchObject({
+      available: true,
+      applied: true,
+    });
+  });
+
+  it('updates the supported 日历视图 name and preserves its other fields', async () => {
+    const paths = await fixture(original.replace('name: 日历', 'name: 日历视图'));
+    const controller = new BoardAppearanceController();
+
+    await controller.applyRecommendedPreset(paths.vaultRoot);
+
+    const parsed = parse(await readFile(paths.basePath, 'utf8')) as {
+      views: Array<Record<string, unknown>>;
+    };
+    expect(parsed.views[1]).toMatchObject({
+      type: 'tasknotesCalendar',
+      name: '日历视图',
+      calendarView: 'timeGridWeek',
+      options: {
+        showScheduled: true,
+        slotEventOverlap: false,
+      },
+    });
+  });
+
+  it('keeps the Kanban preset behavior without adding a calendar view', async () => {
+    const withoutCalendar = original.replace(
+      /\n {2}- type: tasknotesCalendar[\s\S]*$/,
+      '\n',
+    );
+    const paths = await fixture(withoutCalendar);
+    const controller = new BoardAppearanceController();
+
+    await controller.applyRecommendedPreset(paths.vaultRoot);
+
+    const parsed = parse(await readFile(paths.basePath, 'utf8')) as {
+      views: Array<Record<string, unknown>>;
+    };
+    expect(parsed.views).toHaveLength(1);
+    expect(parsed.views[0]).toMatchObject({
+      type: 'tasknotesKanban',
+      name: '任务总看板',
+      groupBy: { property: 'status', direction: 'ASC' },
+    });
+    await expect(controller.status(paths.vaultRoot)).resolves.toMatchObject({
+      available: true,
+      applied: true,
+    });
+  });
+
+  it('rejects ambiguous supported calendar views without writing or creating a backup', async () => {
+    const ambiguous = `${original}  - type: tasknotesCalendar\n    name: 日历视图\n`;
+    const paths = await fixture(ambiguous);
+    const controller = new BoardAppearanceController();
+
+    await expect(controller.applyRecommendedPreset(paths.vaultRoot)).rejects.toThrow(
+      '任务总看板配置无效',
+    );
+    expect(await readFile(paths.basePath, 'utf8')).toBe(ambiguous);
+    await expect(readFile(paths.backupPath, 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
     });
   });
 

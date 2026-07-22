@@ -23,24 +23,17 @@ const roots: string[] = [];
 
 function fileSystem() {
   return {
-    exists: async (path: string) => {
-      try {
-        await stat(path);
-        return true;
-      } catch (error) {
-        if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
-          return false;
-        }
-        throw error;
-      }
-    },
     mkdir: async (path: string) => {
       await mkdir(path);
     },
     create: async (path: string, content: string) => {
       await writeFile(path, content, { encoding: 'utf8', flag: 'wx' });
     },
-    read: async (path: string) => readFile(path, 'utf8'),
+    process: async (path: string, update: (content: string) => string) => {
+      const updated = update(await readFile(path, 'utf8'));
+      await writeFile(path, updated, 'utf8');
+      return updated;
+    },
   };
 }
 
@@ -70,7 +63,11 @@ describe('UnifiedCalendarController', () => {
     };
     expect(parsed.filters.and).toContain('note["type"] == "task"');
     expect(parsed.views).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: 'tasknotesCalendar', name: '统一日历' }),
+      expect.objectContaining({
+        type: 'tasknotesCalendar',
+        name: '统一日历',
+        options: expect.objectContaining({ slotEventOverlap: false }),
+      }),
       expect.objectContaining({ type: 'tasknotesTaskList', name: '待排期任务' }),
     ]));
     const unscheduledView = JSON.stringify(
@@ -90,6 +87,94 @@ describe('UnifiedCalendarController', () => {
 
     await expect(controller.ensure(root)).resolves.toEqual({ path, created: false });
     expect(await readFile(path, 'utf8')).toBe(existing);
+  });
+
+  it('migrates an existing managed unified calendar without changing its other fields', async () => {
+    const root = await fixture();
+    const path = join(root, ATL_UNIFIED_CALENDAR_PATH);
+    await mkdir(dirname(path), { recursive: true });
+    const existing = `filters:
+  and:
+    - note["type"] == "task"
+customField: keep-me
+views:
+  - type: tasknotesCalendar
+    name: 统一日历
+    options:
+      showScheduled: true
+      calendarView: timeGridWeek
+  - type: tasknotesTaskList
+    name: 自定义列表
+`;
+    await writeFile(path, existing, 'utf8');
+    const controller = new UnifiedCalendarController(fileSystem());
+
+    await expect(controller.ensure(root)).resolves.toEqual({ path, created: false });
+
+    const migrated = parse(await readFile(path, 'utf8')) as {
+      customField: string;
+      views: Array<Record<string, unknown>>;
+    };
+    expect(migrated.customField).toBe('keep-me');
+    expect(migrated.views).toEqual([
+      expect.objectContaining({
+        type: 'tasknotesCalendar',
+        name: '统一日历',
+        options: {
+          showScheduled: true,
+          calendarView: 'timeGridWeek',
+          slotEventOverlap: false,
+        },
+      }),
+      { type: 'tasknotesTaskList', name: '自定义列表' },
+    ]);
+  });
+
+  it('does not rewrite an existing managed calendar that already has the layout option', async () => {
+    const root = await fixture();
+    const path = join(root, ATL_UNIFIED_CALENDAR_PATH);
+    await mkdir(dirname(path), { recursive: true });
+    const existing = `views:
+  - type: tasknotesCalendar
+    name: 统一日历
+    options:
+      slotEventOverlap: false
+`;
+    await writeFile(path, existing, 'utf8');
+    const controller = new UnifiedCalendarController(fileSystem());
+
+    await expect(controller.ensure(root)).resolves.toEqual({ path, created: false });
+    expect(await readFile(path, 'utf8')).toBe(existing);
+  });
+
+  it('applies the migration to the latest content through the atomic file processor', async () => {
+    const root = await fixture();
+    const path = join(root, ATL_UNIFIED_CALENDAR_PATH);
+    await mkdir(dirname(path), { recursive: true });
+    const existing = `views:
+  - type: tasknotesCalendar
+    name: 统一日历
+`;
+    const concurrentChange = `${existing}customField: written-by-user\n`;
+    await writeFile(path, existing, 'utf8');
+    const base = fileSystem();
+    const controller = new UnifiedCalendarController({
+      ...base,
+      process: async (target: string, update: (content: string) => string) => {
+        await writeFile(target, concurrentChange, 'utf8');
+        const updated = update(await readFile(target, 'utf8'));
+        await writeFile(target, updated, 'utf8');
+        return updated;
+      },
+    });
+
+    await expect(controller.ensure(root)).resolves.toEqual({ path, created: false });
+    const migrated = parse(await readFile(path, 'utf8')) as {
+      customField: string;
+      views: Array<{ options?: { slotEventOverlap?: boolean } }>;
+    };
+    expect(migrated.customField).toBe('written-by-user');
+    expect(migrated.views[0]?.options?.slotEventOverlap).toBe(false);
   });
 
   it('coalesces concurrent first-time creation without surfacing EEXIST', async () => {
@@ -132,7 +217,7 @@ describe('UnifiedCalendarController', () => {
     const controller = new UnifiedCalendarController(fileSystem());
 
     await expect(controller.ensure(root)).rejects.toThrow('统一日历路径不安全');
-    await expect(fileSystem().exists(join(outside, 'Views', '统一日历.base')))
-      .resolves.toBe(false);
+    await expect(stat(join(outside, 'Views', '统一日历.base')))
+      .rejects.toMatchObject({ code: 'ENOENT' });
   });
 });

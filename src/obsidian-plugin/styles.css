@@ -346,6 +346,25 @@
   overflow-wrap: anywhere;
 }
 
+body.atl-task-card-theme .tasknotes-plugin.advanced-calendar-view .fc-event-main,
+body.atl-task-card-theme .tasknotes-plugin.advanced-calendar-view .fc-event-main-frame,
+body.atl-task-card-theme .tasknotes-plugin.advanced-calendar-view .fc-event-title-container {
+  min-width: 0;
+  overflow: hidden;
+}
+
+body.atl-task-card-theme .tasknotes-plugin.advanced-calendar-view .fc-timegrid-event {
+  min-width: 0;
+}
+
+body.atl-task-card-theme .tasknotes-plugin.advanced-calendar-view .fc-event-title {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact {
   --atl-priority-color: var(--current-priority-color, var(--color-blue));
   background: var(--background-primary);
