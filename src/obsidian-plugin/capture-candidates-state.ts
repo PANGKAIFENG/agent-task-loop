@@ -7,11 +7,15 @@ export interface CandidateSelectionState {
 
 export function createCandidateSelection(
   candidateIds: readonly string[],
+  initialSelectedIds?: readonly string[],
 ): CandidateSelectionState {
   const uniqueIds = [...new Set(candidateIds)];
+  const initial = initialSelectedIds === undefined
+    ? new Set(uniqueIds)
+    : new Set(initialSelectedIds);
   return {
     candidateIds: uniqueIds,
-    selectedIds: new Set(uniqueIds),
+    selectedIds: new Set(uniqueIds.filter((id) => initial.has(id))),
     ignoreUnselected: false,
     submitting: false,
   };

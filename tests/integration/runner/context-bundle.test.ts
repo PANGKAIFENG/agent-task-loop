@@ -184,6 +184,51 @@ describe('buildContextBundle', () => {
       .toMatchObject({ kind: 'local_file' });
   });
 
+  it('includes a meeting transcript through the explicit root and redaction boundary', async () => {
+    const root = await temporaryRoot();
+    const meetingDirectory = join(root, '08_Meetings', '2026-07');
+    const meetingNote = join(meetingDirectory, '2026-07-22-周会-aaaaaaaa.md');
+    await mkdir(meetingDirectory, { recursive: true });
+    await writeFile(meetingNote, [
+      '<!-- ATL_MEETING_TRANSCRIPT_START -->',
+      '> [!note]- 会议听记原文',
+      '> 李四：使用 npm_abcdefghijklmnopqrstuvwx 完成验证。',
+      '<!-- ATL_MEETING_TRANSCRIPT_END -->',
+    ].join('\n'));
+
+    const bundle = await buildContextBundle(
+      makeTask({ sourceNote: meetingNote }),
+      makeProject(),
+      { allowedLocalRoots: [root] },
+    );
+
+    const source = bundle.blocks.find((block) => block.label === 'task_source_note');
+    expect(source?.content).toContain('李四：使用 [REDACTED] 完成验证');
+    expect(source?.content).not.toContain('npm_abcdefghijklmnopqrstuvwx');
+    if (source !== undefined) expectValidDigest(source);
+  });
+
+  it('does not let the meeting root expose sibling notes in the same Vault', async () => {
+    const vaultRoot = await temporaryRoot();
+    const meetingRoot = join(vaultRoot, '08_Meetings');
+    const privateDirectory = join(vaultRoot, 'Private');
+    const privateNote = join(privateDirectory, 'unrelated.md');
+    await Promise.all([
+      mkdir(meetingRoot, { recursive: true }),
+      mkdir(privateDirectory, { recursive: true }),
+    ]);
+    await writeFile(privateNote, 'PRIVATE_VAULT_NOTE_SENTINEL');
+
+    await expect(buildContextBundle(
+      makeTask({ sourceNote: privateNote }),
+      makeProject(),
+      { allowedLocalRoots: [meetingRoot] },
+    )).rejects.toMatchObject({
+      name: 'ContextBundleError',
+      code: 'local_file_not_allowed',
+    });
+  });
+
   it('rejects a FIFO with a typed error without blocking on open or read', async () => {
     const root = await temporaryRoot();
     const fifo = join(root, 'blocking-source');

@@ -6,6 +6,32 @@
   width: min(600px, calc(100vw - 32px));
 }
 
+.atl-meeting-transcript-modal {
+  width: min(680px, calc(100vw - 32px));
+}
+
+.atl-meeting-event-title {
+  color: var(--text-normal);
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-semibold);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.atl-meeting-transcript-modal .setting-item {
+  align-items: flex-start;
+}
+
+.atl-meeting-transcript-modal .setting-item-control textarea,
+.atl-meeting-transcript-modal .setting-item-control input[type='text'] {
+  min-width: min(390px, 56vw);
+}
+
+.atl-meeting-transcript-modal textarea {
+  min-height: min(330px, 42vh);
+  resize: vertical;
+}
+
 .atl-quick-capture-modal .setting-item {
   align-items: flex-start;
 }
@@ -206,11 +232,13 @@
   }
 
   .atl-quick-capture-modal .setting-item,
+  .atl-meeting-transcript-modal .setting-item,
   .atl-task-confirmation-modal .setting-item {
     display: block;
   }
 
   .atl-quick-capture-modal .setting-item-control,
+  .atl-meeting-transcript-modal .setting-item-control,
   .atl-task-confirmation-modal .setting-item-control {
     justify-content: flex-start;
     margin-top: 8px;
@@ -218,6 +246,8 @@
 
   .atl-quick-capture-modal .setting-item-control textarea,
   .atl-quick-capture-modal .setting-item-control input[type='text'],
+  .atl-meeting-transcript-modal .setting-item-control textarea,
+  .atl-meeting-transcript-modal .setting-item-control input[type='text'],
   .atl-task-confirmation-modal .setting-item-control textarea,
   .atl-task-confirmation-modal .setting-item-control input[type='text'] {
     min-width: 100%;

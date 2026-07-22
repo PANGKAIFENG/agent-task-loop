@@ -91,6 +91,18 @@ import {
 import { UnifiedCalendarPluginLifecycle } from './unified-calendar-plugin.js';
 import { runWithPersistentFeedback } from './persistent-operation-feedback.js';
 import { enrichTask } from './task-enrichment.js';
+import {
+  MeetingAnalysisAlreadyExistsError,
+  MeetingAnalysisController,
+  MeetingAnalysisInProgressError,
+} from './meeting-analysis.js';
+import { MeetingCandidateController } from './meeting-candidate-controller.js';
+import {
+  MeetingNoteController,
+  parseDingTalkMeetingSource,
+} from './meeting-note.js';
+import { MeetingPluginLifecycle } from './meeting-plugin-lifecycle.js';
+import { MeetingTranscriptModal } from './meeting-transcript-modal.js';
 
 const CARD_THEME_CLASS = 'atl-task-card-theme';
 
@@ -203,6 +215,24 @@ export default class AgentTaskLoopPlugin extends Plugin {
         void this.activateContributionView();
       },
     });
+
+    new MeetingPluginLifecycle({
+      addCommand: (command) => {
+        this.addCommand(command);
+      },
+      registerFileMenu: (handler) => {
+        this.registerEvent(this.app.workspace.on(
+          'file-menu',
+          (menu: Menu, file: TAbstractFile) => {
+            if (file instanceof TFile) handler(menu, file.path);
+          },
+        ));
+      },
+      getActiveFilePath: () => this.app.workspace.getActiveFile()?.path ?? null,
+      open: (path) => {
+        void this.openMeetingTranscript(path);
+      },
+    }).start();
 
     this.registerEvent(this.app.workspace.on(
       'file-menu',
@@ -566,6 +596,114 @@ export default class AgentTaskLoopPlugin extends Plugin {
     new QuickCaptureModal(this.app, async (input) => {
       await captureTask(authorized.context, input);
       new Notice('任务已加入 Inbox');
+    }).open();
+  }
+
+  private async openMeetingTranscript(eventPath: string): Promise<void> {
+    const authorized = this.authorizedServiceContext();
+    if (authorized === null) return;
+    const { adapter, context } = authorized;
+    let source;
+    try {
+      source = parseDingTalkMeetingSource(
+        eventPath,
+        await adapter.read(eventPath),
+      );
+    } catch {
+      new Notice('请选择有效的钉钉日程');
+      return;
+    }
+
+    new MeetingTranscriptModal(this.app, source, async (input, action) => {
+      const fileSystem = {
+        exists: async (path: string) => adapter.exists(path),
+        read: async (path: string) => adapter.read(path),
+        ensureDirectory: async (path: string) => {
+          let directory = '';
+          for (const segment of path.split('/').filter(Boolean)) {
+            directory = directory === '' ? segment : `${directory}/${segment}`;
+            if (!(await adapter.exists(directory))) await adapter.mkdir(directory);
+          }
+        },
+        create: async (path: string, content: string) => {
+          await this.app.vault.create(path, content);
+        },
+        listMarkdownFiles: async (path: string) => this.app.vault
+          .getMarkdownFiles()
+          .map((file) => file.path)
+          .filter((filePath) => filePath.startsWith(`${path}/`)),
+      };
+      const meeting = await new MeetingNoteController(fileSystem).create({
+        eventPath,
+        meetingType: input.meetingType,
+        participants: input.participants,
+        transcript: input.transcript,
+      });
+      const meetingFile = this.app.vault.getAbstractFileByPath(meeting.path);
+      if (!(meetingFile instanceof TFile)) {
+        throw new Error('Obsidian 尚未识别会议笔记');
+      }
+      await this.app.workspace.getLeaf(false).openFile(meetingFile);
+      if (action === 'save') {
+        new Notice(meeting.created
+          ? '会议听记已保存'
+          : '会议笔记已存在，未覆盖原听记');
+        return;
+      }
+
+      let analysis;
+      try {
+        const executor = await this.createStructuredExecutor();
+        analysis = await new MeetingAnalysisController({
+          fileSystem: {
+            read: async (path) => adapter.read(path),
+            process: async (path, transform) => {
+              const file = this.app.vault.getAbstractFileByPath(path);
+              if (!(file instanceof TFile)) throw new Error('会议笔记不存在');
+              return this.app.vault.process(file, transform);
+            },
+          },
+          executor,
+        }).analyze(meeting.path);
+      } catch (error) {
+        if (error instanceof MeetingAnalysisAlreadyExistsError) {
+          new Notice('已有 AI 分析和人工补充已保留，不会重复覆盖');
+          return;
+        }
+        if (error instanceof MeetingAnalysisInProgressError) {
+          new Notice('这份会议笔记正在分析，请稍候');
+          return;
+        }
+        new Notice('会议笔记已保存，AI 分析失败，可稍后重试');
+        return;
+      }
+
+      const candidateController = new MeetingCandidateController({ context });
+      const prepared = candidateController.prepare({
+        meetingNotePath: join(adapter.getBasePath(), meeting.path),
+        meetingDate: source.meetingDate,
+        analysis,
+      });
+      if (prepared.candidates.length === 0) {
+        new Notice('会议分析完成，未发现明确待办');
+        return;
+      }
+      new CaptureCandidatesModal(
+        this.app,
+        prepared,
+        async (selectedIds) => {
+          const result = await candidateController.commit(prepared, selectedIds);
+          const accepted = result.createdTaskIds.length + result.existingTaskIds.length;
+          new Notice(accepted === 0
+            ? '未选候选已保留在会议笔记中'
+            : `已将 ${accepted} 个会议待办加入 Inbox`);
+        },
+        {
+          unselectedExplanation: '未勾选的候选会继续保留在会议笔记中。',
+          allowIgnoreUnselected: false,
+          initialSelectedCandidateIds: [],
+        },
+      ).open();
     }).open();
   }
 
