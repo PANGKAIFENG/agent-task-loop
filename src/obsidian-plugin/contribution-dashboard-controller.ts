@@ -3,6 +3,10 @@ import {
   type ContributionRange,
   type ContributionSnapshot,
 } from '../services/query-contribution.js';
+import {
+  queryPersonalHome,
+  type PersonalHomeSnapshot,
+} from '../services/query-personal-home.js';
 import type { ServiceContext } from '../services/service-context.js';
 import {
   OpenTokenAdapterError,
@@ -16,6 +20,11 @@ export interface ContributionDashboardState {
   contribution: {
     status: 'loading' | 'ready' | 'error';
     snapshot: ContributionSnapshot | null;
+    errorCode: string | null;
+  };
+  home: {
+    status: 'loading' | 'ready' | 'error';
+    snapshot: PersonalHomeSnapshot | null;
     errorCode: string | null;
   };
   token: {
@@ -64,6 +73,7 @@ function rangeStart(today: string, range: ContributionRange): string {
   switch (range) {
     case '7d': return addDays(today, -6);
     case '12w': return addDays(today, -83);
+    case '26w': return addDays(today, -181);
     case '1y': return addDays(today, -364);
   }
 }
@@ -107,9 +117,10 @@ export class ContributionDashboardController {
     const today = localDate(dependencies.clock(), dependencies.timeZone);
     const cached = snapshotFromCache(dependencies.getTokenCache());
     this.state = {
-      range: '12w',
+      range: '26w',
       selectedDate: today,
       contribution: { status: 'loading', snapshot: null, errorCode: null },
+      home: { status: 'loading', snapshot: null, errorCode: null },
       token: {
         status: cached === null ? 'loading' : 'cached',
         snapshot: cached,
@@ -154,6 +165,11 @@ export class ContributionDashboardController {
       contribution: {
         status: 'loading',
         snapshot: this.state.contribution.snapshot,
+        errorCode: null,
+      },
+      home: {
+        status: 'loading',
+        snapshot: this.state.home.snapshot,
         errorCode: null,
       },
     });
@@ -206,8 +222,10 @@ export class ContributionDashboardController {
         range: this.state.range,
         selectedDate: this.state.selectedDate,
       });
+      const home = queryPersonalHome({ tasks, projects });
       this.patch({
         contribution: { status: 'ready', snapshot, errorCode: null },
+        home: { status: 'ready', snapshot: home, errorCode: null },
       });
     } catch {
       if (!this.disposed) {
@@ -215,6 +233,11 @@ export class ContributionDashboardController {
           contribution: {
             status: 'error',
             snapshot: this.state.contribution.snapshot,
+            errorCode: 'query_failed',
+          },
+          home: {
+            status: 'error',
+            snapshot: this.state.home.snapshot,
             errorCode: 'query_failed',
           },
         });

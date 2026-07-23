@@ -2,7 +2,7 @@ import type { Project } from '../domain/project.js';
 import type { Task } from '../domain/task.js';
 import type { AuditEvent } from '../storage/contracts.js';
 
-export type ContributionRange = '7d' | '12w' | '1y';
+export type ContributionRange = '7d' | '12w' | '26w' | '1y';
 
 export interface ContributionSnapshot {
   range: ContributionRange;
@@ -15,6 +15,7 @@ export interface ContributionSnapshot {
   days: Array<{
     date: string;
     completed: number;
+    outputCount: number;
     projectCount: number;
     level: 0 | 1 | 2 | 3 | 4;
   }>;
@@ -80,6 +81,7 @@ function rangeLength(range: ContributionRange): number {
   switch (range) {
     case '7d': return 7;
     case '12w': return 84;
+    case '26w': return 182;
     case '1y': return 365;
   }
 }
@@ -97,6 +99,10 @@ function projectName(task: Task, projectsById: Map<string, Project>): string {
   return task.projectId === null
     ? '未归类'
     : projectsById.get(task.projectId)?.name ?? '未归类';
+}
+
+function taskTitle(task: Task): string {
+  return task.title.trim() === '' ? '未命名任务' : task.title;
 }
 
 function completionMap(
@@ -156,6 +162,7 @@ export function queryContribution(input: QueryContributionInput): ContributionSn
     return {
       date,
       completed,
+      outputCount: values.reduce((sum, { task }) => sum + task.artifactRefs.length, 0),
       projectCount: projectIds.size,
       level: Math.min(completed, 4) as 0 | 1 | 2 | 3 | 4,
     };
@@ -187,7 +194,7 @@ export function queryContribution(input: QueryContributionInput): ContributionSn
     };
     summary.completed += 1;
     summary.artifactCount += task.artifactRefs.length;
-    if (summary.evidenceTitles.length < 2) summary.evidenceTitles.push(task.title);
+    if (summary.evidenceTitles.length < 2) summary.evidenceTitles.push(taskTitle(task));
     summaries.set(key, summary);
   }
   const projectSummaries = [...summaries.values()].sort((left, right) => (
@@ -211,7 +218,7 @@ export function queryContribution(input: QueryContributionInput): ContributionSn
     projectSummaries,
     outputs: selectedCompletions.map(({ task, event }) => ({
       taskId: task.taskId,
-      title: task.title,
+      title: taskTitle(task),
       projectName: projectName(task, projectsById),
       completedAt: event.at,
       artifactRef: task.artifactRefs.at(-1) ?? null,
