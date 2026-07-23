@@ -3,7 +3,10 @@ import { posix } from 'node:path';
 import { parse } from 'yaml';
 
 import { PRIORITIES, type Priority } from '../domain/task.js';
-import type { ClaudeStructuredExecutor } from '../runner/claude-driver.js';
+import {
+  ClaudeDriverError,
+  type ClaudeStructuredExecutor,
+} from '../runner/claude-driver.js';
 import type { SyncSourceRecord } from './sync-source-reader.js';
 
 const MAX_BATCH_RECORDS = 40;
@@ -29,7 +32,7 @@ const extractedCandidateSchema: z.ZodType<ExtractedCandidate> = z.object({
 }).strict();
 
 const extractionResultSchema = z.object({
-  candidates: z.array(extractedCandidateSchema),
+  candidates: z.array(z.unknown()),
 }).strict();
 
 export const candidateExtractionJsonSchema: Record<string, unknown> = {
@@ -205,28 +208,37 @@ export async function extractTaskCandidates(input: {
     const sourceByFingerprint = new Map(batch.map((record) => (
       [record.fingerprint, record] as const
     )));
-    const raw = await input.executor.execute({
+    const execution = {
       prompt: extractionPrompt(batch),
       jsonSchema: candidateExtractionJsonSchema,
       schema: extractionResultSchema,
       timeoutMs: EXTRACTION_TIMEOUT_MS,
-    });
-    const result = extractionResultSchema.parse(raw);
-    for (const candidate of result.candidates) {
-      const source = sourceByFingerprint.get(candidate.sourceRecordFingerprint);
-      if (source === undefined) {
-        throw new Error('Claude returned a candidate for an unknown source record');
+    };
+    let raw: unknown;
+    try {
+      raw = await input.executor.execute(execution);
+    } catch (error) {
+      if (!(error instanceof ClaudeDriverError) || error.code !== 'claude_timeout') {
+        throw error;
       }
+      raw = await input.executor.execute(execution);
+    }
+    const result = extractionResultSchema.parse(raw);
+    const represented = new Set<string>();
+    for (const rawCandidate of result.candidates) {
+      const parsedCandidate = extractedCandidateSchema.safeParse(rawCandidate);
+      if (!parsedCandidate.success) continue;
+      const candidate = parsedCandidate.data;
+      const source = sourceByFingerprint.get(candidate.sourceRecordFingerprint);
+      if (source === undefined) continue;
       if (!normalizedEvidence(source.content).includes(
         normalizedEvidence(candidate.sourceQuote),
       )) {
-        throw new Error('Claude returned a source quote that is not present in the source record');
+        continue;
       }
       candidates.push(candidate);
+      represented.add(candidate.sourceRecordFingerprint);
     }
-    const represented = new Set(result.candidates.map((candidate) => (
-      candidate.sourceRecordFingerprint
-    )));
     for (const record of batch) {
       const marker = deterministicMarker(record);
       if (marker !== null && !represented.has(record.fingerprint)) {
