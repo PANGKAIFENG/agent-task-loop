@@ -25,11 +25,11 @@ const RANGE_OPTIONS: Array<{ value: ContributionRange; label: string }> = [
   { value: '1y', label: '1 年' },
 ];
 
-const TAB_OPTIONS: Array<{ value: HomeTab; label: string }> = [
-  { value: 'overview', label: '总览' },
-  { value: 'today', label: '今日' },
-  { value: 'input', label: '输入' },
-  { value: 'review', label: '复盘' },
+const TAB_OPTIONS: Array<{ value: HomeTab; label: string; icon: string }> = [
+  { value: 'overview', label: '总览', icon: 'layout-dashboard' },
+  { value: 'today', label: '推进', icon: 'list-checks' },
+  { value: 'input', label: '输入', icon: 'inbox' },
+  { value: 'review', label: '复盘', icon: 'chart-no-axes-combined' },
 ];
 
 const PULSE_OPTIONS: Array<{ value: PulseMode; label: string }> = [
@@ -51,6 +51,13 @@ const STATUS_LABELS: Record<string, string> = {
   in_progress: '执行中',
   review: '待验收',
   blocked: '已阻塞',
+};
+
+const PRIORITY_LABELS: Record<PersonalHomeTask['priority'], string> = {
+  urgent: '紧急',
+  high: '高',
+  normal: '普通',
+  low: '低',
 };
 
 function element<K extends keyof HTMLElementTagNameMap>(
@@ -87,6 +94,15 @@ function formatTime(value: string): string {
       minute: '2-digit',
     }).format(parsed)
     : '--';
+}
+
+function formatCompactDate(value: string): string {
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) return '--';
+  return new Intl.DateTimeFormat('zh-CN', {
+    day: '2-digit',
+    month: '2-digit',
+  }).format(parsed).replace('/', '·');
 }
 
 function mondayBasedWeekday(date: string): number {
@@ -194,10 +210,13 @@ export class WorkContributionView extends ItemView {
   }
 
   private render(state: ContributionDashboardState): void {
-    const root = element('div', 'atl-contribution-shell');
-    root.append(this.renderHeader(state));
-    root.append(this.renderTabs());
-    root.append(this.renderActiveView(state));
+    const root = element('div', 'atl-contribution-shell atl-home-app-shell');
+    root.append(this.renderSidebar(state));
+    const main = element('div', 'atl-home-main');
+    const scroll = element('div', 'atl-home-main-scroll');
+    scroll.append(this.renderActiveView(state));
+    main.append(scroll);
+    root.append(main);
     this.contentEl.replaceChildren(root);
   }
 
@@ -205,11 +224,17 @@ export class WorkContributionView extends ItemView {
     if (this.state !== null) this.render(this.state);
   }
 
-  private renderHeader(state: ContributionDashboardState): HTMLElement {
-    const header = element('header', 'atl-contribution-header');
+  private renderSidebar(state: ContributionDashboardState): HTMLElement {
+    const sidebar = element('aside', 'atl-home-sidebar');
+    const brand = element('header', 'atl-home-sidebar-brand');
+    brand.append(element('span', 'atl-home-brand-mark', 'CV'));
     const identity = element('div', 'atl-contribution-identity');
     identity.append(element('h1', 'atl-contribution-title', 'ClawVault'));
-    identity.append(element('p', 'atl-contribution-subtitle', '个人注意力与任务推进'));
+    identity.append(element('p', 'atl-contribution-subtitle', '个人工作台'));
+    brand.append(identity);
+    sidebar.append(brand, this.renderTabs(state));
+
+    const footer = element('footer', 'atl-home-sidebar-footer');
     const sources = element('div', 'atl-contribution-sources');
     sources.append(element(
       'span',
@@ -221,7 +246,17 @@ export class WorkContributionView extends ItemView {
       `atl-contribution-source atl-contribution-source-${state.token.status}`,
       tokenStatusText(state),
     ));
-    identity.append(sources);
+    footer.append(sources);
+
+    const actions = element('div', 'atl-home-sidebar-actions');
+    const settings = element('button', 'atl-home-settings');
+    settings.type = 'button';
+    settings.setAttribute('aria-label', '工作台设置');
+    setIcon(settings, 'sliders-horizontal');
+    settings.append(element('span', undefined, '工作台设置'));
+    settings.addEventListener('click', () => {
+      void this.dependencies.openSettings();
+    });
 
     const refresh = element('button', 'clickable-icon atl-contribution-refresh');
     refresh.type = 'button';
@@ -232,17 +267,30 @@ export class WorkContributionView extends ItemView {
     refresh.addEventListener('click', () => {
       void this.controller?.refreshAll();
     });
-    header.append(identity, refresh);
-    return header;
+    actions.append(settings, refresh);
+    footer.append(actions);
+    sidebar.append(footer);
+    return sidebar;
   }
 
-  private renderTabs(): HTMLElement {
+  private renderTabs(state: ContributionDashboardState): HTMLElement {
     const tabs = element('nav', 'atl-home-tabs');
     tabs.setAttribute('aria-label', '个人首页视图');
     for (const option of TAB_OPTIONS) {
-      const button = element('button', 'atl-home-tab', option.label);
+      const button = element('button', 'atl-home-tab');
       button.type = 'button';
       button.setAttribute('aria-pressed', String(this.activeTab === option.value));
+      const icon = element('span', 'atl-home-tab-icon');
+      setIcon(icon, option.icon);
+      button.append(icon, element('span', 'atl-home-tab-label', option.label));
+      const count = option.value === 'input'
+        ? state.home.snapshot?.counts.inbox
+        : option.value === 'review'
+          ? state.home.snapshot?.counts.review
+          : undefined;
+      if (count !== undefined) {
+        button.append(element('span', 'atl-home-tab-count', formatNumber(count)));
+      }
       button.addEventListener('click', () => {
         this.activeTab = option.value;
         this.rerender();
@@ -265,11 +313,9 @@ export class WorkContributionView extends ItemView {
     const view = element('main', 'atl-home-view atl-home-view-overview');
     view.append(this.renderPulse(state));
     view.append(this.renderFocus(state));
-    view.append(this.renderTaskFlow(state));
+    view.append(this.renderOverviewMetrics(state));
     view.append(this.renderNextAction(state));
-    view.append(this.renderInboxPreview(state));
-    view.append(this.renderProjects(state));
-    view.append(this.renderOutputs(state));
+    view.append(this.renderOverviewLower(state));
     return view;
   }
 
@@ -278,7 +324,8 @@ export class WorkContributionView extends ItemView {
     const heading = element('div', 'atl-home-pulse-heading');
     const title = element('div');
     title.append(element('p', 'atl-home-eyebrow', 'PERSONAL PULSE'));
-    title.append(element('h2', 'atl-home-pulse-title', '最近的持续推进'));
+    const rangeLabel = RANGE_OPTIONS.find((option) => option.value === state.range)?.label ?? '26 周';
+    title.append(element('h2', 'atl-home-pulse-title', `最近 ${rangeLabel}`));
 
     const controls = element('div', 'atl-contribution-controls');
     const ranges = element('div', 'atl-contribution-ranges');
@@ -293,9 +340,6 @@ export class WorkContributionView extends ItemView {
       });
       ranges.append(button);
     }
-    controls.append(ranges);
-    heading.append(title, controls);
-
     const modes = element('div', 'atl-pulse-modes');
     modes.setAttribute('role', 'group');
     modes.setAttribute('aria-label', '贡献类型');
@@ -309,9 +353,13 @@ export class WorkContributionView extends ItemView {
       });
       modes.append(button);
     }
-    pulse.append(heading, modes);
+    controls.append(modes, ranges);
+    heading.append(title, controls);
+    pulse.append(heading);
 
+    const body = element('div', 'atl-home-pulse-body');
     if (this.pulseMode === 'consumption') {
+      body.classList.add('is-consumption');
       const pending = element('div', 'atl-home-consumption-pending');
       pending.append(element('strong', undefined, '文章消费标记待接入'));
       pending.append(element(
@@ -319,12 +367,14 @@ export class WorkContributionView extends ItemView {
         undefined,
         '首页暂不推测文章是否被消费，后续以你的重要度与个人判断为准。',
       ));
-      pulse.append(pending);
+      body.append(pending);
     } else {
-      pulse.append(this.renderHeatmap(state));
+      body.append(this.renderHeatmap(state), this.renderPulseSummary(state));
     }
-    pulse.append(this.renderPulseSummary(state));
-    pulse.append(this.renderTrends(state));
+    pulse.append(body);
+    if (this.pulseMode !== 'consumption') {
+      pulse.append(this.renderTrends(state));
+    }
     return pulse;
   }
 
@@ -457,14 +507,135 @@ export class WorkContributionView extends ItemView {
   }
 
   private renderFocus(state: ContributionDashboardState): HTMLElement {
-    const area = section('当前推进候选 Top 3', 'atl-home-focus');
+    const area = this.renderCommandSection(
+      'CURRENT FOCUS · 系统候选',
+      '当前最值得推进的三件事',
+      'atl-home-focus',
+    );
     const tasks = state.home.snapshot?.focusTasks ?? [];
     if (tasks.length === 0) {
       area.body.append(element('p', 'atl-contribution-empty', '当前没有执行中或待执行任务'));
     } else {
-      area.body.append(this.renderTaskList(tasks.slice(0, 3)));
+      const grid = element('div', 'atl-home-focus-grid');
+      for (const [index, task] of tasks.slice(0, 3).entries()) {
+        const card = element('button', 'atl-home-focus-card');
+        card.type = 'button';
+        card.dataset.taskId = task.taskId;
+        const top = element('span', 'atl-home-focus-top');
+        top.append(element(
+          'span',
+          'atl-home-focus-number',
+          String(index + 1).padStart(2, '0'),
+        ));
+        top.append(element(
+          'span',
+          `atl-home-task-status is-${task.status}`,
+          STATUS_LABELS[task.status] ?? task.status,
+        ));
+        const title = element(
+          'strong',
+          'atl-home-focus-name',
+          task.title.trim() === '' ? '未命名任务' : task.title,
+        );
+        const meta = element('span', 'atl-home-focus-meta');
+        meta.append(
+          element('span', undefined, task.projectName),
+          element('span', undefined, `${task.artifactCount} 个产出`),
+        );
+        card.append(top, title, meta);
+        card.addEventListener('click', () => {
+          void this.dependencies.openTask(task.taskId);
+        });
+        grid.append(card);
+      }
+      area.body.append(grid);
     }
     return area.root;
+  }
+
+  private renderOverviewMetrics(state: ContributionDashboardState): HTMLElement {
+    const counts = state.home.snapshot?.counts;
+    const inboxTasks = state.home.snapshot?.inboxTasks ?? [];
+    const highPriority = inboxTasks.filter((task) => (
+      task.priority === 'urgent' || task.priority === 'high'
+    )).length;
+    const activeCount = counts === undefined
+      ? null
+      : counts.ready + counts.inProgress + counts.review;
+    const health = [
+      state.contribution.status === 'ready',
+      state.home.status === 'ready',
+      state.token.status === 'ready' || state.token.status === 'cached',
+    ];
+    const healthySources = health.filter(Boolean).length;
+    const attentionSources = health.length - healthySources;
+    const definitions = [
+      {
+        eyebrow: 'INPUT DEBT',
+        title: '输入积压',
+        icon: 'inbox',
+        value: counts === undefined ? '--' : formatNumber(counts.inbox),
+        tone: 'is-coral',
+        detail: counts === undefined
+          ? '正在读取收件箱'
+          : `${formatNumber(highPriority)} 条高优先级 · ${formatNumber(counts.inbox)} 条等待判断`,
+        action: '去处理输入',
+        tab: 'input' as const,
+      },
+      {
+        eyebrow: 'TASK FLOW',
+        title: '任务流转',
+        icon: 'workflow',
+        value: activeCount === null ? '--' : formatNumber(activeCount),
+        tone: 'is-green',
+        detail: counts === undefined
+          ? '正在读取任务状态'
+          : `${formatNumber(counts.ready)} 待执行 · ${formatNumber(counts.inProgress)} 执行中 · ${formatNumber(counts.review)} 待验收`,
+        action: '查看推进任务',
+        tab: 'today' as const,
+      },
+      {
+        eyebrow: 'SYSTEM STATUS',
+        title: '系统状态',
+        icon: 'activity',
+        value: `${healthySources}/${health.length}`,
+        tone: attentionSources === 0 ? 'is-green' : 'is-amber',
+        detail: attentionSources === 0
+          ? 'ATL、任务首页与 OpenToken 正常'
+          : `${formatNumber(attentionSources)} 个数据源需要关注`,
+        action: '查看运行状态',
+        tab: 'review' as const,
+      },
+    ];
+    const root = element('section', 'atl-contribution-section atl-home-metrics');
+    const grid = element('div', 'atl-home-metric-grid');
+    for (const definition of definitions) {
+      const card = element('article', 'atl-home-metric-cell');
+      const heading = element('div', 'atl-home-metric-heading');
+      const copy = element('div');
+      copy.append(
+        element('p', 'atl-home-eyebrow', definition.eyebrow),
+        element('h2', 'atl-home-section-title', definition.title),
+      );
+      const icon = element('span', 'atl-home-metric-icon');
+      setIcon(icon, definition.icon);
+      heading.append(copy, icon);
+      card.append(
+        heading,
+        element('strong', `atl-home-metric-value ${definition.tone}`, definition.value),
+        element('p', 'atl-home-metric-detail', definition.detail),
+      );
+      const action = element('button', 'atl-home-mini-action', `${definition.action} →`);
+      action.type = 'button';
+      action.addEventListener('click', () => {
+        this.activeTab = definition.tab;
+        this.rerender();
+      });
+      card.append(action);
+      grid.append(card);
+    }
+    root.append(grid);
+    return root;
   }
 
   private renderTaskFlow(state: ContributionDashboardState): HTMLElement {
@@ -489,33 +660,186 @@ export class WorkContributionView extends ItemView {
   }
 
   private renderNextAction(state: ContributionDashboardState): HTMLElement {
-    const area = section('建议下一项行动', 'atl-home-next-action');
+    const area = this.renderCommandSection(
+      'NEXT ACTION',
+      '现在最值得做什么',
+      'atl-home-next-action',
+    );
     const task = state.home.snapshot?.nextAction ?? null;
     if (task === null) {
       area.body.append(element('p', 'atl-contribution-empty', '先从收件箱确认一个任务'));
     } else {
-      area.body.append(this.renderTaskList([task]));
+      const card = element('div', 'atl-home-next-action-card');
+      const status = element(
+        'span',
+        `atl-home-task-status is-${task.status}`,
+        STATUS_LABELS[task.status] ?? task.status,
+      );
+      const copy = element('div', 'atl-home-next-action-copy');
+      copy.append(
+        element(
+          'strong',
+          'atl-home-next-action-title',
+          task.title.trim() === '' ? '未命名任务' : task.title,
+        ),
+        element(
+          'span',
+          'atl-home-next-action-meta',
+          `${task.projectName} · ${task.artifactCount} 个产出`,
+        ),
+      );
+      const action = element('button', 'atl-home-primary-action');
+      action.type = 'button';
+      setIcon(action, 'arrow-up-right');
+      action.append(element('span', undefined, '打开任务'));
+      action.addEventListener('click', () => {
+        void this.dependencies.openTask(task.taskId);
+      });
+      card.append(status, copy, action);
+      area.body.append(card);
     }
     return area.root;
   }
 
-  private renderInboxPreview(state: ContributionDashboardState): HTMLElement {
-    const area = section('等待判断的输入', 'atl-home-inbox-preview');
+  private renderOverviewLower(state: ContributionDashboardState): HTMLElement {
+    const root = element('div', 'atl-home-overview-lower');
+    root.append(this.renderInboxQueue(state), this.renderTodayProgress(state));
+    return root;
+  }
+
+  private renderInboxQueue(state: ContributionDashboardState): HTMLElement {
+    const area = this.renderCommandSection(
+      'INPUT QUEUE',
+      '等待你判断',
+      'atl-home-queue-panel',
+      '查看全部',
+      () => {
+        this.activeTab = 'input';
+        this.rerender();
+      },
+    );
     const tasks = state.home.snapshot?.inboxTasks ?? [];
     if (tasks.length === 0) {
       area.body.append(element('p', 'atl-contribution-empty', '收件箱当前为空'));
     } else {
-      area.body.append(this.renderTaskList(tasks.slice(0, 3)));
+      const list = element('div', 'atl-home-queue-list');
+      for (const task of tasks.slice(0, 3)) {
+        const row = element('button', 'atl-home-queue-row');
+        row.type = 'button';
+        row.dataset.taskId = task.taskId;
+        row.append(element(
+          'span',
+          `atl-home-priority is-${task.priority}`,
+          PRIORITY_LABELS[task.priority],
+        ));
+        const copy = element('span', 'atl-home-queue-copy');
+        copy.append(
+          element(
+            'strong',
+            'atl-home-queue-title',
+            task.title.trim() === '' ? '未命名任务' : task.title,
+          ),
+          element(
+            'span',
+            'atl-home-queue-meta',
+            `${task.projectName} · ${formatCompactDate(task.updatedAt)}`,
+          ),
+        );
+        row.append(copy, element('span', 'atl-home-row-action', '判断'));
+        row.addEventListener('click', () => {
+          void this.dependencies.openTask(task.taskId);
+        });
+        list.append(row);
+      }
+      area.body.append(list);
     }
     return area.root;
   }
 
-  private renderToday(state: ContributionDashboardState): HTMLElement {
-    const view = element('main', 'atl-home-view atl-home-view-today');
-    const area = section('今天可以推进', 'atl-home-today-tasks');
+  private renderTodayProgress(state: ContributionDashboardState): HTMLElement {
+    const area = this.renderCommandSection(
+      'CURRENT',
+      '当前推进任务',
+      'atl-home-progress-panel',
+      '完整列表',
+      () => {
+        this.activeTab = 'today';
+        this.rerender();
+      },
+    );
     const tasks = state.home.snapshot?.focusTasks ?? [];
     if (tasks.length === 0) {
-      area.body.append(element('p', 'atl-contribution-empty', '今天还没有待推进任务'));
+      area.body.append(element('p', 'atl-contribution-empty', '当前没有待推进任务'));
+    } else {
+      const list = element('div', 'atl-home-progress-list');
+      for (const task of tasks.slice(0, 4)) {
+        const row = element('button', 'atl-home-progress-row');
+        row.type = 'button';
+        row.dataset.taskId = task.taskId;
+        row.append(element('span', `atl-home-progress-dot is-${task.status}`));
+        const copy = element('span', 'atl-home-progress-copy');
+        copy.append(
+          element(
+            'strong',
+            'atl-home-progress-title',
+            task.title.trim() === '' ? '未命名任务' : task.title,
+          ),
+          element('span', 'atl-home-progress-meta', task.projectName),
+        );
+        row.append(
+          copy,
+          element(
+            'span',
+            `atl-home-progress-state is-${task.status}`,
+            STATUS_LABELS[task.status] ?? task.status,
+          ),
+        );
+        row.addEventListener('click', () => {
+          void this.dependencies.openTask(task.taskId);
+        });
+        list.append(row);
+      }
+      area.body.append(list);
+    }
+    return area.root;
+  }
+
+  private renderCommandSection(
+    eyebrow: string,
+    title: string,
+    className: string,
+    actionLabel?: string,
+    onAction?: () => void,
+  ): { root: HTMLElement; body: HTMLElement } {
+    const root = element('section', `atl-contribution-section ${className}`);
+    const heading = element('div', 'atl-home-section-head');
+    const copy = element('div');
+    copy.append(
+      element('p', 'atl-home-eyebrow', eyebrow),
+      element('h2', 'atl-home-section-title', title),
+    );
+    heading.append(copy);
+    if (actionLabel !== undefined && onAction !== undefined) {
+      const action = element('button', 'atl-home-section-link');
+      action.type = 'button';
+      action.append(element('span', undefined, actionLabel));
+      const icon = element('span', 'atl-home-section-link-icon');
+      setIcon(icon, 'arrow-right');
+      action.append(icon);
+      action.addEventListener('click', onAction);
+      heading.append(action);
+    }
+    const body = element('div', 'atl-contribution-section-body');
+    root.append(heading, body);
+    return { root, body };
+  }
+
+  private renderToday(state: ContributionDashboardState): HTMLElement {
+    const view = element('main', 'atl-home-view atl-home-view-today');
+    const area = section('当前可以推进', 'atl-home-today-tasks');
+    const tasks = state.home.snapshot?.focusTasks ?? [];
+    if (tasks.length === 0) {
+      area.body.append(element('p', 'atl-contribution-empty', '当前没有待推进任务'));
     } else {
       area.body.append(this.renderTaskList(tasks));
     }

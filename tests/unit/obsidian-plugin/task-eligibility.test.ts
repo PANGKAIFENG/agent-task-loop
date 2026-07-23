@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   isAtlInboxTaskPath,
   isAtlTaskPath,
+  taskIdFromMetadata,
   taskIdFromPath,
 } from '../../../src/obsidian-plugin/task-eligibility.js';
 
@@ -31,6 +32,30 @@ describe('ATL Inbox task eligibility', () => {
     expect(taskIdFromPath('10_Tasks/Active/project/task-example.md')).toBe(
       'task-example',
     );
+  });
+
+  it('uses the frontmatter task id when the filename also contains a title slug', () => {
+    const path = '10_Tasks/Inbox/2026-07-13/task-20260713-\u8865\u5145\u7528\u6237\u573a\u666f-ee28f992.md';
+
+    expect(taskIdFromMetadata(path, { task_id: 'task-20260713-ee28f992' }))
+      .toBe('task-20260713-ee28f992');
+    expect(taskIdFromMetadata('\u7b14\u8bb0\u540c\u6b65\u52a9\u624b/task-note.md', { task_id: 'task-note' }))
+      .toBeNull();
+  });
+
+  it('falls back to task_id in Markdown frontmatter when the metadata cache is cold', () => {
+    const path = '10_Tasks/Inbox/2026-07-13/task-20260713-title-ee28f992.md';
+    const markdown = [
+      '---',
+      'task_id: task-20260713-ee28f992',
+      'title: Example task',
+      '---',
+      '',
+      '# Example task',
+    ].join('\n');
+
+    expect(taskIdFromMetadata(path, markdown as never))
+      .toBe('task-20260713-ee28f992');
   });
 
   it.each([

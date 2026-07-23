@@ -142,6 +142,19 @@ function setup(initial = state()) {
 }
 
 describe('WorkContributionView', () => {
+  it('renders the approved command-center workspace shell around the home views', async () => {
+    const { view } = setup();
+    await view.onOpen();
+
+    expect(view.contentEl.querySelector('.atl-home-app-shell')).not.toBeNull();
+    expect(view.contentEl.querySelector('.atl-home-sidebar')).not.toBeNull();
+    expect(view.contentEl.querySelector('.atl-home-main')).not.toBeNull();
+    expect(view.contentEl.querySelector('.atl-home-sidebar-brand')?.textContent)
+      .toContain('ClawVault');
+    expect(view.contentEl.querySelectorAll('.atl-home-sidebar .atl-home-tab')).toHaveLength(4);
+    expect(view.contentEl.querySelector('.atl-home-tab-count')?.textContent).toBe('1');
+  });
+
   it('renders the confirmed personal home structure with Personal Pulse first', async () => {
     const { view } = setup();
     await view.onOpen();
@@ -150,7 +163,7 @@ describe('WorkContributionView', () => {
     expect(view.getDisplayText()).toBe('ClawVault 个人首页');
     expect(view.contentEl.querySelector('h1')?.textContent).toBe('ClawVault');
     expect(view.contentEl.querySelector('.atl-contribution-subtitle')?.textContent)
-      .toBe('个人注意力与任务推进');
+      .toBe('个人工作台');
     expect(view.contentEl.querySelectorAll('.atl-home-tab')).toHaveLength(4);
     expect(view.contentEl.querySelectorAll('.atl-contribution-range')).toHaveLength(3);
     expect(view.contentEl.textContent).toContain('26 周');
@@ -159,8 +172,16 @@ describe('WorkContributionView', () => {
     expect(view.contentEl.querySelectorAll('.atl-pulse-mode')).toHaveLength(4);
     expect(view.contentEl.querySelectorAll('.atl-contribution-day')).toHaveLength(3);
     expect(view.contentEl.querySelectorAll('.atl-home-trend')).toHaveLength(3);
-    expect(view.contentEl.textContent).toContain('当前推进候选 Top 3');
-    expect(view.contentEl.textContent).toContain('建议下一项行动');
+    expect(view.contentEl.textContent).toContain('当前最值得推进的三件事');
+    expect(view.contentEl.querySelectorAll('.atl-home-focus-card')).toHaveLength(1);
+    expect(view.contentEl.querySelectorAll('.atl-home-metric-cell')).toHaveLength(3);
+    expect(view.contentEl.textContent).toContain('输入积压');
+    expect(view.contentEl.textContent).toContain('任务流转');
+    expect(view.contentEl.textContent).toContain('系统状态');
+    expect(view.contentEl.textContent).toContain('现在最值得做什么');
+    expect(view.contentEl.querySelector('.atl-home-overview-lower')).not.toBeNull();
+    expect(view.contentEl.textContent).toContain('等待你判断');
+    expect(view.contentEl.textContent).toContain('当前推进任务');
     expect(view.contentEl.textContent).toContain('完成真实个人首页');
     expect(view.contentEl.textContent).toContain('判断首页输入');
   });
@@ -191,16 +212,16 @@ describe('WorkContributionView', () => {
     }));
     await view.onOpen();
 
-    expect(view.contentEl.querySelectorAll('.atl-home-focus .atl-home-task')).toHaveLength(3);
-    expect(view.contentEl.querySelectorAll('.atl-home-inbox-preview .atl-home-task')).toHaveLength(3);
+    expect(view.contentEl.querySelectorAll('.atl-home-focus-card')).toHaveLength(3);
+    expect(view.contentEl.querySelectorAll('.atl-home-queue-row')).toHaveLength(3);
 
     const todayTab = [...view.contentEl.querySelectorAll<HTMLButtonElement>('.atl-home-tab')]
-      .find((button) => button.textContent === '今日');
+      .find((button) => button.querySelector('.atl-home-tab-label')?.textContent === '推进');
     fireEvent.click(todayTab!);
     expect(view.contentEl.querySelectorAll('.atl-home-today-tasks .atl-home-task')).toHaveLength(4);
 
     const inputTab = [...view.contentEl.querySelectorAll<HTMLButtonElement>('.atl-home-tab')]
-      .find((button) => button.textContent === '输入');
+      .find((button) => button.querySelector('.atl-home-tab-label')?.textContent === '输入');
     fireEvent.click(inputTab!);
     expect(view.contentEl.querySelectorAll('.atl-home-input-list .atl-home-task')).toHaveLength(6);
   });
@@ -243,6 +264,8 @@ describe('WorkContributionView', () => {
       .find((button) => button.textContent === '消费');
     fireEvent.click(consumeMode!);
     expect(view.contentEl.textContent).toContain('文章消费标记待接入');
+    expect(view.contentEl.querySelector('.atl-home-trends')).toBeNull();
+    expect(view.contentEl.textContent).not.toContain('Normalized Token');
   });
 
   it('keeps legacy tasks without a title visible and actionable', async () => {
@@ -318,6 +341,9 @@ describe('WorkContributionView', () => {
     )!);
     expect(controller.refreshAll).toHaveBeenCalledOnce();
 
+    const reviewTab = [...view.contentEl.querySelectorAll<HTMLButtonElement>('.atl-home-tab')]
+      .find((button) => button.querySelector('.atl-home-tab-label')?.textContent === '复盘');
+    fireEvent.click(reviewTab!);
     fireEvent.click(view.contentEl.querySelector<HTMLButtonElement>(
       '[data-task-id="task-a"]',
     )!);
@@ -340,6 +366,9 @@ describe('WorkContributionView', () => {
 
     expect(view.contentEl.textContent).toContain('今日完成');
     expect(view.contentEl.textContent).toContain('未检测到 OpenToken');
+    const reviewTab = [...view.contentEl.querySelectorAll<HTMLButtonElement>('.atl-home-tab')]
+      .find((button) => button.querySelector('.atl-home-tab-label')?.textContent === '复盘');
+    fireEvent.click(reviewTab!);
     expect(view.contentEl.textContent).toContain('Build dashboard');
   });
 
@@ -368,6 +397,9 @@ describe('WorkContributionView', () => {
     const { view } = setup(missing);
     await view.onOpen();
 
+    const reviewTab = [...view.contentEl.querySelectorAll<HTMLButtonElement>('.atl-home-tab')]
+      .find((button) => button.querySelector('.atl-home-tab-label')?.textContent === '复盘');
+    fireEvent.click(reviewTab!);
     expect(view.contentEl.textContent).toContain('当天没有可核对产出');
     expect(view.contentEl.textContent).toContain('查看数据源设置');
   });

@@ -82,6 +82,7 @@ import {
 import {
   isAtlInboxTaskPath,
   isAtlTaskPath,
+  taskIdFromMetadata,
   taskIdFromPath,
 } from './task-eligibility.js';
 import {
@@ -349,9 +350,27 @@ export default class AgentTaskLoopPlugin extends Plugin {
   }
 
   private async openContributionTask(taskId: string): Promise<void> {
-    const file = this.app.vault.getMarkdownFiles().find((candidate) => (
-      taskIdFromPath(candidate.path) === taskId
+    const markdownFiles = this.app.vault.getMarkdownFiles();
+    let file = markdownFiles.find((candidate) => (
+      taskIdFromMetadata(
+        candidate.path,
+        this.app.metadataCache.getFileCache(candidate)?.frontmatter,
+      ) === taskId
     ));
+    if (file === undefined) {
+      for (const candidate of markdownFiles) {
+        if (!isAtlTaskPath(candidate.path)) continue;
+        try {
+          const markdown = await this.app.vault.cachedRead(candidate);
+          if (taskIdFromMetadata(candidate.path, markdown) === taskId) {
+            file = candidate;
+            break;
+          }
+        } catch {
+          // A concurrently moved task is skipped; the next refresh will update the list.
+        }
+      }
+    }
     if (file === undefined) {
       new Notice('找不到这项任务文件');
       return;
