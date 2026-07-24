@@ -82,6 +82,7 @@ import {
 import {
   isAtlInboxTaskPath,
   isAtlTaskPath,
+  taskIdFromMetadata,
   taskIdFromPath,
 } from './task-eligibility.js';
 import {
@@ -192,7 +193,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
       },
       open: () => this.openUnifiedCalendar(),
     }).start();
-    this.addRibbonIcon('chart-no-axes-combined', 'ATL：个人工作贡献', () => {
+    this.addRibbonIcon('layout-dashboard', 'ATL：个人首页', () => {
       void this.activateContributionView();
     });
 
@@ -210,7 +211,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
     });
     this.addCommand({
       id: 'open-work-contribution',
-      name: '打开个人工作贡献',
+      name: '打开个人首页',
       callback: () => {
         void this.activateContributionView();
       },
@@ -311,7 +312,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
   private createContributionController(): ContributionDashboardController {
     const paths = this.localPluginPaths();
     if (paths === null) {
-      throw new Error('Agent Task Loop 个人工作贡献仅支持桌面版本地 Vault');
+      throw new Error('Agent Task Loop 个人首页仅支持桌面版本地 Vault');
     }
     const timeZone = resolveSystemTimeZone();
     return new ContributionDashboardController({
@@ -349,9 +350,27 @@ export default class AgentTaskLoopPlugin extends Plugin {
   }
 
   private async openContributionTask(taskId: string): Promise<void> {
-    const file = this.app.vault.getMarkdownFiles().find((candidate) => (
-      taskIdFromPath(candidate.path) === taskId
+    const markdownFiles = this.app.vault.getMarkdownFiles();
+    let file = markdownFiles.find((candidate) => (
+      taskIdFromMetadata(
+        candidate.path,
+        this.app.metadataCache.getFileCache(candidate)?.frontmatter,
+      ) === taskId
     ));
+    if (file === undefined) {
+      for (const candidate of markdownFiles) {
+        if (!isAtlTaskPath(candidate.path)) continue;
+        try {
+          const markdown = await this.app.vault.cachedRead(candidate);
+          if (taskIdFromMetadata(candidate.path, markdown) === taskId) {
+            file = candidate;
+            break;
+          }
+        } catch {
+          // A concurrently moved task is skipped; the next refresh will update the list.
+        }
+      }
+    }
     if (file === undefined) {
       new Notice('找不到这项任务文件');
       return;
@@ -964,7 +983,7 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
   }
 
   private renderContributionData(containerEl: HTMLElement): void {
-    containerEl.createEl('h2', { text: '个人工作贡献' });
+    containerEl.createEl('h2', { text: '个人首页数据' });
     new Setting(containerEl)
       .setName('任务贡献数据')
       .setDesc('来自 ATL 可审计的任务完成记录；不依赖 OpenToken，也不会修改任务。');

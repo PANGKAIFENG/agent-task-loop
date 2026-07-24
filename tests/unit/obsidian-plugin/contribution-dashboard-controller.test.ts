@@ -98,6 +98,19 @@ function deferred<T>(): {
 }
 
 describe('ContributionDashboardController', () => {
+  it('opens the personal pulse on the confirmed 26-week range', () => {
+    const controller = new ContributionDashboardController({
+      context: context(),
+      openToken: { preview: async () => snapshot() },
+      getTokenCache: cache,
+      saveTokenCache: async () => undefined,
+      clock: () => NOW,
+      timeZone: 'Asia/Shanghai',
+    });
+
+    expect(controller.getState().range).toBe('26w');
+  });
+
   it('publishes cached tokens before the asynchronous refresh completes', async () => {
     const refresh = deferred<ReturnType<typeof snapshot>>();
     const states: ContributionDashboardState[] = [];
@@ -116,6 +129,10 @@ describe('ContributionDashboardController', () => {
 
     expect(states.some((state) => state.token.status === 'cached')).toBe(true);
     expect(controller.getState().contribution.snapshot?.kpis.completedToday).toBe(1);
+    expect(controller.getState().home.snapshot).toMatchObject({
+      counts: { inbox: 0, ready: 0, inProgress: 0, review: 0, blocked: 0 },
+      nextAction: null,
+    });
     refresh.resolve(snapshot());
     await controller.waitForTokenRefresh();
     expect(controller.getState().token.status).toBe('ready');
