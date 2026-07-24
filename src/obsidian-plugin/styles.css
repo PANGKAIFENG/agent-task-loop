@@ -828,6 +828,7 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
   --atl-home-green: #00b978;
   --atl-home-blue: #1687a7;
   --atl-home-amber: #ff860d;
+  --atl-home-coral: #ff7354;
   --atl-home-danger: #e5484d;
   --atl-home-font: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
   --atl-home-data-font: "Azeret Mono", "SFMono-Regular", Consolas, monospace;
@@ -1203,16 +1204,25 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
   align-items: center;
   border: 0;
   display: flex;
-  min-height: 142px;
+  min-height: 164px;
+  min-width: 0;
   overflow-x: auto;
-  padding: 20px 18px;
+  padding: 24px 20px;
 }
 
 .atl-contribution-heatmap {
   gap: 4px;
-  grid-auto-columns: 12px;
+  grid-auto-columns: minmax(12px, 1fr);
   grid-template-rows: repeat(7, 12px);
   margin: auto 0;
+  min-width: 630px;
+  width: 100%;
+}
+
+.atl-contribution-heatmap[data-range='7d'] {
+  grid-auto-columns: 12px;
+  min-width: 28px;
+  width: auto;
 }
 
 .atl-contribution-day {
@@ -1220,7 +1230,8 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
   border: 1px solid rgba(106, 0, 255, .06);
   border-radius: 2px;
   height: 12px;
-  width: 12px;
+  min-width: 12px;
+  width: 100%;
 }
 
 .atl-contribution-day:hover,
@@ -1248,7 +1259,7 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
   border: 0;
   display: grid;
   gap: 4px;
-  min-height: 142px;
+  min-height: 164px;
   padding: 24px 18px;
 }
 
@@ -1260,30 +1271,44 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
 .atl-home-pulse-summary {
   align-content: center;
   border-left: 1px solid var(--atl-home-line);
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  padding: 14px;
+  display: block;
+  padding: 22px 20px;
 }
 
-.atl-home-pulse-stat {
-  border: 0;
-  display: grid;
-  gap: 3px;
-  min-height: 48px;
-  padding: 7px;
+.atl-home-pulse-hero strong {
+  color: var(--atl-home-coral);
+  display: block;
+  font-family: var(--atl-home-data-font);
+  font-size: 24px;
+  line-height: 1.1;
+  margin-bottom: 6px;
 }
 
-.atl-home-pulse-stat span,
+.atl-home-pulse-hero span,
+.atl-home-pulse-detail span,
 .atl-contribution-chart-title {
   color: var(--atl-home-muted);
   font-family: var(--atl-home-data-font);
   font-size: 9px;
 }
 
-.atl-home-pulse-stat strong {
+.atl-home-pulse-details {
+  display: grid;
+  gap: 7px;
+  margin-top: 18px;
+}
+
+.atl-home-pulse-detail {
+  align-items: baseline;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.atl-home-pulse-detail strong {
   color: var(--atl-home-text);
   font-family: var(--atl-home-data-font);
-  font-size: 15px;
+  font-size: 10px;
 }
 
 .atl-home-pulse-summary .atl-contribution-coverage {
@@ -1304,8 +1329,8 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
 
 .atl-home-trend {
   border-right: 1px solid var(--atl-home-line);
-  min-height: 116px;
-  padding: 13px 14px 7px;
+  min-height: 102px;
+  padding: 14px 18px;
 }
 
 .atl-home-trend:last-child {
@@ -1321,7 +1346,7 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
 }
 
 .atl-contribution-chart-caption {
-  margin-bottom: 7px;
+  margin-bottom: 8px;
 }
 
 .atl-contribution-chart-total {
@@ -1331,7 +1356,7 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
 }
 
 .atl-contribution-chart-svg {
-  height: 66px;
+  height: 38px;
 }
 
 .atl-home-trend.is-task .atl-contribution-chart-line { stroke: var(--atl-home-primary); }
@@ -1882,7 +1907,13 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
   .atl-home-pulse-summary {
     border-left: 0;
     border-top: 1px solid var(--atl-home-line);
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    display: grid;
+    gap: 24px;
+    grid-template-columns: minmax(140px, .7fr) minmax(0, 2fr);
+  }
+
+  .atl-home-pulse-details {
+    margin-top: 0;
   }
 
   .atl-home-focus-grid,
@@ -1970,7 +2001,11 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
   }
 
   .atl-home-pulse-summary {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    display: block;
+  }
+
+  .atl-home-pulse-details {
+    margin-top: 18px;
   }
 
   .atl-home-task-flow {

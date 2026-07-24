@@ -402,6 +402,7 @@ export class WorkContributionView extends ItemView {
     });
     const maximum = Math.max(...values, 0);
     const grid = element('div', 'atl-contribution-heatmap');
+    grid.dataset.range = snapshot.range;
     const mode = this.pulseMode === 'consumption' ? 'tasks' : this.pulseMode;
     grid.setAttribute('aria-label', `${PULSE_HEATMAP_LABELS[mode]}每日贡献图`);
     const firstDay = snapshot.days[0];
@@ -444,18 +445,28 @@ export class WorkContributionView extends ItemView {
     const today = snapshot?.days.at(-1)?.date;
     const tokenToday = state.token.snapshot?.days.find((day) => day.date === today);
     const values = [
-      ['连续推进', snapshot === null ? '--' : `${formatNumber(snapshot.kpis.currentStreak)} 天`],
       ['本周完成', snapshot === null ? '--' : `${formatNumber(snapshot.kpis.completedThisWeek)} 项`],
       ['今日完成', snapshot === null ? '--' : `${formatNumber(snapshot.kpis.completedToday)} 项`],
       ['今日 Token', tokenToday === undefined ? '--' : formatNumber(tokenToday.normalized)],
     ];
     const summary = element('div', 'atl-home-pulse-summary');
+    const hero = element('div', 'atl-home-pulse-hero');
+    hero.append(element(
+      'strong',
+      undefined,
+      snapshot === null ? '--' : `${formatNumber(snapshot.kpis.currentStreak)} 天`,
+    ));
+    hero.append(element('span', undefined, '当前连续推进'));
+    summary.append(hero);
+
+    const details = element('div', 'atl-home-pulse-details');
     for (const [label, value] of values) {
-      const item = element('div', 'atl-home-pulse-stat');
+      const item = element('div', 'atl-home-pulse-detail');
       item.append(element('span', undefined, label));
       item.append(element('strong', undefined, value));
-      summary.append(item);
+      details.append(item);
     }
+    summary.append(details);
     if ((snapshot?.coverage.historicalCompletionDateUnavailable ?? 0) > 0) {
       summary.append(element(
         'p',

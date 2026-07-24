@@ -56,6 +56,26 @@ describe('personal home heatmap styles', () => {
       .toMatch(/border-radius\s*:\s*10px/);
   });
 
+  it('lets the 26-week pulse calendar fill its available panel width', async () => {
+    const css = await readFile(
+      new URL('../../../src/obsidian-plugin/styles.css', import.meta.url),
+      'utf8',
+    );
+
+    expect(declarationsFor(css, '.atl-home-pulse-body'))
+      .toMatch(/grid-template-columns\s*:\s*minmax\(0,\s*1fr\)\s+220px/);
+    expect(declarationsFor(css, '.atl-contribution-heatmap-scroll'))
+      .toMatch(/min-height\s*:\s*164px/);
+    expect(declarationsFor(css, '.atl-contribution-heatmap'))
+      .toMatch(/grid-auto-columns\s*:\s*minmax\(12px,\s*1fr\)/);
+    expect(declarationsFor(css, '.atl-contribution-heatmap'))
+      .toMatch(/min-width\s*:\s*630px/);
+    expect(declarationsFor(css, '.atl-contribution-heatmap'))
+      .toMatch(/width\s*:\s*100%/);
+    expect(declarationsFor(css, '.atl-contribution-day'))
+      .toMatch(/width\s*:\s*100%/);
+  });
+
   it('keeps zero-value output and AI days neutral and colors only positive levels', async () => {
     const css = await readFile(
       new URL('../../../src/obsidian-plugin/styles.css', import.meta.url),

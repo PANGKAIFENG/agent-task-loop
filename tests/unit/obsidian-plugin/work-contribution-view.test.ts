@@ -186,6 +186,22 @@ describe('WorkContributionView', () => {
     expect(view.contentEl.textContent).toContain('判断首页输入');
   });
 
+  it('presents the pulse summary as one streak hero with three real supporting metrics', async () => {
+    const { view } = setup();
+    await view.onOpen();
+
+    const hero = view.contentEl.querySelector('.atl-home-pulse-hero');
+    expect(hero?.querySelector('strong')?.textContent).toBe('3 天');
+    expect(hero?.querySelector('span')?.textContent).toBe('当前连续推进');
+
+    const details = [...view.contentEl.querySelectorAll('.atl-home-pulse-detail')];
+    expect(details).toHaveLength(3);
+    expect(details.map((detail) => detail.querySelector('span')?.textContent))
+      .toEqual(['本周完成', '今日完成', '今日 Token']);
+    expect(details.map((detail) => detail.querySelector('strong')?.textContent))
+      .toEqual(['5 项', '2 项', '--']);
+  });
+
   it('keeps overview previews compact while full tabs show every task', async () => {
     const base = state();
     const focusTasks = Array.from({ length: 4 }, (_, index) => ({
@@ -315,6 +331,23 @@ describe('WorkContributionView', () => {
     expect(monday?.style.gridColumn).toBe('2');
     expect(tuesday?.style.gridRow).toBe('2');
     expect(tuesday?.style.gridColumn).toBe('2');
+  });
+
+  it('keeps the heatmap layout tied to the loaded snapshot while a new range is loading', async () => {
+    const base = state();
+    const { view } = setup(state({
+      range: '7d',
+      contribution: {
+        ...base.contribution,
+        snapshot: base.contribution.snapshot === null
+          ? null
+          : { ...base.contribution.snapshot, range: '26w' },
+      },
+    }));
+    await view.onOpen();
+
+    expect(view.contentEl.querySelector('.atl-contribution-heatmap')?.getAttribute('data-range'))
+      .toBe('26w');
   });
 
   it('supports range, date, refresh, task, and artifact actions', async () => {
