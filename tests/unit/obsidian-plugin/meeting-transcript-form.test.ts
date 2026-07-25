@@ -4,6 +4,21 @@ import {
   normalizeMeetingTranscriptForm,
   validateMeetingTranscriptForm,
 } from '../../../src/obsidian-plugin/meeting-transcript-form.js';
+import type { MeetingAttachmentDraft } from '../../../src/obsidian-plugin/meeting-attachment.js';
+
+function attachmentDraft(): MeetingAttachmentDraft {
+  return {
+    id: `sha256:${'a'.repeat(64)}`,
+    name: 'reference.md',
+    mediaType: 'text/markdown',
+    size: 12,
+    role: 'reference',
+    analyzable: true,
+    includeInAnalysis: true,
+    data: new TextEncoder().encode('合成资料'),
+    extractedText: '合成资料',
+  };
+}
 
 describe('meeting transcript form', () => {
   it('requires a non-blank transcript and a known meeting type', () => {
@@ -27,10 +42,12 @@ describe('meeting transcript form', () => {
       meetingType: 'interview',
       participants: '候选人，面试官\n候选人; HR ',
       transcript,
+      attachments: [attachmentDraft()],
     })).toEqual({
       meetingType: 'interview',
       participants: ['候选人', '面试官', 'HR'],
       transcript,
+      attachments: [attachmentDraft()],
     });
   });
 });

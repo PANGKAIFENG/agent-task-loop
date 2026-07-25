@@ -45,7 +45,13 @@
 }
 
 .atl-meeting-transcript-modal {
-  width: min(680px, calc(100vw - 32px));
+  max-height: min(820px, calc(100vh - 32px));
+  width: min(760px, calc(100vw - 32px));
+}
+
+.atl-meeting-transcript-modal .modal-content {
+  max-height: calc(100vh - 76px);
+  overflow-y: auto;
 }
 
 .atl-meeting-event-title {
@@ -68,6 +74,117 @@
 .atl-meeting-transcript-modal textarea {
   min-height: min(330px, 42vh);
   resize: vertical;
+}
+
+.atl-meeting-model-disclosure,
+.atl-meeting-processing,
+.atl-meeting-result-meta,
+.atl-meeting-attachment-meta {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  line-height: 1.45;
+}
+
+.atl-meeting-model-disclosure {
+  margin: 14px 0 0;
+}
+
+.atl-meeting-processing {
+  border-block: 1px solid var(--background-modifier-border);
+  color: var(--text-normal);
+  padding: 18px 0;
+}
+
+.atl-meeting-attachment-list {
+  border-block: 1px solid var(--background-modifier-border);
+}
+
+.atl-meeting-attachment-row {
+  align-items: center;
+  border-bottom: 1px solid var(--background-modifier-border);
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  min-height: 52px;
+  padding: 8px 0;
+}
+
+.atl-meeting-attachment-row:last-child {
+  border-bottom: 0;
+}
+
+.atl-meeting-attachment-content {
+  min-width: 0;
+}
+
+.atl-meeting-attachment-name {
+  font-weight: var(--font-semibold);
+  overflow-wrap: anywhere;
+}
+
+.atl-meeting-attachment-toggle {
+  align-items: center;
+  color: var(--text-muted);
+  display: flex;
+  font-size: var(--font-ui-small);
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.atl-meeting-stale-notice,
+.atl-meeting-capture-result {
+  border-inline-start: 3px solid var(--color-orange);
+  margin: 12px 0 16px;
+  padding: 7px 10px;
+}
+
+.atl-meeting-capture-result {
+  border-inline-start-color: var(--color-green);
+}
+
+.atl-meeting-result-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin-bottom: 14px;
+}
+
+.atl-meeting-result-section {
+  border-top: 1px solid var(--background-modifier-border);
+  padding: 15px 0 4px;
+}
+
+.atl-meeting-result-section h3 {
+  font-size: var(--font-ui-medium);
+  letter-spacing: 0;
+  margin: 0 0 8px;
+}
+
+.atl-meeting-result-section p,
+.atl-meeting-result-section li {
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.atl-meeting-transcript-details {
+  border-top: 1px solid var(--background-modifier-border);
+  margin-top: 12px;
+  padding-top: 13px;
+}
+
+.atl-meeting-transcript-details summary {
+  color: var(--text-muted);
+  cursor: pointer;
+  font-weight: var(--font-semibold);
+}
+
+.atl-meeting-transcript-details pre {
+  background: var(--background-secondary);
+  max-height: min(360px, 45vh);
+  overflow: auto;
+  overflow-wrap: anywhere;
+  padding: 10px 12px;
+  white-space: pre-wrap;
 }
 
 .atl-quick-capture-modal .setting-item {
@@ -267,6 +384,15 @@
 
   .atl-candidate-checkbox {
     width: 32px;
+  }
+
+  .atl-meeting-attachment-row {
+    align-items: flex-start;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .atl-meeting-attachment-toggle {
+    grid-column: 1 / -1;
   }
 
   .atl-quick-capture-modal .setting-item,

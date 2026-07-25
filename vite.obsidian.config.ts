@@ -28,7 +28,8 @@ export default defineConfig({
         assetFileNames: (asset) => asset.name?.endsWith('.css') === true
           ? 'styles.css'
           : '[name][extname]',
-        exports: 'default',
+        exports: 'named',
+        footer: 'module.exports = exports.default;',
       },
     },
     sourcemap: true,
