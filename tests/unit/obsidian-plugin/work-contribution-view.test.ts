@@ -14,19 +14,19 @@ import {
 
 function state(overrides: Partial<ContributionDashboardState> = {}): ContributionDashboardState {
   return {
-    range: '12w',
+    range: '26w',
     selectedDate: '2026-07-20',
     contribution: {
       status: 'ready',
       errorCode: null,
       snapshot: {
-        range: '12w',
+        range: '1y',
         selectedDate: '2026-07-20',
         kpis: { completedToday: 2, completedThisWeek: 5, currentStreak: 3 },
         days: [
-          { date: '2026-07-19', completed: 1, projectCount: 1, level: 1 },
-          { date: '2026-07-20', completed: 2, projectCount: 1, level: 2 },
-          { date: '2026-07-21', completed: 0, projectCount: 0, level: 0 },
+          { date: '2026-07-19', completed: 1, outputCount: 0, projectCount: 1, level: 1 },
+          { date: '2026-07-20', completed: 2, outputCount: 1, projectCount: 1, level: 2 },
+          { date: '2026-07-21', completed: 0, outputCount: 0, projectCount: 0, level: 0 },
         ],
         projectSummaries: [{
           projectId: 'atl',
@@ -42,7 +42,47 @@ function state(overrides: Partial<ContributionDashboardState> = {}): Contributio
           completedAt: '2026-07-20T09:00:00+08:00',
           artifactRef: 'Artifacts/task-a/attempt-001.md',
         }],
-        coverage: { historicalCompletionDateUnavailable: 1 },
+        coverage: {
+          historicalCompletionDateUnavailable: 1,
+          tasksMissingCompletionDate: [{ taskId: 'task-history', title: '历史完成任务' }],
+        },
+      },
+    },
+    home: {
+      status: 'ready',
+      errorCode: null,
+      snapshot: {
+        counts: { inbox: 1, ready: 1, inProgress: 1, review: 1, blocked: 0 },
+        focusTasks: [{
+          taskId: 'task-focus',
+          title: '完成真实个人首页',
+          status: 'in_progress',
+          reviewState: 'confirmed',
+          projectName: 'Agent Task Loop',
+          priority: 'high',
+          updatedAt: '2026-07-20T08:00:00+08:00',
+          artifactCount: 0,
+        }],
+        inboxTasks: [{
+          taskId: 'task-inbox',
+          title: '判断首页输入',
+          status: 'inbox',
+          reviewState: 'ready_for_confirm',
+          projectName: '未归类',
+          priority: 'normal',
+          updatedAt: '2026-07-20T07:00:00+08:00',
+          artifactCount: 0,
+        }],
+        nextAction: {
+          taskId: 'task-focus',
+          title: '完成真实个人首页',
+          status: 'in_progress',
+          reviewState: 'confirmed',
+          projectName: 'Agent Task Loop',
+          priority: 'high',
+          updatedAt: '2026-07-20T08:00:00+08:00',
+          artifactCount: 0,
+        },
       },
     },
     token: {
@@ -68,6 +108,21 @@ function state(overrides: Partial<ContributionDashboardState> = {}): Contributio
   };
 }
 
+function contributionDays(count: number) {
+  const first = new Date('2025-07-22T12:00:00Z');
+  return Array.from({ length: count }, (_, index) => {
+    const date = new Date(first);
+    date.setUTCDate(date.getUTCDate() + index);
+    return {
+      date: date.toISOString().slice(0, 10),
+      completed: index % 4,
+      outputCount: index % 3,
+      projectCount: index % 4 === 0 ? 0 : 1,
+      level: Math.min(index % 4, 4) as 0 | 1 | 2 | 3 | 4,
+    };
+  });
+}
+
 function setup(initial = state()) {
   let current = initial;
   let listener: ((state: ContributionDashboardState) => void) | null = null;
@@ -86,16 +141,19 @@ function setup(initial = state()) {
   };
   const openTask = vi.fn(async () => undefined);
   const openArtifact = vi.fn(async () => undefined);
+  const openCompletionDateBackfill = vi.fn(async () => undefined);
   const view = new WorkContributionView(new WorkspaceLeaf(), {
     createController: () => controller as never,
     openTask,
     openArtifact,
+    openCompletionDateBackfill,
     openSettings: vi.fn(),
   });
   return {
     controller,
     openTask,
     openArtifact,
+    openCompletionDateBackfill,
     view,
     publish(next: ContributionDashboardState) {
       current = next;
@@ -105,21 +163,283 @@ function setup(initial = state()) {
 }
 
 describe('WorkContributionView', () => {
-  it('renders the confirmed dashboard structure', async () => {
+  it('renders the approved command-center workspace shell around the home views', async () => {
+    const { view } = setup();
+    await view.onOpen();
+
+    expect(view.contentEl.querySelector('.atl-home-app-shell')).not.toBeNull();
+    expect(view.contentEl.querySelector('.atl-home-sidebar')).not.toBeNull();
+    expect(view.contentEl.querySelector('.atl-home-main')).not.toBeNull();
+    expect(view.contentEl.querySelector('.atl-home-sidebar-brand')?.textContent)
+      .toContain('ClawVault');
+    expect(view.contentEl.querySelectorAll('.atl-home-sidebar .atl-home-tab')).toHaveLength(4);
+    expect(view.contentEl.querySelector('.atl-home-tab-count')?.textContent).toBe('1');
+  });
+
+  it('renders the confirmed personal home structure with Personal Pulse first', async () => {
     const { view } = setup();
     await view.onOpen();
 
     expect(view.getViewType()).toBe(WORK_CONTRIBUTION_VIEW_TYPE);
-    expect(view.getDisplayText()).toBe('个人工作贡献');
-    expect(view.contentEl.querySelector('h1')?.textContent).toBe('个人工作贡献');
+    expect(view.getDisplayText()).toBe('ClawVault 个人首页');
+    expect(view.contentEl.querySelector('h1')?.textContent).toBe('ClawVault');
     expect(view.contentEl.querySelector('.atl-contribution-subtitle')?.textContent)
-      .toBe('看见每天完成了什么，也看见时间花在了哪里。');
-    expect(view.contentEl.querySelectorAll('.atl-contribution-kpi')).toHaveLength(4);
+      .toBe('个人工作台');
+    expect(view.contentEl.querySelectorAll('.atl-home-tab')).toHaveLength(4);
     expect(view.contentEl.querySelectorAll('.atl-contribution-range')).toHaveLength(3);
+    expect(view.contentEl.textContent).toContain('26 周');
+    expect(view.contentEl.querySelector('.atl-home-view-overview')?.firstElementChild?.classList
+      .contains('atl-home-pulse')).toBe(true);
+    expect(view.contentEl.querySelectorAll('.atl-pulse-mode')).toHaveLength(4);
     expect(view.contentEl.querySelectorAll('.atl-contribution-day')).toHaveLength(3);
-    expect(view.contentEl.querySelectorAll('.atl-contribution-chart')).toHaveLength(2);
-    expect(view.contentEl.textContent).toContain('Agent Task Loop');
-    expect(view.contentEl.textContent).toContain('Build dashboard');
+    expect(view.contentEl.querySelectorAll('.atl-home-trend')).toHaveLength(3);
+    expect(view.contentEl.textContent).toContain('当前最值得推进的三件事');
+    expect(view.contentEl.querySelectorAll('.atl-home-focus-card')).toHaveLength(1);
+    expect(view.contentEl.querySelectorAll('.atl-home-metric-cell')).toHaveLength(3);
+    expect(view.contentEl.textContent).toContain('输入积压');
+    expect(view.contentEl.textContent).toContain('任务流转');
+    expect(view.contentEl.textContent).toContain('系统状态');
+    expect(view.contentEl.textContent).toContain('现在最值得做什么');
+    expect(view.contentEl.querySelector('.atl-home-overview-lower')).not.toBeNull();
+    expect(view.contentEl.textContent).toContain('等待你判断');
+    expect(view.contentEl.textContent).toContain('当前推进任务');
+    expect(view.contentEl.textContent).toContain('完成真实个人首页');
+    expect(view.contentEl.textContent).toContain('判断首页输入');
+  });
+
+  it('keeps the heatmap at 26 weeks while range controls only slice trends', async () => {
+    const base = state();
+    const days = contributionDays(365);
+    const { view } = setup(state({
+      range: '7d',
+      contribution: {
+        ...base.contribution,
+        snapshot: { ...base.contribution.snapshot!, days },
+      },
+    }));
+    await view.onOpen();
+
+    expect(view.contentEl.querySelector('.atl-home-pulse-title')?.textContent)
+      .toBe('最近 26 周');
+    expect(view.contentEl.querySelectorAll('.atl-contribution-day')).toHaveLength(182);
+    expect(view.contentEl.querySelector('.atl-contribution-heatmap')?.getAttribute('data-range'))
+      .toBe('26w');
+    expect(view.contentEl.querySelector('.atl-home-trends')?.getAttribute('data-range'))
+      .toBe('7d');
+    expect([...view.contentEl.querySelectorAll<HTMLElement>('.atl-home-trend')]
+      .map((trend) => trend.dataset.pointCount)).toEqual(['7', '7', '7']);
+    expect(view.contentEl.querySelector('.atl-home-pulse-heading .atl-contribution-ranges'))
+      .toBeNull();
+    expect(view.contentEl.querySelector('.atl-home-trends-heading .atl-contribution-ranges'))
+      .not.toBeNull();
+  });
+
+  it('reveals the nearest dated value while hovering a trend chart', async () => {
+    const { view } = setup();
+    await view.onOpen();
+
+    const plot = view.contentEl.querySelector<HTMLElement>(
+      '.atl-home-trend.is-task .atl-contribution-chart-plot',
+    )!;
+    vi.spyOn(plot, 'getBoundingClientRect').mockReturnValue({
+      bottom: 40,
+      height: 40,
+      left: 0,
+      right: 300,
+      top: 0,
+      width: 300,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    const tooltip = plot.querySelector<HTMLElement>('.atl-contribution-chart-tooltip')!;
+    const marker = plot.querySelector<SVGCircleElement>('.atl-contribution-chart-marker')!;
+
+    expect(tooltip.hidden).toBe(true);
+    fireEvent.pointerMove(plot, { clientX: 150 });
+    expect(tooltip.hidden).toBe(false);
+    expect(tooltip.textContent).toBe('2026-07-20 · 2 项');
+    expect(marker.style.display).not.toBe('none');
+
+    fireEvent.pointerLeave(plot);
+    expect(tooltip.hidden).toBe(true);
+    expect(marker.style.display).toBe('none');
+  });
+
+  it('exposes exact trend values through keyboard focus and arrow keys', async () => {
+    const { view } = setup();
+    await view.onOpen();
+
+    const plot = view.contentEl.querySelector<HTMLElement>(
+      '.atl-home-trend.is-task .atl-contribution-chart-plot',
+    )!;
+    const tooltip = plot.querySelector<HTMLElement>('.atl-contribution-chart-tooltip')!;
+
+    expect(plot.tabIndex).toBe(0);
+    fireEvent.focus(plot);
+    expect(tooltip.hidden).toBe(false);
+    expect(tooltip.textContent).toBe('2026-07-21 · 0 项');
+
+    fireEvent.keyDown(plot, { key: 'ArrowLeft' });
+    expect(tooltip.textContent).toBe('2026-07-20 · 2 项');
+    fireEvent.keyDown(plot, { key: 'Home' });
+    expect(tooltip.textContent).toBe('2026-07-19 · 1 项');
+    fireEvent.keyDown(plot, { key: 'End' });
+    expect(tooltip.textContent).toBe('2026-07-21 · 0 项');
+
+    fireEvent.blur(plot);
+    expect(tooltip.hidden).toBe(true);
+  });
+
+  it('uses whole metric cards as the navigation controls', async () => {
+    const { view } = setup();
+    await view.onOpen();
+
+    const metrics = [...view.contentEl.querySelectorAll<HTMLButtonElement>(
+      '.atl-home-metric-cell',
+    )];
+    expect(metrics).toHaveLength(3);
+    expect(metrics.every((metric) => metric.tagName === 'BUTTON')).toBe(true);
+    expect(metrics.every((metric) => metric.querySelector('button') === null)).toBe(true);
+    expect(metrics[0]?.querySelector('.atl-home-mini-action')?.textContent)
+      .toBe('去处理输入 →');
+
+    fireEvent.click(metrics[0]!);
+    expect(view.contentEl.querySelector('.atl-home-view-input')).not.toBeNull();
+  });
+
+  it('presents the pulse summary as one streak hero with three real supporting metrics', async () => {
+    const { openCompletionDateBackfill, view } = setup();
+    await view.onOpen();
+
+    const hero = view.contentEl.querySelector('.atl-home-pulse-hero');
+    expect(hero?.querySelector('strong')?.textContent).toBe('3 天');
+    expect(hero?.querySelector('span')?.textContent).toBe('当前连续推进');
+
+    const details = [...view.contentEl.querySelectorAll('.atl-home-pulse-detail')];
+    expect(details).toHaveLength(3);
+    expect(details.map((detail) => detail.querySelector('span')?.textContent))
+      .toEqual(['本周完成', '今日完成', '今日 Token']);
+    expect(details.map((detail) => detail.querySelector('strong')?.textContent))
+      .toEqual(['5 项', '2 项', '--']);
+    const backfill = view.contentEl.querySelector<HTMLButtonElement>(
+      '.atl-contribution-coverage-action',
+    );
+    expect(backfill?.textContent)
+      .toBe('另有 1 个历史完成任务未记录完成日期 · 查看并补齐');
+    fireEvent.click(backfill!);
+    expect(openCompletionDateBackfill).toHaveBeenCalledWith([
+      { taskId: 'task-history', title: '历史完成任务' },
+    ]);
+  });
+
+  it('keeps overview previews compact while full tabs show every task', async () => {
+    const base = state();
+    const focusTasks = Array.from({ length: 4 }, (_, index) => ({
+      ...base.home.snapshot!.focusTasks[0]!,
+      taskId: `focus-${index}`,
+      title: `推进任务 ${index + 1}`,
+    }));
+    const inboxTasks = Array.from({ length: 6 }, (_, index) => ({
+      ...base.home.snapshot!.inboxTasks[0]!,
+      taskId: `inbox-${index}`,
+      title: `输入任务 ${index + 1}`,
+    }));
+    const { view } = setup(state({
+      home: {
+        status: 'ready',
+        errorCode: null,
+        snapshot: {
+          ...base.home.snapshot!,
+          focusTasks,
+          inboxTasks,
+          nextAction: focusTasks[0]!,
+        },
+      },
+    }));
+    await view.onOpen();
+
+    expect(view.contentEl.querySelectorAll('.atl-home-focus-card')).toHaveLength(3);
+    expect(view.contentEl.querySelectorAll('.atl-home-queue-row')).toHaveLength(3);
+
+    const todayTab = [...view.contentEl.querySelectorAll<HTMLButtonElement>('.atl-home-tab')]
+      .find((button) => button.querySelector('.atl-home-tab-label')?.textContent === '推进');
+    fireEvent.click(todayTab!);
+    expect(view.contentEl.querySelectorAll('.atl-home-today-tasks .atl-home-task')).toHaveLength(4);
+
+    const inputTab = [...view.contentEl.querySelectorAll<HTMLButtonElement>('.atl-home-tab')]
+      .find((button) => button.querySelector('.atl-home-tab-label')?.textContent === '输入');
+    fireEvent.click(inputTab!);
+    expect(view.contentEl.querySelectorAll('.atl-home-input-list .atl-home-task')).toHaveLength(6);
+  });
+
+  it('describes heatmap days using the selected contribution mode', async () => {
+    const { view } = setup();
+    await view.onOpen();
+
+    const outputsMode = [...view.contentEl.querySelectorAll<HTMLButtonElement>('.atl-pulse-mode')]
+      .find((button) => button.textContent === '产出');
+    fireEvent.click(outputsMode!);
+    expect(view.contentEl.querySelector('[data-date="2026-07-20"]')?.getAttribute('aria-label'))
+      .toContain('1 个有效产出');
+    expect(view.contentEl.querySelector('[data-date="2026-07-20"]')?.getAttribute('title'))
+      .toContain('1 个有效产出');
+
+    const aiMode = [...view.contentEl.querySelectorAll<HTMLButtonElement>('.atl-pulse-mode')]
+      .find((button) => button.textContent === 'AI');
+    fireEvent.click(aiMode!);
+    expect(view.contentEl.querySelector('[data-date="2026-07-20"]')?.getAttribute('aria-label'))
+      .toContain('180 Normalized Token');
+    expect(view.contentEl.querySelector('[data-date="2026-07-20"]')?.getAttribute('title'))
+      .toContain('180 Normalized Token');
+  });
+
+  it('switches between real task views and marks article consumption as pending', async () => {
+    const { view } = setup();
+    await view.onOpen();
+
+    const inputTab = [...view.contentEl.querySelectorAll<HTMLButtonElement>('.atl-home-tab')]
+      .find((button) => button.textContent?.includes('输入'));
+    fireEvent.click(inputTab!);
+    expect(view.contentEl.querySelector('.atl-home-view-input')).not.toBeNull();
+    expect(view.contentEl.textContent).toContain('判断首页输入');
+
+    const overviewTab = [...view.contentEl.querySelectorAll<HTMLButtonElement>('.atl-home-tab')]
+      .find((button) => button.textContent?.includes('总览'));
+    fireEvent.click(overviewTab!);
+    const consumeMode = [...view.contentEl.querySelectorAll<HTMLButtonElement>('.atl-pulse-mode')]
+      .find((button) => button.textContent === '消费');
+    fireEvent.click(consumeMode!);
+    expect(view.contentEl.textContent).toContain('文章消费标记待接入');
+    expect(view.contentEl.querySelector('.atl-home-trends')).toBeNull();
+    expect(view.contentEl.textContent).not.toContain('Normalized Token');
+  });
+
+  it('keeps legacy tasks without a title visible and actionable', async () => {
+    const base = state();
+    const untitledTask = {
+      ...base.home.snapshot!.focusTasks[0]!,
+      taskId: 'task-untitled',
+      title: '   ',
+    };
+    const { openTask, view } = setup(state({
+      home: {
+        status: 'ready',
+        errorCode: null,
+        snapshot: {
+          ...base.home.snapshot!,
+          focusTasks: [untitledTask],
+          nextAction: untitledTask,
+        },
+      },
+    }));
+    await view.onOpen();
+
+    expect(view.contentEl.textContent).toContain('未命名任务');
+    fireEvent.click(view.contentEl.querySelector<HTMLButtonElement>(
+      '[data-task-id="task-untitled"]',
+    )!);
+    expect(openTask).toHaveBeenCalledWith('task-untitled');
   });
 
   it('places consecutive dates into Monday-based week columns', async () => {
@@ -142,6 +462,23 @@ describe('WorkContributionView', () => {
     expect(monday?.style.gridColumn).toBe('2');
     expect(tuesday?.style.gridRow).toBe('2');
     expect(tuesday?.style.gridColumn).toBe('2');
+  });
+
+  it('keeps the heatmap layout fixed while the trend range changes', async () => {
+    const base = state();
+    const { view } = setup(state({
+      range: '7d',
+      contribution: {
+        ...base.contribution,
+        snapshot: base.contribution.snapshot === null
+          ? null
+          : { ...base.contribution.snapshot, range: '1y' },
+      },
+    }));
+    await view.onOpen();
+
+    expect(view.contentEl.querySelector('.atl-contribution-heatmap')?.getAttribute('data-range'))
+      .toBe('26w');
   });
 
   it('supports range, date, refresh, task, and artifact actions', async () => {
@@ -168,6 +505,9 @@ describe('WorkContributionView', () => {
     )!);
     expect(controller.refreshAll).toHaveBeenCalledOnce();
 
+    const reviewTab = [...view.contentEl.querySelectorAll<HTMLButtonElement>('.atl-home-tab')]
+      .find((button) => button.querySelector('.atl-home-tab-label')?.textContent === '复盘');
+    fireEvent.click(reviewTab!);
     fireEvent.click(view.contentEl.querySelector<HTMLButtonElement>(
       '[data-task-id="task-a"]',
     )!);
@@ -190,6 +530,9 @@ describe('WorkContributionView', () => {
 
     expect(view.contentEl.textContent).toContain('今日完成');
     expect(view.contentEl.textContent).toContain('未检测到 OpenToken');
+    const reviewTab = [...view.contentEl.querySelectorAll<HTMLButtonElement>('.atl-home-tab')]
+      .find((button) => button.querySelector('.atl-home-tab-label')?.textContent === '复盘');
+    fireEvent.click(reviewTab!);
     expect(view.contentEl.textContent).toContain('Build dashboard');
   });
 
@@ -218,6 +561,9 @@ describe('WorkContributionView', () => {
     const { view } = setup(missing);
     await view.onOpen();
 
+    const reviewTab = [...view.contentEl.querySelectorAll<HTMLButtonElement>('.atl-home-tab')]
+      .find((button) => button.querySelector('.atl-home-tab-label')?.textContent === '复盘');
+    fireEvent.click(reviewTab!);
     expect(view.contentEl.textContent).toContain('当天没有可核对产出');
     expect(view.contentEl.textContent).toContain('查看数据源设置');
   });

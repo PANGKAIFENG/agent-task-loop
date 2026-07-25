@@ -20,6 +20,7 @@ import './styles.css';
 
 import { createClaudeStructuredExecutor } from '../runner/claude-driver.js';
 import { captureTask } from '../services/capture-task.js';
+import { recordTaskCompletionDate } from '../services/record-task-completion-date.js';
 import type { ServiceContext } from '../services/service-context.js';
 import { createVaultWriteAuthorization } from '../storage/task-paths.js';
 import { parseArtifactReference } from '../storage/artifact-reference.js';
@@ -35,6 +36,10 @@ import {
 import { extractTaskCandidates } from './candidate-extractor.js';
 import { CaptureCandidatesModal } from './capture-candidates-modal.js';
 import { CaptureController } from './capture-controller.js';
+import {
+  CompletionDateBackfillModal,
+  type CompletionDateBackfillTask,
+} from './completion-date-backfill-modal.js';
 import { formatCodexHandoff } from './codex-handoff.js';
 import { ConfirmationController } from './confirmation-controller.js';
 import { createReadOnlyDingTalkCalDavClient } from './dingtalk-caldav-client.js';
@@ -83,6 +88,7 @@ import {
 import {
   isAtlInboxTaskPath,
   isAtlTaskPath,
+  taskIdFromMetadata,
   taskIdFromPath,
 } from './task-eligibility.js';
 import {
@@ -200,7 +206,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
       },
       open: () => this.openUnifiedCalendar(),
     }).start();
-    this.addRibbonIcon('chart-no-axes-combined', 'ATL：个人工作贡献', () => {
+    this.addRibbonIcon('layout-dashboard', 'ATL：个人首页', () => {
       void this.activateContributionView();
     });
 
@@ -218,7 +224,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
     });
     this.addCommand({
       id: 'open-work-contribution',
-      name: '打开个人工作贡献',
+      name: '打开个人首页',
       callback: () => {
         void this.activateContributionView();
       },
@@ -312,14 +318,58 @@ export default class AgentTaskLoopPlugin extends Plugin {
       createController: () => this.createContributionController(),
       openTask: (taskId) => this.openContributionTask(taskId),
       openArtifact: (artifactRef, taskId) => this.openContributionArtifact(artifactRef, taskId),
+      openCompletionDateBackfill: (tasks) => this.openCompletionDateBackfill(tasks),
       openSettings: () => this.openPluginSettings(),
     });
+  }
+
+  private openCompletionDateBackfill(tasks: readonly CompletionDateBackfillTask[]): void {
+    if (!this.settings.allowVaultManagement) {
+      new Notice('请先在“设置 → Agent Task Loop”中允许 ATL 管理此 Vault');
+      return;
+    }
+    const paths = this.localPluginPaths();
+    if (paths === null) {
+      new Notice('Agent Task Loop 仅支持桌面版本地 Vault');
+      return;
+    }
+    new CompletionDateBackfillModal(this.app, tasks, async (taskId, completedOn) => {
+      if (!this.settings.allowVaultManagement) {
+        new Notice('Vault 管理权限已关闭，请重新开启后再补齐');
+        throw new Error('vault_management_disabled');
+      }
+      const currentPaths = this.localPluginPaths();
+      if (currentPaths === null) {
+        new Notice('Agent Task Loop 仅支持桌面版本地 Vault');
+        throw new Error('local_vault_unavailable');
+      }
+      const timeZone = resolveSystemTimeZone();
+      const context = createObsidianServiceContext(
+        currentPaths.root,
+        createVaultWriteAuthorization(currentPaths.root),
+        { timeZone },
+      );
+      const result = await recordTaskCompletionDate(context, {
+        taskId,
+        completedOn,
+        timeZone,
+      });
+      new Notice(result.recorded ? '历史完成日期已补齐' : '这项任务已有完成日期记录');
+      await Promise.all(
+        this.app.workspace.getLeavesOfType(WORK_CONTRIBUTION_VIEW_TYPE)
+          .map(async (leaf) => {
+            if (leaf.view instanceof WorkContributionView) {
+              await leaf.view.refreshContribution();
+            }
+          }),
+      );
+    }, () => this.settings.allowVaultManagement).open();
   }
 
   private createContributionController(): ContributionDashboardController {
     const paths = this.localPluginPaths();
     if (paths === null) {
-      throw new Error('Agent Task Loop 个人工作贡献仅支持桌面版本地 Vault');
+      throw new Error('Agent Task Loop 个人首页仅支持桌面版本地 Vault');
     }
     const timeZone = resolveSystemTimeZone();
     return new ContributionDashboardController({
@@ -357,9 +407,27 @@ export default class AgentTaskLoopPlugin extends Plugin {
   }
 
   private async openContributionTask(taskId: string): Promise<void> {
-    const file = this.app.vault.getMarkdownFiles().find((candidate) => (
-      taskIdFromPath(candidate.path) === taskId
+    const markdownFiles = this.app.vault.getMarkdownFiles();
+    let file = markdownFiles.find((candidate) => (
+      taskIdFromMetadata(
+        candidate.path,
+        this.app.metadataCache.getFileCache(candidate)?.frontmatter,
+      ) === taskId
     ));
+    if (file === undefined) {
+      for (const candidate of markdownFiles) {
+        if (!isAtlTaskPath(candidate.path)) continue;
+        try {
+          const markdown = await this.app.vault.cachedRead(candidate);
+          if (taskIdFromMetadata(candidate.path, markdown) === taskId) {
+            file = candidate;
+            break;
+          }
+        } catch {
+          // A concurrently moved task is skipped; the next refresh will update the list.
+        }
+      }
+    }
     if (file === undefined) {
       new Notice('找不到这项任务文件');
       return;
@@ -995,7 +1063,7 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
   }
 
   private renderContributionData(containerEl: HTMLElement): void {
-    containerEl.createEl('h2', { text: '个人工作贡献' });
+    containerEl.createEl('h2', { text: '个人首页数据' });
     new Setting(containerEl)
       .setName('任务贡献数据')
       .setDesc('来自 ATL 可审计的任务完成记录；不依赖 OpenToken，也不会修改任务。');

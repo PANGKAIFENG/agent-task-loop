@@ -66,6 +66,19 @@ function reconciled(taskId: string, at: string, status = 'done'): AuditEvent {
   };
 }
 
+function recordedCompletion(taskId: string, at: string): AuditEvent {
+  return {
+    event: 'task.completion_date_recorded',
+    at,
+    taskId,
+    details: {
+      completedOn: at.slice(0, 10),
+      recordedAt: NOW,
+      source: 'manual_backfill',
+    },
+  };
+}
+
 describe('queryContribution', () => {
   it('counts only completion evidence and deduplicates a task within one local day', () => {
     const doneTaskA = task('a');
@@ -90,6 +103,7 @@ describe('queryContribution', () => {
     expect(snapshot.kpis.completedThisWeek).toBe(2);
     expect(snapshot.days.find((day) => day.date === '2026-07-20')).toMatchObject({
       completed: 2,
+      outputCount: 0,
       projectCount: 1,
       level: 2,
     });
@@ -194,6 +208,38 @@ describe('queryContribution', () => {
       taskId: 'b',
       artifactRef: 'Artifacts/b/attempt-002.md',
     });
+    expect(snapshot.days.find((day) => day.date === '2026-07-20')?.outputCount).toBe(3);
+  });
+
+  it('uses a readable fallback for blank legacy task titles', () => {
+    const snapshot = queryContribution({
+      tasks: [task('legacy', { title: '   ' })],
+      projects,
+      auditEvents: [reviewed('legacy', '2026-07-20T09:00:00+08:00')],
+      now: new Date(NOW),
+      timeZone: 'Asia/Shanghai',
+      range: '7d',
+      selectedDate: '2026-07-20',
+    });
+
+    expect(snapshot.projectSummaries[0]?.evidenceTitles).toEqual(['未命名任务']);
+    expect(snapshot.outputs[0]?.title).toBe('未命名任务');
+  });
+
+  it('supports the confirmed 26-week personal pulse range', () => {
+    const snapshot = queryContribution({
+      tasks: [],
+      projects,
+      auditEvents: [],
+      now: new Date(NOW),
+      timeZone: 'Asia/Shanghai',
+      range: '26w',
+      selectedDate: '2026-07-20',
+    });
+
+    expect(snapshot.days).toHaveLength(182);
+    expect(snapshot.days[0]?.date).toBe('2026-01-20');
+    expect(snapshot.days.at(-1)?.date).toBe('2026-07-20');
   });
 
   it('reports done tasks without completion evidence instead of inferring updatedAt', () => {
@@ -208,8 +254,31 @@ describe('queryContribution', () => {
     });
 
     expect(snapshot.coverage.historicalCompletionDateUnavailable).toBe(1);
+    expect(snapshot.coverage.tasksMissingCompletionDate).toEqual([{
+      taskId: 'missing',
+      title: 'Task missing',
+    }]);
     expect(snapshot.kpis.completedToday).toBe(0);
     expect(snapshot.outputs).toEqual([]);
     expect(snapshot.days).toHaveLength(365);
+  });
+
+  it('counts a manually recorded completion on its selected local date', () => {
+    const snapshot = queryContribution({
+      tasks: [task('backfilled')],
+      projects,
+      auditEvents: [recordedCompletion('backfilled', '2026-07-18T04:00:00.000Z')],
+      now: new Date(NOW),
+      timeZone: 'Asia/Shanghai',
+      range: '7d',
+      selectedDate: '2026-07-18',
+    });
+
+    expect(snapshot.days.find((day) => day.date === '2026-07-18')?.completed).toBe(1);
+    expect(snapshot.outputs[0]?.taskId).toBe('backfilled');
+    expect(snapshot.coverage).toEqual({
+      historicalCompletionDateUnavailable: 0,
+      tasksMissingCompletionDate: [],
+    });
   });
 });
