@@ -207,6 +207,21 @@ describe('WorkContributionView', () => {
     expect(view.contentEl.textContent).toContain('判断首页输入');
   });
 
+  it('places AI first in the Personal Pulse mode switcher', async () => {
+    const { view } = setup();
+    await view.onOpen();
+
+    const modes = [...view.contentEl.querySelectorAll<HTMLButtonElement>('.atl-pulse-mode')];
+    expect(modes.map((button) => button.textContent)).toEqual([
+      'AI',
+      '任务',
+      '消费',
+      '产出',
+    ]);
+    expect(modes.find((button) => button.textContent === '任务')?.getAttribute('aria-pressed'))
+      .toBe('true');
+  });
+
   it('keeps the heatmap at 26 weeks while range controls only slice trends', async () => {
     const base = state();
     const days = contributionDays(365);
@@ -221,7 +236,9 @@ describe('WorkContributionView', () => {
 
     expect(view.contentEl.querySelector('.atl-home-pulse-title')?.textContent)
       .toBe('最近 26 周');
-    expect(view.contentEl.querySelectorAll('.atl-contribution-day')).toHaveLength(182);
+    expect(view.contentEl.querySelectorAll(
+      '.atl-contribution-day, .atl-contribution-placeholder',
+    )).toHaveLength(182);
     expect(view.contentEl.querySelector('.atl-contribution-heatmap')?.getAttribute('data-range'))
       .toBe('26w');
     expect(view.contentEl.querySelector('.atl-home-trends')?.getAttribute('data-range'))
@@ -457,11 +474,40 @@ describe('WorkContributionView', () => {
     );
 
     expect(sunday?.style.gridRow).toBe('7');
-    expect(sunday?.style.gridColumn).toBe('1');
+    expect(sunday?.style.gridColumn).toBe('25');
     expect(monday?.style.gridRow).toBe('1');
-    expect(monday?.style.gridColumn).toBe('2');
+    expect(monday?.style.gridColumn).toBe('26');
     expect(tuesday?.style.gridRow).toBe('2');
-    expect(tuesday?.style.gridColumn).toBe('2');
+    expect(tuesday?.style.gridColumn).toBe('26');
+  });
+
+  it('fills partial edge weeks with non-interactive heatmap placeholders', async () => {
+    const base = state();
+    const days = contributionDays(182);
+    const { view } = setup(state({
+      contribution: {
+        ...base.contribution,
+        snapshot: { ...base.contribution.snapshot!, days },
+      },
+    }));
+    await view.onOpen();
+
+    const placeholders = [...view.contentEl.querySelectorAll<HTMLElement>(
+      '.atl-contribution-placeholder',
+    )];
+    const slots = [...view.contentEl.querySelectorAll<HTMLElement>(
+      '.atl-contribution-day, .atl-contribution-placeholder',
+    )];
+    expect(slots).toHaveLength(182);
+    expect(view.contentEl.querySelectorAll('.atl-contribution-day')).toHaveLength(176);
+    expect(placeholders).toHaveLength(6);
+    expect(placeholders[0]?.tagName).toBe('SPAN');
+    expect(placeholders[0]?.getAttribute('aria-hidden')).toBe('true');
+    expect(placeholders[0]?.style.gridRow).toBe('2');
+    expect(placeholders[0]?.style.gridColumn).toBe('26');
+    expect(placeholders.at(-1)?.style.gridRow).toBe('7');
+    expect(placeholders.at(-1)?.style.gridColumn).toBe('26');
+    expect(Math.max(...slots.map((slot) => Number(slot.style.gridColumn)))).toBe(26);
   });
 
   it('keeps the heatmap layout fixed while the trend range changes', async () => {

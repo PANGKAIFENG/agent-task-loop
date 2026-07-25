@@ -37,10 +37,10 @@ const TAB_OPTIONS: Array<{ value: HomeTab; label: string; icon: string }> = [
 ];
 
 const PULSE_OPTIONS: Array<{ value: PulseMode; label: string }> = [
+  { value: 'ai', label: 'AI' },
   { value: 'tasks', label: '任务' },
   { value: 'consumption', label: '消费' },
   { value: 'outputs', label: '产出' },
-  { value: 'ai', label: 'AI' },
 ];
 
 const HEATMAP_DAY_COUNT = 182;
@@ -125,6 +125,12 @@ function formatCompactDate(value: string): string {
 function mondayBasedWeekday(date: string): number {
   const weekday = new Date(`${date}T12:00:00Z`).getUTCDay();
   return weekday === 0 ? 7 : weekday;
+}
+
+function addDays(date: string, count: number): string {
+  const value = new Date(`${date}T12:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + count);
+  return value.toISOString().slice(0, 10);
 }
 
 interface TrendPoint {
@@ -464,7 +470,18 @@ export class WorkContributionView extends ItemView {
     const tokenByDate = new Map(
       (state.token.snapshot?.days ?? []).map((day) => [day.date, day.normalized]),
     );
-    const heatmapDays = snapshot.days.slice(-HEATMAP_DAY_COUNT);
+    const dayByDate = new Map(snapshot.days.map((day) => [day.date, day]));
+    const anchorDate = snapshot.days.at(-1)?.date ?? snapshot.selectedDate;
+    const anchorRow = mondayBasedWeekday(anchorDate);
+    const firstDate = addDays(anchorDate, -((HEATMAP_DAY_COUNT - 7) + anchorRow - 1));
+    const slotDates = Array.from(
+      { length: HEATMAP_DAY_COUNT },
+      (_, index) => addDays(firstDate, index),
+    );
+    const heatmapDays = slotDates.flatMap((date) => {
+      const day = dayByDate.get(date);
+      return day === undefined ? [] : [day];
+    });
     const values = heatmapDays.map((day) => {
       if (this.pulseMode === 'outputs') return day.outputCount;
       if (this.pulseMode === 'ai') return tokenByDate.get(day.date) ?? 0;
@@ -475,10 +492,19 @@ export class WorkContributionView extends ItemView {
     grid.dataset.range = '26w';
     const mode = this.pulseMode === 'consumption' ? 'tasks' : this.pulseMode;
     grid.setAttribute('aria-label', `${PULSE_HEATMAP_LABELS[mode]}每日贡献图`);
-    const firstDay = heatmapDays[0];
-    const firstRow = firstDay === undefined ? 1 : mondayBasedWeekday(firstDay.date);
-    for (const [index, day] of heatmapDays.entries()) {
-      const value = values[index] ?? 0;
+    for (const [index, date] of slotDates.entries()) {
+      const row = (index % 7) + 1;
+      const column = Math.floor(index / 7) + 1;
+      const day = dayByDate.get(date);
+      if (day === undefined) {
+        grid.append(this.renderHeatmapPlaceholder(row, column));
+        continue;
+      }
+      const value = this.pulseMode === 'outputs'
+        ? day.outputCount
+        : this.pulseMode === 'ai'
+          ? tokenByDate.get(day.date) ?? 0
+          : day.completed;
       const level = this.pulseMode === 'tasks'
         ? day.level
         : pulseLevel(value, maximum);
@@ -495,8 +521,8 @@ export class WorkContributionView extends ItemView {
           : `${formatNumber(value)} Normalized Token`;
       button.setAttribute('aria-label', `${day.date}，${valueLabel}`);
       button.title = `${day.date} · ${valueLabel}`;
-      button.style.gridRow = String(mondayBasedWeekday(day.date));
-      button.style.gridColumn = String(Math.floor((firstRow - 1 + index) / 7) + 1);
+      button.style.gridRow = String(row);
+      button.style.gridColumn = String(column);
       if (state.selectedDate === day.date) {
         button.classList.add('is-selected');
         button.setAttribute('aria-current', 'date');
@@ -508,6 +534,14 @@ export class WorkContributionView extends ItemView {
     }
     wrapper.append(grid);
     return wrapper;
+  }
+
+  private renderHeatmapPlaceholder(row: number, column: number): HTMLElement {
+    const placeholder = element('span', 'atl-contribution-placeholder');
+    placeholder.setAttribute('aria-hidden', 'true');
+    placeholder.style.gridRow = String(row);
+    placeholder.style.gridColumn = String(column);
+    return placeholder;
   }
 
   private renderPulseSummary(state: ContributionDashboardState): HTMLElement {

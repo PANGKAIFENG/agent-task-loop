@@ -1397,13 +1397,18 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
   width: auto;
 }
 
-.atl-contribution-day {
+.atl-contribution-day,
+.atl-contribution-placeholder {
   background: rgba(106, 0, 255, .045);
   border: 1px solid rgba(106, 0, 255, .06);
   border-radius: 2px;
   height: 12px;
   min-width: 12px;
   width: 100%;
+}
+
+.atl-contribution-placeholder {
+  pointer-events: none;
 }
 
 .atl-contribution-day:hover,
