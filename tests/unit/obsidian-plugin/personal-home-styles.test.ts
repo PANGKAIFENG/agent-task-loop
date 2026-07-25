@@ -108,4 +108,40 @@ describe('personal home heatmap styles', () => {
         .toMatch(/grid-template-columns\s*:\s*1fr/);
     }
   });
+
+  it('styles trend hover feedback and whole-card metric actions', async () => {
+    const css = await readFile(
+      new URL('../../../src/obsidian-plugin/styles.css', import.meta.url),
+      'utf8',
+    );
+
+    expect(declarationsFor(css, '.atl-home-trends-heading'))
+      .toMatch(/grid-column\s*:\s*1\s*\/\s*-1/);
+    expect(declarationsFor(css, '.atl-contribution-chart-plot'))
+      .toMatch(/position\s*:\s*relative/);
+    expect(declarationsFor(css, '.atl-contribution-chart-tooltip'))
+      .toMatch(/position\s*:\s*absolute/);
+    expect(declarationsFor(css, '.atl-home-metric-cell'))
+      .toMatch(/text-align\s*:\s*left/);
+    expect(declarationsFor(css, '.atl-home-metric-cell'))
+      .toMatch(/width\s*:\s*100%/);
+    expect(declarationsFor(css, '.atl-home-metric-cell:hover'))
+      .toMatch(/border-color\s*:/);
+  });
+
+  it('keeps historical completion repair compact and visually secondary', async () => {
+    const css = await readFile(
+      new URL('../../../src/obsidian-plugin/styles.css', import.meta.url),
+      'utf8',
+    );
+
+    expect(declarationsFor(css, '.atl-contribution-coverage-action'))
+      .toMatch(/background\s*:\s*transparent/);
+    expect(declarationsFor(css, '.atl-contribution-coverage-action'))
+      .toMatch(/text-align\s*:\s*left/);
+    expect(declarationsFor(css, '.atl-completion-backfill-row'))
+      .toMatch(/grid-template-columns\s*:/);
+    expect(declarationsFor(css, '.atl-completion-backfill-status'))
+      .toMatch(/grid-column\s*:/);
+  });
 });

@@ -259,12 +259,13 @@ describe('ContributionDashboardController', () => {
     expect(preview).not.toHaveBeenCalled();
   });
 
-  it('rescans only when a selected range exceeds loaded token coverage', async () => {
-    const preview = vi.fn()
-      .mockResolvedValueOnce(snapshot('2026-07-14'))
-      .mockResolvedValueOnce(snapshot('2025-07-21'));
+  it('loads one year once and keeps range changes in memory', async () => {
+    const list = vi.fn(async () => [task()]);
+    const preview = vi.fn(async () => snapshot('2025-07-21'));
     const controller = new ContributionDashboardController({
-      context: context(),
+      context: context({
+        tasks: { list } as unknown as ServiceContext['tasks'],
+      }),
       openToken: { preview },
       getTokenCache: cache,
       saveTokenCache: async () => undefined,
@@ -273,65 +274,15 @@ describe('ContributionDashboardController', () => {
     });
     await controller.initialize();
     await controller.waitForTokenRefresh();
-    preview.mockClear();
 
-    await controller.setRange('7d');
-    expect(preview).not.toHaveBeenCalled();
-    await controller.setRange('1y');
-    await controller.waitForTokenRefresh();
-    expect(preview).toHaveBeenCalledOnce();
+    expect(controller.getState().contribution.snapshot?.range).toBe('1y');
     expect(preview).toHaveBeenCalledWith('2025-07-21');
-  });
-
-  it('queues a wider token scan selected while the initial scan is running', async () => {
-    const initialRefresh = deferred<ReturnType<typeof snapshot>>();
-    const preview = vi.fn()
-      .mockImplementationOnce(async () => initialRefresh.promise)
-      .mockResolvedValueOnce(snapshot('2025-07-21'));
-    const controller = new ContributionDashboardController({
-      context: context(),
-      openToken: { preview },
-      getTokenCache: () => ({ ...cache(), days: [] }),
-      saveTokenCache: async () => { throw new Error('disk full'); },
-      clock: () => NOW,
-      timeZone: 'Asia/Shanghai',
-    });
-
-    await controller.initialize();
+    await controller.setRange('7d');
+    await controller.setRange('26w');
     await controller.setRange('1y');
-    initialRefresh.resolve(snapshot('2026-04-28'));
-    await controller.waitForTokenRefresh();
-
-    expect(preview).toHaveBeenCalledTimes(2);
-    expect(preview).toHaveBeenLastCalledWith('2025-07-21');
-    expect(controller.getState().token.snapshot?.since).toBe('2025-07-21');
-  });
-
-  it('retries a queued wider scan after the initial token scan fails', async () => {
-    const initialRefresh = deferred<ReturnType<typeof snapshot>>();
-    const preview = vi.fn()
-      .mockImplementationOnce(async () => initialRefresh.promise)
-      .mockResolvedValueOnce(snapshot('2025-07-21'));
-    const controller = new ContributionDashboardController({
-      context: context(),
-      openToken: { preview },
-      getTokenCache: () => ({ ...cache(), days: [] }),
-      saveTokenCache: async () => undefined,
-      clock: () => NOW,
-      timeZone: 'Asia/Shanghai',
-    });
-
-    await controller.initialize();
-    await controller.setRange('1y');
-    initialRefresh.reject(new OpenTokenAdapterError('timeout'));
-    await controller.waitForTokenRefresh();
-
-    expect(preview).toHaveBeenCalledTimes(2);
-    expect(preview).toHaveBeenLastCalledWith('2025-07-21');
-    expect(controller.getState().token).toMatchObject({
-      status: 'ready',
-      snapshot: { since: '2025-07-21' },
-    });
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(preview).toHaveBeenCalledTimes(1);
+    expect(controller.getState().range).toBe('1y');
   });
 });
 

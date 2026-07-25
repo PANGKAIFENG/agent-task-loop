@@ -6,6 +6,44 @@
   width: min(600px, calc(100vw - 32px));
 }
 
+.atl-completion-backfill-modal {
+  max-height: min(720px, calc(100vh - 32px));
+  width: min(680px, calc(100vw - 32px));
+}
+
+.atl-completion-backfill-list {
+  border-top: 1px solid var(--background-modifier-border);
+  max-height: min(460px, calc(100vh - 250px));
+  overflow-y: auto;
+}
+
+.atl-completion-backfill-row {
+  align-items: center;
+  border-bottom: 1px solid var(--background-modifier-border);
+  display: grid;
+  gap: 8px 12px;
+  grid-template-columns: minmax(0, 1fr) minmax(132px, auto) auto;
+  padding: 12px 4px;
+}
+
+.atl-completion-backfill-title {
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.atl-completion-backfill-row input[type='date'] {
+  min-width: 132px;
+}
+
+.atl-completion-backfill-status {
+  color: var(--text-error);
+  font-size: var(--font-ui-smaller);
+  grid-column: 1 / -1;
+  min-height: 1em;
+}
+
 .atl-meeting-transcript-modal {
   width: min(680px, calc(100vw - 32px));
 }
@@ -251,6 +289,14 @@
   .atl-task-confirmation-modal .setting-item-control textarea,
   .atl-task-confirmation-modal .setting-item-control input[type='text'] {
     min-width: 100%;
+  }
+
+  .atl-completion-backfill-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .atl-completion-backfill-title {
+    grid-column: 1 / -1;
   }
 }
 
@@ -1311,20 +1357,49 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
   font-size: 10px;
 }
 
-.atl-home-pulse-summary .atl-contribution-coverage {
+.atl-home-pulse-summary .atl-contribution-coverage-action {
   grid-column: 1 / -1;
 }
 
-.atl-contribution-coverage {
+.atl-contribution-coverage-action {
+  background: transparent;
+  border: 0;
   color: #cc4329;
+  cursor: pointer;
   font-size: 10px;
   margin: 5px 7px 0;
+  padding: 0;
+  text-align: left;
+  width: fit-content;
+}
+
+.atl-contribution-coverage-action:hover,
+.atl-contribution-coverage-action:focus-visible {
+  color: var(--atl-home-danger);
+  text-decoration: underline;
 }
 
 .atl-home-trends {
   border-top: 1px solid var(--atl-home-line);
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.atl-home-trends-heading {
+  align-items: center;
+  border-bottom: 1px solid var(--atl-home-line);
+  display: flex;
+  grid-column: 1 / -1;
+  justify-content: space-between;
+  min-height: 44px;
+  padding: 8px 16px;
+}
+
+.atl-home-trends-title {
+  color: var(--atl-home-text);
+  font-family: var(--atl-home-font);
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .atl-home-trend {
@@ -1356,7 +1431,35 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
 }
 
 .atl-contribution-chart-svg {
+  display: block;
   height: 38px;
+  width: 100%;
+}
+
+.atl-contribution-chart-plot {
+  position: relative;
+}
+
+.atl-contribution-chart-marker {
+  fill: var(--atl-home-surface-strong);
+  stroke: currentColor;
+  stroke-width: 1.5px;
+}
+
+.atl-contribution-chart-tooltip {
+  background: var(--atl-home-text);
+  border-radius: 4px;
+  color: var(--atl-home-surface-strong);
+  font-family: var(--atl-home-data-font);
+  font-size: 9px;
+  left: 0;
+  padding: 4px 6px;
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  transform: translate(-50%, calc(-100% - 5px));
+  white-space: nowrap;
+  z-index: 2;
 }
 
 .atl-home-trend.is-task .atl-contribution-chart-line { stroke: var(--atl-home-primary); }
@@ -1516,14 +1619,27 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
 }
 
 .atl-home-metric-cell {
+  appearance: none;
   background: rgba(255, 255, 255, .55);
   border: 1px solid var(--atl-home-line);
   border-radius: 8px;
+  box-shadow: none;
+  color: var(--atl-home-text);
+  cursor: pointer;
   display: flex;
   flex-direction: column;
+  font: inherit;
   min-height: 150px;
   min-width: 0;
   padding: 15px;
+  text-align: left;
+  width: 100%;
+}
+
+.atl-home-metric-cell:hover,
+.atl-home-metric-cell:focus-visible {
+  background: var(--atl-home-surface-strong);
+  border-color: rgba(106, 0, 255, .24);
 }
 
 .atl-home-metric-heading {

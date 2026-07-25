@@ -66,6 +66,19 @@ function reconciled(taskId: string, at: string, status = 'done'): AuditEvent {
   };
 }
 
+function recordedCompletion(taskId: string, at: string): AuditEvent {
+  return {
+    event: 'task.completion_date_recorded',
+    at,
+    taskId,
+    details: {
+      completedOn: at.slice(0, 10),
+      recordedAt: NOW,
+      source: 'manual_backfill',
+    },
+  };
+}
+
 describe('queryContribution', () => {
   it('counts only completion evidence and deduplicates a task within one local day', () => {
     const doneTaskA = task('a');
@@ -241,8 +254,31 @@ describe('queryContribution', () => {
     });
 
     expect(snapshot.coverage.historicalCompletionDateUnavailable).toBe(1);
+    expect(snapshot.coverage.tasksMissingCompletionDate).toEqual([{
+      taskId: 'missing',
+      title: 'Task missing',
+    }]);
     expect(snapshot.kpis.completedToday).toBe(0);
     expect(snapshot.outputs).toEqual([]);
     expect(snapshot.days).toHaveLength(365);
+  });
+
+  it('counts a manually recorded completion on its selected local date', () => {
+    const snapshot = queryContribution({
+      tasks: [task('backfilled')],
+      projects,
+      auditEvents: [recordedCompletion('backfilled', '2026-07-18T04:00:00.000Z')],
+      now: new Date(NOW),
+      timeZone: 'Asia/Shanghai',
+      range: '7d',
+      selectedDate: '2026-07-18',
+    });
+
+    expect(snapshot.days.find((day) => day.date === '2026-07-18')?.completed).toBe(1);
+    expect(snapshot.outputs[0]?.taskId).toBe('backfilled');
+    expect(snapshot.coverage).toEqual({
+      historicalCompletionDateUnavailable: 0,
+      tasksMissingCompletionDate: [],
+    });
   });
 });

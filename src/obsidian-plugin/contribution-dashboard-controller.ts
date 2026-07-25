@@ -148,9 +148,6 @@ export class ContributionDashboardController {
   async setRange(range: ContributionRange): Promise<void> {
     if (this.disposed || this.state.range === range) return;
     this.patch({ range });
-    await this.refreshContribution();
-    const since = this.requiredTokenSince();
-    if (!this.tokenCovers(since)) this.startTokenRefresh(since);
   }
 
   async setSelectedDate(selectedDate: string): Promise<void> {
@@ -219,7 +216,7 @@ export class ContributionDashboardController {
         auditEvents,
         now,
         timeZone: this.dependencies.timeZone,
-        range: this.state.range,
+        range: '1y',
         selectedDate: this.state.selectedDate,
       });
       const home = queryPersonalHome({ tasks, projects });
@@ -301,7 +298,7 @@ export class ContributionDashboardController {
 
   private requiredTokenSince(): string {
     const today = localDate(this.dependencies.clock(), this.dependencies.timeZone);
-    return rangeStart(today, this.state.range);
+    return rangeStart(today, '1y');
   }
 
   private tokenCovers(since: string): boolean {

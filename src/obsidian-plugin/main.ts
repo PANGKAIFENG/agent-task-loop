@@ -19,6 +19,7 @@ import './styles.css';
 
 import { createClaudeStructuredExecutor } from '../runner/claude-driver.js';
 import { captureTask } from '../services/capture-task.js';
+import { recordTaskCompletionDate } from '../services/record-task-completion-date.js';
 import type { ServiceContext } from '../services/service-context.js';
 import { createVaultWriteAuthorization } from '../storage/task-paths.js';
 import { parseArtifactReference } from '../storage/artifact-reference.js';
@@ -34,6 +35,10 @@ import {
 import { extractTaskCandidates } from './candidate-extractor.js';
 import { CaptureCandidatesModal } from './capture-candidates-modal.js';
 import { CaptureController } from './capture-controller.js';
+import {
+  CompletionDateBackfillModal,
+  type CompletionDateBackfillTask,
+} from './completion-date-backfill-modal.js';
 import { formatCodexHandoff } from './codex-handoff.js';
 import { ConfirmationController } from './confirmation-controller.js';
 import { createReadOnlyDingTalkCalDavClient } from './dingtalk-caldav-client.js';
@@ -305,8 +310,52 @@ export default class AgentTaskLoopPlugin extends Plugin {
       createController: () => this.createContributionController(),
       openTask: (taskId) => this.openContributionTask(taskId),
       openArtifact: (artifactRef, taskId) => this.openContributionArtifact(artifactRef, taskId),
+      openCompletionDateBackfill: (tasks) => this.openCompletionDateBackfill(tasks),
       openSettings: () => this.openPluginSettings(),
     });
+  }
+
+  private openCompletionDateBackfill(tasks: readonly CompletionDateBackfillTask[]): void {
+    if (!this.settings.allowVaultManagement) {
+      new Notice('请先在“设置 → Agent Task Loop”中允许 ATL 管理此 Vault');
+      return;
+    }
+    const paths = this.localPluginPaths();
+    if (paths === null) {
+      new Notice('Agent Task Loop 仅支持桌面版本地 Vault');
+      return;
+    }
+    new CompletionDateBackfillModal(this.app, tasks, async (taskId, completedOn) => {
+      if (!this.settings.allowVaultManagement) {
+        new Notice('Vault 管理权限已关闭，请重新开启后再补齐');
+        throw new Error('vault_management_disabled');
+      }
+      const currentPaths = this.localPluginPaths();
+      if (currentPaths === null) {
+        new Notice('Agent Task Loop 仅支持桌面版本地 Vault');
+        throw new Error('local_vault_unavailable');
+      }
+      const timeZone = resolveSystemTimeZone();
+      const context = createObsidianServiceContext(
+        currentPaths.root,
+        createVaultWriteAuthorization(currentPaths.root),
+        { timeZone },
+      );
+      const result = await recordTaskCompletionDate(context, {
+        taskId,
+        completedOn,
+        timeZone,
+      });
+      new Notice(result.recorded ? '历史完成日期已补齐' : '这项任务已有完成日期记录');
+      await Promise.all(
+        this.app.workspace.getLeavesOfType(WORK_CONTRIBUTION_VIEW_TYPE)
+          .map(async (leaf) => {
+            if (leaf.view instanceof WorkContributionView) {
+              await leaf.view.refreshContribution();
+            }
+          }),
+      );
+    }, () => this.settings.allowVaultManagement).open();
   }
 
   private createContributionController(): ContributionDashboardController {

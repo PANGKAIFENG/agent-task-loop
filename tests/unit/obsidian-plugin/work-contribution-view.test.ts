@@ -14,13 +14,13 @@ import {
 
 function state(overrides: Partial<ContributionDashboardState> = {}): ContributionDashboardState {
   return {
-    range: '12w',
+    range: '26w',
     selectedDate: '2026-07-20',
     contribution: {
       status: 'ready',
       errorCode: null,
       snapshot: {
-        range: '12w',
+        range: '1y',
         selectedDate: '2026-07-20',
         kpis: { completedToday: 2, completedThisWeek: 5, currentStreak: 3 },
         days: [
@@ -42,7 +42,10 @@ function state(overrides: Partial<ContributionDashboardState> = {}): Contributio
           completedAt: '2026-07-20T09:00:00+08:00',
           artifactRef: 'Artifacts/task-a/attempt-001.md',
         }],
-        coverage: { historicalCompletionDateUnavailable: 1 },
+        coverage: {
+          historicalCompletionDateUnavailable: 1,
+          tasksMissingCompletionDate: [{ taskId: 'task-history', title: '历史完成任务' }],
+        },
       },
     },
     home: {
@@ -105,6 +108,21 @@ function state(overrides: Partial<ContributionDashboardState> = {}): Contributio
   };
 }
 
+function contributionDays(count: number) {
+  const first = new Date('2025-07-22T12:00:00Z');
+  return Array.from({ length: count }, (_, index) => {
+    const date = new Date(first);
+    date.setUTCDate(date.getUTCDate() + index);
+    return {
+      date: date.toISOString().slice(0, 10),
+      completed: index % 4,
+      outputCount: index % 3,
+      projectCount: index % 4 === 0 ? 0 : 1,
+      level: Math.min(index % 4, 4) as 0 | 1 | 2 | 3 | 4,
+    };
+  });
+}
+
 function setup(initial = state()) {
   let current = initial;
   let listener: ((state: ContributionDashboardState) => void) | null = null;
@@ -123,16 +141,19 @@ function setup(initial = state()) {
   };
   const openTask = vi.fn(async () => undefined);
   const openArtifact = vi.fn(async () => undefined);
+  const openCompletionDateBackfill = vi.fn(async () => undefined);
   const view = new WorkContributionView(new WorkspaceLeaf(), {
     createController: () => controller as never,
     openTask,
     openArtifact,
+    openCompletionDateBackfill,
     openSettings: vi.fn(),
   });
   return {
     controller,
     openTask,
     openArtifact,
+    openCompletionDateBackfill,
     view,
     publish(next: ContributionDashboardState) {
       current = next;
@@ -186,8 +207,109 @@ describe('WorkContributionView', () => {
     expect(view.contentEl.textContent).toContain('判断首页输入');
   });
 
-  it('presents the pulse summary as one streak hero with three real supporting metrics', async () => {
+  it('keeps the heatmap at 26 weeks while range controls only slice trends', async () => {
+    const base = state();
+    const days = contributionDays(365);
+    const { view } = setup(state({
+      range: '7d',
+      contribution: {
+        ...base.contribution,
+        snapshot: { ...base.contribution.snapshot!, days },
+      },
+    }));
+    await view.onOpen();
+
+    expect(view.contentEl.querySelector('.atl-home-pulse-title')?.textContent)
+      .toBe('最近 26 周');
+    expect(view.contentEl.querySelectorAll('.atl-contribution-day')).toHaveLength(182);
+    expect(view.contentEl.querySelector('.atl-contribution-heatmap')?.getAttribute('data-range'))
+      .toBe('26w');
+    expect(view.contentEl.querySelector('.atl-home-trends')?.getAttribute('data-range'))
+      .toBe('7d');
+    expect([...view.contentEl.querySelectorAll<HTMLElement>('.atl-home-trend')]
+      .map((trend) => trend.dataset.pointCount)).toEqual(['7', '7', '7']);
+    expect(view.contentEl.querySelector('.atl-home-pulse-heading .atl-contribution-ranges'))
+      .toBeNull();
+    expect(view.contentEl.querySelector('.atl-home-trends-heading .atl-contribution-ranges'))
+      .not.toBeNull();
+  });
+
+  it('reveals the nearest dated value while hovering a trend chart', async () => {
     const { view } = setup();
+    await view.onOpen();
+
+    const plot = view.contentEl.querySelector<HTMLElement>(
+      '.atl-home-trend.is-task .atl-contribution-chart-plot',
+    )!;
+    vi.spyOn(plot, 'getBoundingClientRect').mockReturnValue({
+      bottom: 40,
+      height: 40,
+      left: 0,
+      right: 300,
+      top: 0,
+      width: 300,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    const tooltip = plot.querySelector<HTMLElement>('.atl-contribution-chart-tooltip')!;
+    const marker = plot.querySelector<SVGCircleElement>('.atl-contribution-chart-marker')!;
+
+    expect(tooltip.hidden).toBe(true);
+    fireEvent.pointerMove(plot, { clientX: 150 });
+    expect(tooltip.hidden).toBe(false);
+    expect(tooltip.textContent).toBe('2026-07-20 · 2 项');
+    expect(marker.style.display).not.toBe('none');
+
+    fireEvent.pointerLeave(plot);
+    expect(tooltip.hidden).toBe(true);
+    expect(marker.style.display).toBe('none');
+  });
+
+  it('exposes exact trend values through keyboard focus and arrow keys', async () => {
+    const { view } = setup();
+    await view.onOpen();
+
+    const plot = view.contentEl.querySelector<HTMLElement>(
+      '.atl-home-trend.is-task .atl-contribution-chart-plot',
+    )!;
+    const tooltip = plot.querySelector<HTMLElement>('.atl-contribution-chart-tooltip')!;
+
+    expect(plot.tabIndex).toBe(0);
+    fireEvent.focus(plot);
+    expect(tooltip.hidden).toBe(false);
+    expect(tooltip.textContent).toBe('2026-07-21 · 0 项');
+
+    fireEvent.keyDown(plot, { key: 'ArrowLeft' });
+    expect(tooltip.textContent).toBe('2026-07-20 · 2 项');
+    fireEvent.keyDown(plot, { key: 'Home' });
+    expect(tooltip.textContent).toBe('2026-07-19 · 1 项');
+    fireEvent.keyDown(plot, { key: 'End' });
+    expect(tooltip.textContent).toBe('2026-07-21 · 0 项');
+
+    fireEvent.blur(plot);
+    expect(tooltip.hidden).toBe(true);
+  });
+
+  it('uses whole metric cards as the navigation controls', async () => {
+    const { view } = setup();
+    await view.onOpen();
+
+    const metrics = [...view.contentEl.querySelectorAll<HTMLButtonElement>(
+      '.atl-home-metric-cell',
+    )];
+    expect(metrics).toHaveLength(3);
+    expect(metrics.every((metric) => metric.tagName === 'BUTTON')).toBe(true);
+    expect(metrics.every((metric) => metric.querySelector('button') === null)).toBe(true);
+    expect(metrics[0]?.querySelector('.atl-home-mini-action')?.textContent)
+      .toBe('去处理输入 →');
+
+    fireEvent.click(metrics[0]!);
+    expect(view.contentEl.querySelector('.atl-home-view-input')).not.toBeNull();
+  });
+
+  it('presents the pulse summary as one streak hero with three real supporting metrics', async () => {
+    const { openCompletionDateBackfill, view } = setup();
     await view.onOpen();
 
     const hero = view.contentEl.querySelector('.atl-home-pulse-hero');
@@ -200,6 +322,15 @@ describe('WorkContributionView', () => {
       .toEqual(['本周完成', '今日完成', '今日 Token']);
     expect(details.map((detail) => detail.querySelector('strong')?.textContent))
       .toEqual(['5 项', '2 项', '--']);
+    const backfill = view.contentEl.querySelector<HTMLButtonElement>(
+      '.atl-contribution-coverage-action',
+    );
+    expect(backfill?.textContent)
+      .toBe('另有 1 个历史完成任务未记录完成日期 · 查看并补齐');
+    fireEvent.click(backfill!);
+    expect(openCompletionDateBackfill).toHaveBeenCalledWith([
+      { taskId: 'task-history', title: '历史完成任务' },
+    ]);
   });
 
   it('keeps overview previews compact while full tabs show every task', async () => {
@@ -333,7 +464,7 @@ describe('WorkContributionView', () => {
     expect(tuesday?.style.gridColumn).toBe('2');
   });
 
-  it('keeps the heatmap layout tied to the loaded snapshot while a new range is loading', async () => {
+  it('keeps the heatmap layout fixed while the trend range changes', async () => {
     const base = state();
     const { view } = setup(state({
       range: '7d',
@@ -341,7 +472,7 @@ describe('WorkContributionView', () => {
         ...base.contribution,
         snapshot: base.contribution.snapshot === null
           ? null
-          : { ...base.contribution.snapshot, range: '26w' },
+          : { ...base.contribution.snapshot, range: '1y' },
       },
     }));
     await view.onOpen();

@@ -6,6 +6,7 @@ import {
   type ContributionDashboardController,
   type ContributionDashboardState,
 } from './contribution-dashboard-controller.js';
+import type { CompletionDateBackfillTask } from './completion-date-backfill-modal.js';
 
 export const WORK_CONTRIBUTION_VIEW_TYPE = 'atl-work-contribution';
 
@@ -13,6 +14,9 @@ export interface WorkContributionViewDependencies {
   createController: () => ContributionDashboardController;
   openTask: (taskId: string) => Promise<void> | void;
   openArtifact: (artifactRef: string, taskId: string) => Promise<void> | void;
+  openCompletionDateBackfill: (
+    tasks: readonly CompletionDateBackfillTask[],
+  ) => Promise<void> | void;
   openSettings: () => Promise<void> | void;
 }
 
@@ -38,6 +42,19 @@ const PULSE_OPTIONS: Array<{ value: PulseMode; label: string }> = [
   { value: 'outputs', label: '产出' },
   { value: 'ai', label: 'AI' },
 ];
+
+const HEATMAP_DAY_COUNT = 182;
+
+export function daysForTrend<T>(days: T[], range: ContributionRange): T[] {
+  const length = range === '7d'
+    ? 7
+    : range === '12w'
+      ? 84
+      : range === '26w'
+        ? 182
+        : 365;
+  return days.slice(-length);
+}
 
 const PULSE_HEATMAP_LABELS: Record<Exclude<PulseMode, 'consumption'>, string> = {
   tasks: '任务',
@@ -110,26 +127,91 @@ function mondayBasedWeekday(date: string): number {
   return weekday === 0 ? 7 : weekday;
 }
 
-function lineChart(values: number[], label: string): SVGSVGElement {
+interface TrendPoint {
+  date: string;
+  value: number;
+}
+
+function lineChart(points: TrendPoint[], label: string, suffix: string): HTMLDivElement {
+  const plot = element('div', 'atl-contribution-chart-plot');
+  plot.setAttribute('role', 'img');
+  plot.setAttribute('aria-label', `${label}，聚焦后可使用左右方向键查看每日数据`);
+  plot.tabIndex = points.length === 0 ? -1 : 0;
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.classList.add('atl-contribution-chart-svg');
   svg.setAttribute('viewBox', '0 0 100 40');
   svg.setAttribute('preserveAspectRatio', 'none');
-  svg.setAttribute('role', 'img');
-  svg.setAttribute('aria-label', label);
-  const maximum = Math.max(...values, 1);
-  const points = values.map((value, index) => {
-    const x = values.length <= 1 ? 50 : (index / (values.length - 1)) * 100;
-    const y = 36 - (value / maximum) * 30;
-    return `${x.toFixed(2)},${y.toFixed(2)}`;
-  }).join(' ');
+  svg.setAttribute('aria-hidden', 'true');
+  const maximum = Math.max(...points.map(({ value }) => value), 1);
+  const coordinates = points.map(({ value }, index) => ({
+    x: points.length <= 1 ? 50 : (index / (points.length - 1)) * 100,
+    y: 36 - (value / maximum) * 30,
+  }));
   const polyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
-  polyline.setAttribute('points', points);
+  polyline.setAttribute('points', coordinates.map(({ x, y }) => (
+    `${x.toFixed(2)},${y.toFixed(2)}`
+  )).join(' '));
   polyline.setAttribute('fill', 'none');
   polyline.setAttribute('vector-effect', 'non-scaling-stroke');
   polyline.classList.add('atl-contribution-chart-line');
-  svg.append(polyline);
-  return svg;
+  const marker = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+  marker.classList.add('atl-contribution-chart-marker');
+  marker.setAttribute('r', '2.4');
+  marker.setAttribute('vector-effect', 'non-scaling-stroke');
+  marker.style.display = 'none';
+  svg.append(polyline, marker);
+
+  const tooltip = element('div', 'atl-contribution-chart-tooltip');
+  tooltip.hidden = true;
+  tooltip.setAttribute('role', 'status');
+  tooltip.setAttribute('aria-live', 'polite');
+  let activeIndex = Math.max(0, points.length - 1);
+  const hideTooltip = (): void => {
+    tooltip.hidden = true;
+    marker.style.display = 'none';
+  };
+  const showPoint = (index: number): void => {
+    const point = points[index];
+    const coordinate = coordinates[index];
+    if (point === undefined || coordinate === undefined) return;
+    activeIndex = index;
+    marker.setAttribute('cx', coordinate.x.toFixed(2));
+    marker.setAttribute('cy', coordinate.y.toFixed(2));
+    marker.style.display = '';
+    tooltip.textContent = `${point.date} · ${formatNumber(point.value)} ${suffix}`;
+    tooltip.style.left = `${coordinate.x}%`;
+    tooltip.style.top = `${coordinate.y}%`;
+    tooltip.hidden = false;
+  };
+  plot.addEventListener('pointermove', (event) => {
+    if (points.length === 0) return;
+    const bounds = plot.getBoundingClientRect();
+    const ratio = bounds.width <= 0
+      ? 0
+      : Math.min(1, Math.max(0, (event.clientX - bounds.left) / bounds.width));
+    const index = Math.round(ratio * (points.length - 1));
+    showPoint(index);
+  });
+  plot.addEventListener('pointerleave', () => {
+    if (document.activeElement !== plot) hideTooltip();
+  });
+  plot.addEventListener('focus', () => {
+    if (points.length > 0) showPoint(activeIndex);
+  });
+  plot.addEventListener('keydown', (event) => {
+    if (points.length === 0) return;
+    let nextIndex = activeIndex;
+    if (event.key === 'ArrowLeft') nextIndex = Math.max(0, activeIndex - 1);
+    else if (event.key === 'ArrowRight') nextIndex = Math.min(points.length - 1, activeIndex + 1);
+    else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = points.length - 1;
+    else return;
+    event.preventDefault();
+    showPoint(nextIndex);
+  });
+  plot.addEventListener('blur', hideTooltip);
+  plot.append(svg, tooltip);
+  return plot;
 }
 
 function tokenStatusText(state: ContributionDashboardState): string {
@@ -324,22 +406,9 @@ export class WorkContributionView extends ItemView {
     const heading = element('div', 'atl-home-pulse-heading');
     const title = element('div');
     title.append(element('p', 'atl-home-eyebrow', 'PERSONAL PULSE'));
-    const rangeLabel = RANGE_OPTIONS.find((option) => option.value === state.range)?.label ?? '26 周';
-    title.append(element('h2', 'atl-home-pulse-title', `最近 ${rangeLabel}`));
+    title.append(element('h2', 'atl-home-pulse-title', '最近 26 周'));
 
     const controls = element('div', 'atl-contribution-controls');
-    const ranges = element('div', 'atl-contribution-ranges');
-    ranges.setAttribute('role', 'group');
-    ranges.setAttribute('aria-label', '统计范围');
-    for (const option of RANGE_OPTIONS) {
-      const button = element('button', 'atl-contribution-range', option.label);
-      button.type = 'button';
-      button.setAttribute('aria-pressed', String(state.range === option.value));
-      button.addEventListener('click', () => {
-        void this.controller?.setRange(option.value);
-      });
-      ranges.append(button);
-    }
     const modes = element('div', 'atl-pulse-modes');
     modes.setAttribute('role', 'group');
     modes.setAttribute('aria-label', '贡献类型');
@@ -353,7 +422,7 @@ export class WorkContributionView extends ItemView {
       });
       modes.append(button);
     }
-    controls.append(modes, ranges);
+    controls.append(modes);
     heading.append(title, controls);
     pulse.append(heading);
 
@@ -395,19 +464,20 @@ export class WorkContributionView extends ItemView {
     const tokenByDate = new Map(
       (state.token.snapshot?.days ?? []).map((day) => [day.date, day.normalized]),
     );
-    const values = snapshot.days.map((day) => {
+    const heatmapDays = snapshot.days.slice(-HEATMAP_DAY_COUNT);
+    const values = heatmapDays.map((day) => {
       if (this.pulseMode === 'outputs') return day.outputCount;
       if (this.pulseMode === 'ai') return tokenByDate.get(day.date) ?? 0;
       return day.completed;
     });
     const maximum = Math.max(...values, 0);
     const grid = element('div', 'atl-contribution-heatmap');
-    grid.dataset.range = snapshot.range;
+    grid.dataset.range = '26w';
     const mode = this.pulseMode === 'consumption' ? 'tasks' : this.pulseMode;
     grid.setAttribute('aria-label', `${PULSE_HEATMAP_LABELS[mode]}每日贡献图`);
-    const firstDay = snapshot.days[0];
+    const firstDay = heatmapDays[0];
     const firstRow = firstDay === undefined ? 1 : mondayBasedWeekday(firstDay.date);
-    for (const [index, day] of snapshot.days.entries()) {
+    for (const [index, day] of heatmapDays.entries()) {
       const value = values[index] ?? 0;
       const level = this.pulseMode === 'tasks'
         ? day.level
@@ -467,18 +537,24 @@ export class WorkContributionView extends ItemView {
       details.append(item);
     }
     summary.append(details);
-    if ((snapshot?.coverage.historicalCompletionDateUnavailable ?? 0) > 0) {
-      summary.append(element(
-        'p',
-        'atl-contribution-coverage',
-        `${snapshot!.coverage.historicalCompletionDateUnavailable} 个历史完成任务缺少可核对日期。`,
-      ));
+    const tasksMissingCompletionDate = snapshot?.coverage.tasksMissingCompletionDate ?? [];
+    if (tasksMissingCompletionDate.length > 0) {
+      const backfill = element(
+        'button',
+        'atl-contribution-coverage-action',
+        `另有 ${tasksMissingCompletionDate.length} 个历史完成任务未记录完成日期 · 查看并补齐`,
+      );
+      backfill.type = 'button';
+      backfill.addEventListener('click', () => {
+        void this.dependencies.openCompletionDateBackfill(tasksMissingCompletionDate);
+      });
+      summary.append(backfill);
     }
     return summary;
   }
 
   private renderTrends(state: ContributionDashboardState): HTMLElement {
-    const taskDays = state.contribution.snapshot?.days ?? [];
+    const taskDays = daysForTrend(state.contribution.snapshot?.days ?? [], state.range);
     const tokenByDate = new Map(
       (state.token.snapshot?.days ?? []).map((day) => [day.date, day]),
     );
@@ -486,32 +562,56 @@ export class WorkContributionView extends ItemView {
       {
         title: '完成任务',
         value: taskDays.reduce((sum, day) => sum + day.completed, 0),
-        values: taskDays.map((day) => day.completed),
+        points: taskDays.map((day) => ({ date: day.date, value: day.completed })),
+        suffix: '项',
         label: '每日完成任务趋势',
         className: 'is-task atl-contribution-chart',
       },
       {
         title: '有效产出',
         value: taskDays.reduce((sum, day) => sum + day.outputCount, 0),
-        values: taskDays.map((day) => day.outputCount),
+        points: taskDays.map((day) => ({ date: day.date, value: day.outputCount })),
+        suffix: '个',
         label: '每日有效产出趋势',
         className: 'is-output',
       },
       {
         title: 'Normalized Token',
         value: taskDays.reduce((sum, day) => sum + (tokenByDate.get(day.date)?.normalized ?? 0), 0),
-        values: taskDays.map((day) => tokenByDate.get(day.date)?.normalized ?? 0),
+        points: taskDays.map((day) => ({
+          date: day.date,
+          value: tokenByDate.get(day.date)?.normalized ?? 0,
+        })),
+        suffix: 'Token',
         label: '每日 Normalized Token 趋势',
         className: 'is-token atl-contribution-chart',
       },
     ];
     const grid = element('div', 'atl-home-trends');
+    grid.dataset.range = state.range;
+    const heading = element('div', 'atl-home-trends-heading');
+    heading.append(element('span', 'atl-home-trends-title', '趋势'));
+    const ranges = element('div', 'atl-contribution-ranges');
+    ranges.setAttribute('role', 'group');
+    ranges.setAttribute('aria-label', '趋势范围');
+    for (const option of RANGE_OPTIONS) {
+      const button = element('button', 'atl-contribution-range', option.label);
+      button.type = 'button';
+      button.setAttribute('aria-pressed', String(state.range === option.value));
+      button.addEventListener('click', () => {
+        void this.controller?.setRange(option.value);
+      });
+      ranges.append(button);
+    }
+    heading.append(ranges);
+    grid.append(heading);
     for (const definition of definitions) {
       const chart = element('div', `atl-home-trend ${definition.className}`);
+      chart.dataset.pointCount = String(definition.points.length);
       const caption = element('div', 'atl-contribution-chart-caption');
       caption.append(element('span', 'atl-contribution-chart-title', definition.title));
       caption.append(element('strong', 'atl-contribution-chart-total', formatNumber(definition.value)));
-      chart.append(caption, lineChart(definition.values, definition.label));
+      chart.append(caption, lineChart(definition.points, definition.label, definition.suffix));
       grid.append(chart);
     }
     return grid;
@@ -621,7 +721,8 @@ export class WorkContributionView extends ItemView {
     const root = element('section', 'atl-contribution-section atl-home-metrics');
     const grid = element('div', 'atl-home-metric-grid');
     for (const definition of definitions) {
-      const card = element('article', 'atl-home-metric-cell');
+      const card = element('button', 'atl-home-metric-cell');
+      card.type = 'button';
       const heading = element('div', 'atl-home-metric-heading');
       const copy = element('div');
       copy.append(
@@ -636,9 +737,8 @@ export class WorkContributionView extends ItemView {
         element('strong', `atl-home-metric-value ${definition.tone}`, definition.value),
         element('p', 'atl-home-metric-detail', definition.detail),
       );
-      const action = element('button', 'atl-home-mini-action', `${definition.action} →`);
-      action.type = 'button';
-      action.addEventListener('click', () => {
+      const action = element('span', 'atl-home-mini-action', `${definition.action} →`);
+      card.addEventListener('click', () => {
         this.activeTab = definition.tab;
         this.rerender();
       });

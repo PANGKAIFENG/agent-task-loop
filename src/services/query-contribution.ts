@@ -33,7 +33,10 @@ export interface ContributionSnapshot {
     completedAt: string;
     artifactRef: string | null;
   }>;
-  coverage: { historicalCompletionDateUnavailable: number };
+  coverage: {
+    historicalCompletionDateUnavailable: number;
+    tasksMissingCompletionDate: Array<{ taskId: string; title: string }>;
+  };
 }
 
 export interface QueryContributionInput {
@@ -86,12 +89,15 @@ function rangeLength(range: ContributionRange): number {
   }
 }
 
-function isCompletion(event: AuditEvent): boolean {
+export function isTaskCompletionEvent(event: AuditEvent): boolean {
   return (
     event.event === 'task.reviewed' && event.details?.decision === 'approve'
   ) || (
     event.event === 'task.lifecycle_reconciled'
     && event.details?.status === 'done'
+  ) || (
+    event.event === 'task.completion_date_recorded'
+    && event.details?.source === 'manual_backfill'
   );
 }
 
@@ -112,7 +118,7 @@ function completionMap(
 ): Map<string, Completion> {
   const map = new Map<string, Completion>();
   auditEvents.forEach((event, order) => {
-    if (!isCompletion(event) || event.taskId === undefined) return;
+    if (!isTaskCompletionEvent(event) || event.taskId === undefined) return;
     const task = tasksById.get(event.taskId);
     if (task === undefined) return;
     const timestamp = Date.parse(event.at);
@@ -202,9 +208,14 @@ export function queryContribution(input: QueryContributionInput): ContributionSn
   ));
 
   const completionTaskIds = new Set(completions.map(({ task }) => task.taskId));
-  const historicalCompletionDateUnavailable = input.tasks.filter((task) => (
+  const tasksMissingCompletionDate = input.tasks.filter((task) => (
     task.status === 'done' && !completionTaskIds.has(task.taskId)
-  )).length;
+  )).sort((left, right) => (
+    right.updatedAt.localeCompare(left.updatedAt) || left.taskId.localeCompare(right.taskId)
+  )).map((task) => ({
+    taskId: task.taskId,
+    title: taskTitle(task),
+  }));
 
   return {
     range: input.range,
@@ -223,6 +234,9 @@ export function queryContribution(input: QueryContributionInput): ContributionSn
       completedAt: event.at,
       artifactRef: task.artifactRefs.at(-1) ?? null,
     })),
-    coverage: { historicalCompletionDateUnavailable },
+    coverage: {
+      historicalCompletionDateUnavailable: tasksMissingCompletionDate.length,
+      tasksMissingCompletionDate,
+    },
   };
 }
