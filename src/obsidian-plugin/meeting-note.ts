@@ -1,7 +1,13 @@
+import { createHash } from 'node:crypto';
+
 import {
   parseTaskDocument,
   serializeTaskDocument,
 } from '../storage/frontmatter.js';
+import {
+  deduplicateMeetingAttachments,
+  type MeetingAttachment,
+} from './meeting-attachment.js';
 
 const DINGTALK_EVENT_PATH = /^TaskNotes\/DingTalk\/sha256-([0-9a-f]{64})\.md$/u;
 const EVENT_KEY_HASH = /^sha256:([0-9a-f]{64})$/u;
@@ -27,6 +33,7 @@ export interface RenderMeetingNoteInput {
   meetingType: MeetingType;
   participants: readonly string[];
   transcript: string;
+  attachments?: readonly MeetingAttachment[];
 }
 
 export interface CreateMeetingNoteInput {
@@ -34,6 +41,7 @@ export interface CreateMeetingNoteInput {
   meetingType: MeetingType;
   participants: readonly string[];
   transcript: string;
+  attachments?: readonly MeetingAttachment[];
 }
 
 export interface MeetingNoteFileSystem {
@@ -42,6 +50,7 @@ export interface MeetingNoteFileSystem {
   listMarkdownFiles(path: string): Promise<string[]>;
   ensureDirectory(path: string): Promise<void>;
   create(path: string, content: string): Promise<void>;
+  process(path: string, transform: (content: string) => string): Promise<string>;
 }
 
 export interface CreateMeetingNoteResult {
@@ -126,6 +135,91 @@ function normalizedParticipants(participants: readonly string[]): string[] {
   return [...new Set(participants.map((value) => value.trim()).filter((value) => value !== ''))];
 }
 
+function normalizedAttachments(
+  attachments: readonly MeetingAttachment[] = [],
+): MeetingAttachment[] {
+  return deduplicateMeetingAttachments(attachments.map((attachment) => ({
+    id: attachment.id,
+    name: attachment.name,
+    path: attachment.path,
+    mediaType: attachment.mediaType,
+    size: attachment.size,
+    role: attachment.role,
+    analyzable: attachment.analyzable,
+    includeInAnalysis: attachment.analyzable
+      && (attachment.role === 'transcript' || attachment.includeInAnalysis),
+  })));
+}
+
+function attachmentFrontmatter(attachment: MeetingAttachment): Record<string, unknown> {
+  return {
+    id: attachment.id,
+    name: attachment.name,
+    path: attachment.path,
+    media_type: attachment.mediaType,
+    size: attachment.size,
+    role: attachment.role,
+    analyzable: attachment.analyzable,
+    include_in_analysis: attachment.includeInAnalysis,
+  };
+}
+
+export function parseMeetingAttachments(data: Record<string, unknown>): MeetingAttachment[] {
+  if (data.attachments === undefined) return [];
+  if (!Array.isArray(data.attachments)) throw new Error('会议附件元数据无效');
+  return deduplicateMeetingAttachments(data.attachments.map((value) => {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('会议附件元数据无效');
+    }
+    const item = value as Record<string, unknown>;
+    if (
+      typeof item.id !== 'string'
+      || !EVENT_KEY_HASH.test(item.id)
+      || typeof item.name !== 'string'
+      || item.name.trim() === ''
+      || typeof item.path !== 'string'
+      || item.path.includes('..')
+      || typeof item.media_type !== 'string'
+      || typeof item.size !== 'number'
+      || !Number.isSafeInteger(item.size)
+      || item.size < 0
+      || (item.role !== 'transcript' && item.role !== 'reference')
+      || typeof item.analyzable !== 'boolean'
+      || typeof item.include_in_analysis !== 'boolean'
+    ) {
+      throw new Error('会议附件元数据无效');
+    }
+    return {
+      id: item.id,
+      name: item.name,
+      path: item.path,
+      mediaType: item.media_type,
+      size: item.size,
+      role: item.role,
+      analyzable: item.analyzable,
+      includeInAnalysis: item.include_in_analysis,
+    };
+  }));
+}
+
+export function meetingAnalysisInputHash(input: RenderMeetingNoteInput): string {
+  const selectedAttachments = normalizedAttachments(input.attachments)
+    .filter((attachment) => attachment.analyzable && attachment.includeInAnalysis)
+    .map((attachment) => ({ id: attachment.id, path: attachment.path }))
+    .sort((left, right) => (
+      left.path.localeCompare(right.path) || left.id.localeCompare(right.id)
+    ));
+  const payload = {
+    title: input.source.title,
+    meetingType: input.meetingType,
+    meetingDate: input.source.meetingDate,
+    participants: normalizedParticipants(input.participants),
+    transcript: input.transcript,
+    attachments: selectedAttachments,
+  };
+  return `sha256:${createHash('sha256').update(JSON.stringify(payload)).digest('hex')}`;
+}
+
 function transcriptCallout(transcript: string): string {
   return [
     '> [!note]- 会议听记原文',
@@ -171,6 +265,7 @@ export function renderMeetingNote(input: RenderMeetingNoteInput): string {
     calendar_event: `[[${input.source.eventPath.slice(0, -3)}]]`,
     dingtalk_event_key_hash: input.source.eventKeyHash,
     participants: normalizedParticipants(input.participants),
+    attachments: normalizedAttachments(input.attachments).map(attachmentFrontmatter),
     analysis_status: 'pending',
   };
   const body = [
@@ -189,6 +284,106 @@ export function renderMeetingNote(input: RenderMeetingNoteInput): string {
     '',
   ].join('\n');
   return serializeTaskDocument(data, body);
+}
+
+function replaceTranscriptRegion(body: string, transcript: string): string {
+  const start = body.indexOf(MEETING_TRANSCRIPT_START);
+  const analysisStart = body.lastIndexOf(MEETING_ANALYSIS_START);
+  const end = body.lastIndexOf(
+    MEETING_TRANSCRIPT_END,
+    analysisStart === -1 ? body.length : analysisStart,
+  );
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error('会议听记区域无效');
+  }
+  return [
+    body.slice(0, start + MEETING_TRANSCRIPT_START.length),
+    '\n',
+    transcriptCallout(transcript),
+    '\n',
+    body.slice(end),
+  ].join('');
+}
+
+function existingInputHash(
+  raw: string,
+  data: Record<string, unknown>,
+): string | null {
+  const title = typeof data.title === 'string' ? data.title : null;
+  const meetingType = typeof data.meeting_type === 'string' ? data.meeting_type : null;
+  const meetingDate = typeof data.meeting_date === 'string' ? data.meeting_date : null;
+  const participants = Array.isArray(data.participants)
+    && data.participants.every((value) => typeof value === 'string')
+    ? data.participants
+    : null;
+  if (
+    title === null
+    || !['interview', 'discussion', 'review', 'other'].includes(meetingType ?? '')
+    || meetingDate === null
+    || participants === null
+  ) return null;
+
+  let attachments: MeetingAttachment[];
+  try {
+    attachments = parseMeetingAttachments(data);
+  } catch {
+    return null;
+  }
+  return meetingAnalysisInputHash({
+    source: {
+      eventPath: '',
+      eventKeyHash: '',
+      title,
+      scheduled: meetingDate,
+      meetingDate,
+    },
+    meetingType: meetingType as MeetingType,
+    participants,
+    transcript: extractMeetingTranscript(raw),
+    attachments,
+  });
+}
+
+export function updateMeetingNote(raw: string, input: RenderMeetingNoteInput): string {
+  if (input.transcript.trim() === '') throw new Error('会议听记不能为空');
+  const document = parseTaskDocument(raw);
+  const expectedCalendarEvent = `[[${input.source.eventPath.slice(0, -3)}]]`;
+  if (
+    document.data.type !== 'meeting'
+    || (
+      document.data.dingtalk_event_key_hash !== input.source.eventKeyHash
+      && document.data.calendar_event !== expectedCalendarEvent
+    )
+  ) {
+    throw new Error('会议笔记与钉钉日程不匹配');
+  }
+
+  const previousStatus = document.data.analysis_status;
+  const previousSuccessfulHash = typeof document.data.analysis_input_hash === 'string'
+    ? document.data.analysis_input_hash
+    : null;
+  const nextInputHash = meetingAnalysisInputHash(input);
+  const comparisonHash = previousSuccessfulHash ?? existingInputHash(raw, document.data);
+  let analysisStatus = previousStatus;
+  if (previousStatus === 'ready_for_confirm' || previousStatus === 'stale') {
+    analysisStatus = comparisonHash === nextInputHash ? 'ready_for_confirm' : 'stale';
+  }
+  if (!['pending', 'failed', 'ready_for_confirm', 'stale'].includes(String(analysisStatus))) {
+    analysisStatus = 'pending';
+  }
+
+  const data: Record<string, unknown> = {
+    ...document.data,
+    title: input.source.title,
+    meeting_type: input.meetingType,
+    meeting_date: input.source.meetingDate,
+    calendar_event: expectedCalendarEvent,
+    dingtalk_event_key_hash: input.source.eventKeyHash,
+    participants: normalizedParticipants(input.participants),
+    attachments: normalizedAttachments(input.attachments).map(attachmentFrontmatter),
+    analysis_status: analysisStatus,
+  };
+  return serializeTaskDocument(data, replaceTranscriptRegion(document.body, input.transcript));
 }
 
 export class MeetingNoteController {
@@ -217,6 +412,10 @@ export class MeetingNoteController {
     return null;
   }
 
+  async findExistingPath(source: DingTalkMeetingSource): Promise<string | null> {
+    return this.existingNotePath(source);
+  }
+
   async create(input: CreateMeetingNoteInput): Promise<CreateMeetingNoteResult> {
     if (input.transcript.trim() === '') {
       throw new Error('会议听记不能为空');
@@ -226,9 +425,14 @@ export class MeetingNoteController {
       await this.fileSystem.read(input.eventPath),
     );
     const existingPath = await this.existingNotePath(source);
-    if (existingPath !== null) return { created: false, path: existingPath };
+    const updateInput = { ...input, source };
+    if (existingPath !== null) {
+      await this.fileSystem.process(existingPath, (raw) => updateMeetingNote(raw, updateInput));
+      return { created: false, path: existingPath };
+    }
     const path = buildMeetingNotePath(source);
     if (await this.fileSystem.exists(path)) {
+      await this.fileSystem.process(path, (raw) => updateMeetingNote(raw, updateInput));
       return { created: false, path };
     }
     const directory = path.slice(0, path.lastIndexOf('/'));
@@ -239,10 +443,14 @@ export class MeetingNoteController {
         meetingType: input.meetingType,
         participants: input.participants,
         transcript: input.transcript,
+        attachments: input.attachments ?? [],
       }));
     } catch (error) {
       const racedPath = await this.existingNotePath(source);
-      if (racedPath !== null) return { created: false, path: racedPath };
+      if (racedPath !== null) {
+        await this.fileSystem.process(racedPath, (raw) => updateMeetingNote(raw, updateInput));
+        return { created: false, path: racedPath };
+      }
       throw error;
     }
     return { created: true, path };

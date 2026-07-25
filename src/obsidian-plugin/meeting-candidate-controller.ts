@@ -26,6 +26,36 @@ export interface MeetingCandidateControllerDependencies {
   capture?: typeof captureTask;
 }
 
+export function prepareMeetingCandidates(
+  input: PrepareMeetingCandidatesInput,
+): PreparedMeetingCandidates {
+  if (
+    input.meetingNotePath.trim() === ''
+    || !/^\d{4}-\d{2}-\d{2}$/u.test(input.meetingDate)
+  ) {
+    throw new Error('会议候选来源无效');
+  }
+  const candidates = input.analysis.taskCandidates.map((candidate) => (
+    candidateView(input, candidate)
+  ));
+  const meetingDigest = digest({
+    meetingNotePath: input.meetingNotePath,
+    meetingDate: input.meetingDate,
+    candidateIds: candidates.map(({ candidateId }) => candidateId),
+  });
+  return {
+    scanId: `meeting-${meetingDigest}`,
+    meetingNotePath: input.meetingNotePath,
+    filesScanned: 1,
+    recordsConsidered: candidates.length,
+    candidates,
+    processedRecordFingerprints: candidates.map((candidate) => (
+      candidate.sourceRecordFingerprint
+    )),
+    completedAt: `${input.meetingDate}T00:00:00.000Z`,
+  };
+}
+
 function digest(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
@@ -41,6 +71,7 @@ function candidateView(
   const sourceRecordFingerprint = digest({
     meetingNotePath: input.meetingNotePath,
     title: normalizedTitle(candidate.title),
+    sourceName: candidate.sourceName,
     sourceQuote: candidate.sourceQuote,
   });
   const candidateId = digest({
@@ -96,31 +127,7 @@ export class MeetingCandidateController {
   }
 
   prepare(input: PrepareMeetingCandidatesInput): PreparedMeetingCandidates {
-    if (
-      input.meetingNotePath.trim() === ''
-      || !/^\d{4}-\d{2}-\d{2}$/u.test(input.meetingDate)
-    ) {
-      throw new Error('会议候选来源无效');
-    }
-    const candidates = input.analysis.taskCandidates.map((candidate) => (
-      candidateView(input, candidate)
-    ));
-    const meetingDigest = digest({
-      meetingNotePath: input.meetingNotePath,
-      meetingDate: input.meetingDate,
-      candidateIds: candidates.map(({ candidateId }) => candidateId),
-    });
-    return {
-      scanId: `meeting-${meetingDigest}`,
-      meetingNotePath: input.meetingNotePath,
-      filesScanned: 1,
-      recordsConsidered: candidates.length,
-      candidates,
-      processedRecordFingerprints: candidates.map((candidate) => (
-        candidate.sourceRecordFingerprint
-      )),
-      completedAt: `${input.meetingDate}T00:00:00.000Z`,
-    };
+    return prepareMeetingCandidates(input);
   }
 
   async commit(

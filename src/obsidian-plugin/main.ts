@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
-import { basename, join, relative, sep } from 'node:path';
+import { readFile as readExternalFile, stat as statExternalFile } from 'node:fs/promises';
+import { basename, extname, join, relative, sep } from 'node:path';
 
 import {
   FileSystemAdapter,
@@ -91,16 +92,11 @@ import {
 import { UnifiedCalendarPluginLifecycle } from './unified-calendar-plugin.js';
 import { runWithPersistentFeedback } from './persistent-operation-feedback.js';
 import { enrichTask } from './task-enrichment.js';
-import {
-  MeetingAnalysisAlreadyExistsError,
-  MeetingAnalysisController,
-  MeetingAnalysisInProgressError,
-} from './meeting-analysis.js';
+import { createMeetingAttachmentDraft } from './meeting-attachment.js';
+import { MeetingAttachmentsWorkflow } from './meeting-attachments-workflow.js';
+import { assertMeetingDocumentSize } from './meeting-document-parser.js';
 import { MeetingCandidateController } from './meeting-candidate-controller.js';
-import {
-  MeetingNoteController,
-  parseDingTalkMeetingSource,
-} from './meeting-note.js';
+import { parseDingTalkMeetingSource } from './meeting-note.js';
 import { MeetingPluginLifecycle } from './meeting-plugin-lifecycle.js';
 import { MeetingTranscriptModal } from './meeting-transcript-modal.js';
 
@@ -113,8 +109,9 @@ interface LocalPluginPaths {
 
 interface DirectoryDialog {
   showOpenDialog(options: {
-    properties: Array<'openDirectory' | 'multiSelections'>;
+    properties: Array<'openDirectory' | 'openFile' | 'multiSelections'>;
     title: string;
+    filters?: Array<{ name: string; extensions: string[] }>;
   }): Promise<{ canceled: boolean; filePaths: string[] }>;
 }
 
@@ -145,6 +142,17 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message.trim() !== ''
     ? error.message
     : fallback;
+}
+
+function meetingAttachmentMediaType(path: string): string {
+  const extension = extname(path).toLocaleLowerCase('en-US');
+  if (extension === '.txt') return 'text/plain';
+  if (extension === '.md') return 'text/markdown';
+  if (extension === '.docx') {
+    return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  }
+  if (extension === '.pdf') return 'application/pdf';
+  return 'application/octet-stream';
 }
 
 function isContributionDataPath(path: string): boolean {
@@ -614,97 +622,120 @@ export default class AgentTaskLoopPlugin extends Plugin {
       return;
     }
 
-    new MeetingTranscriptModal(this.app, source, async (input, action) => {
-      const fileSystem = {
-        exists: async (path: string) => adapter.exists(path),
-        read: async (path: string) => adapter.read(path),
-        ensureDirectory: async (path: string) => {
-          let directory = '';
-          for (const segment of path.split('/').filter(Boolean)) {
-            directory = directory === '' ? segment : `${directory}/${segment}`;
-            if (!(await adapter.exists(directory))) await adapter.mkdir(directory);
-          }
-        },
-        create: async (path: string, content: string) => {
-          await this.app.vault.create(path, content);
-        },
-        listMarkdownFiles: async (path: string) => this.app.vault
-          .getMarkdownFiles()
-          .map((file) => file.path)
-          .filter((filePath) => filePath.startsWith(`${path}/`)),
-      };
-      const meeting = await new MeetingNoteController(fileSystem).create({
-        eventPath,
-        meetingType: input.meetingType,
-        participants: input.participants,
-        transcript: input.transcript,
-      });
-      const meetingFile = this.app.vault.getAbstractFileByPath(meeting.path);
-      if (!(meetingFile instanceof TFile)) {
-        throw new Error('Obsidian 尚未识别会议笔记');
-      }
-      await this.app.workspace.getLeaf(false).openFile(meetingFile);
-      if (action === 'save') {
-        new Notice(meeting.created
-          ? '会议听记已保存'
-          : '会议笔记已存在，未覆盖原听记');
-        return;
-      }
-
-      let analysis;
-      try {
-        const executor = await this.createStructuredExecutor();
-        analysis = await new MeetingAnalysisController({
-          fileSystem: {
-            read: async (path) => adapter.read(path),
-            process: async (path, transform) => {
-              const file = this.app.vault.getAbstractFileByPath(path);
-              if (!(file instanceof TFile)) throw new Error('会议笔记不存在');
-              return this.app.vault.process(file, transform);
-            },
-          },
-          executor,
-        }).analyze(meeting.path);
-      } catch (error) {
-        if (error instanceof MeetingAnalysisAlreadyExistsError) {
-          new Notice('已有 AI 分析和人工补充已保留，不会重复覆盖');
-          return;
+    const fileSystem = {
+      exists: async (path: string) => adapter.exists(path),
+      read: async (path: string) => adapter.read(path),
+      readBinary: async (path: string) => new Uint8Array(await adapter.readBinary(path)),
+      ensureDirectory: async (path: string) => {
+        let directory = '';
+        for (const segment of path.split('/').filter(Boolean)) {
+          directory = directory === '' ? segment : `${directory}/${segment}`;
+          if (!(await adapter.exists(directory))) await adapter.mkdir(directory);
         }
-        if (error instanceof MeetingAnalysisInProgressError) {
-          new Notice('这份会议笔记正在分析，请稍候');
-          return;
-        }
-        new Notice('会议笔记已保存，AI 分析失败，可稍后重试');
-        return;
-      }
+      },
+      create: async (path: string, content: string) => {
+        await this.app.vault.create(path, content);
+      },
+      createBinary: async (path: string, data: Uint8Array) => {
+        await this.app.vault.createBinary(path, new Uint8Array(data).buffer);
+      },
+      process: async (path: string, transform: (content: string) => string) => {
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (!(file instanceof TFile)) throw new Error('会议笔记不存在');
+        return this.app.vault.process(file, transform);
+      },
+      listMarkdownFiles: async (path: string) => this.app.vault
+        .getMarkdownFiles()
+        .map((file) => file.path)
+        .filter((filePath) => filePath.startsWith(`${path}/`)),
+    };
+    const modelService = modelServiceConfiguration(this.settings.background);
+    const modelLabel = modelService.model ?? 'inherit';
+    const workflow = new MeetingAttachmentsWorkflow({
+      fileSystem,
+      executor: () => this.createStructuredExecutor(),
+      modelLabel,
+      candidateNotePath: (path) => join(adapter.getBasePath(), path),
+    });
+    let existing;
+    try {
+      existing = await workflow.load(eventPath);
+    } catch {
+      new Notice('无法读取已有会议资料，请检查会议笔记后重试');
+      return;
+    }
+    const candidateController = new MeetingCandidateController({ context });
+    const openMeetingFile = async (path: string): Promise<void> => {
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (!(file instanceof TFile)) throw new Error('Obsidian 尚未识别会议笔记');
+      await this.app.workspace.getLeaf(false).openFile(file);
+    };
 
-      const candidateController = new MeetingCandidateController({ context });
-      const prepared = candidateController.prepare({
-        meetingNotePath: join(adapter.getBasePath(), meeting.path),
-        meetingDate: source.meetingDate,
-        analysis,
-      });
-      if (prepared.candidates.length === 0) {
-        new Notice('会议分析完成，未发现明确待办');
-        return;
-      }
-      new CaptureCandidatesModal(
-        this.app,
-        prepared,
-        async (selectedIds) => {
-          const result = await candidateController.commit(prepared, selectedIds);
-          const accepted = result.createdTaskIds.length + result.existingTaskIds.length;
-          new Notice(accepted === 0
-            ? '未选候选已保留在会议笔记中'
-            : `已将 ${accepted} 个会议待办加入 Inbox`);
+    new MeetingTranscriptModal(
+      this.app,
+      source,
+      async (input, action) => {
+        const result = action === 'save'
+          ? await workflow.submit({ eventPath, ...input, action })
+          : await workflow.submit({ eventPath, ...input, action });
+        if (result === null) {
+          const saved = await workflow.load(eventPath);
+          if (saved !== null) await openMeetingFile(saved.meetingPath);
+          new Notice('会议资料已保存');
+          return null;
+        }
+        await openMeetingFile(result.meetingPath);
+        return result;
+      },
+      {
+        ...(existing === null ? {} : { initialForm: existing.form }),
+        ...(existing?.result === null || existing?.result === undefined
+          ? {}
+          : { initialResult: existing.result }),
+        ...(existing === null
+          ? {}
+          : { initialAnalysisStatus: existing.analysis.status }),
+        modelLabel,
+        pickTranscriptFile: async () => {
+          const files = await this.pickMeetingFiles('transcript', false);
+          return files[0] ?? null;
         },
-        {
-          unselectedExplanation: '未勾选的候选会继续保留在会议笔记中。',
-          allowIgnoreUnselected: false,
-          initialSelectedCandidateIds: [],
-        },
-      ).open();
-    }).open();
+        pickReferenceFiles: async () => this.pickMeetingFiles('reference', true),
+        onCommitCandidates: async (prepared, selectedIds) => (
+          candidateController.commit(prepared, selectedIds)
+        ),
+      },
+    ).open();
+  }
+
+  private async pickMeetingFiles(
+    role: 'transcript' | 'reference',
+    multiple: boolean,
+  ) {
+    const dialog = getDirectoryDialog();
+    if (dialog === null) throw new Error('当前 Obsidian 无法打开系统文件选择器');
+    const result = await dialog.showOpenDialog({
+      title: role === 'transcript' ? '选择会议听记文件' : '选择会议关联资料',
+      properties: multiple ? ['openFile', 'multiSelections'] : ['openFile'],
+      ...(role === 'transcript'
+        ? { filters: [{ name: '会议文档', extensions: ['txt', 'md', 'docx', 'pdf'] }] }
+        : {}),
+    });
+    if (result.canceled) return [];
+    const attachments = [];
+    for (const path of result.filePaths) {
+      const stats = await statExternalFile(path);
+      if (!stats.isFile()) throw new Error('请选择有效文件');
+      assertMeetingDocumentSize(stats.size);
+      const data = new Uint8Array(await readExternalFile(path));
+      attachments.push(await createMeetingAttachmentDraft({
+        name: basename(path),
+        mediaType: meetingAttachmentMediaType(path),
+        data,
+        role,
+      }));
+    }
+    return attachments;
   }
 
   private scanSyncAssistant(): Promise<void> {
