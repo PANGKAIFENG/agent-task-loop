@@ -1,4 +1,9 @@
 import type { MeetingType } from './meeting-note.js';
+import type {
+  MeetingAttachment,
+  MeetingAttachmentDraft,
+} from './meeting-attachment.js';
+import { deduplicateMeetingAttachments } from './meeting-attachment.js';
 
 const MEETING_TYPES: readonly MeetingType[] = [
   'interview',
@@ -11,12 +16,16 @@ export interface MeetingTranscriptFormInput {
   meetingType: MeetingType;
   participants: string;
   transcript: string;
+  attachments?: readonly MeetingTranscriptAttachment[];
 }
+
+export type MeetingTranscriptAttachment = MeetingAttachment | MeetingAttachmentDraft;
 
 export interface NormalizedMeetingTranscriptForm {
   meetingType: MeetingType;
   participants: string[];
   transcript: string;
+  attachments: MeetingTranscriptAttachment[];
 }
 
 export interface MeetingTranscriptFormErrors {
@@ -52,5 +61,6 @@ export function normalizeMeetingTranscriptForm(
     meetingType: input.meetingType,
     participants,
     transcript: input.transcript,
+    attachments: deduplicateMeetingAttachments(input.attachments ?? []),
   };
 }
