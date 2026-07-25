@@ -218,8 +218,10 @@ describe('WorkContributionView', () => {
       '消费',
       '产出',
     ]);
-    expect(modes.find((button) => button.textContent === '任务')?.getAttribute('aria-pressed'))
+    expect(modes.find((button) => button.textContent === 'AI')?.getAttribute('aria-pressed'))
       .toBe('true');
+    expect(view.contentEl.querySelector('.atl-contribution-heatmap')?.getAttribute('aria-label'))
+      .toBe('AI每日贡献图');
   });
 
   it('keeps the heatmap at 26 weeks while range controls only slice trends', async () => {
@@ -541,7 +543,7 @@ describe('WorkContributionView', () => {
     const day = view.contentEl.querySelector<HTMLButtonElement>(
       '[data-date="2026-07-19"]',
     );
-    expect(day?.getAttribute('aria-label')).toContain('1 个完成任务');
+    expect(day?.getAttribute('aria-label')).toContain('Normalized Token');
     expect(day?.style.gridRow).toBe('7');
     fireEvent.click(day!);
     expect(controller.setSelectedDate).toHaveBeenCalledWith('2026-07-19');

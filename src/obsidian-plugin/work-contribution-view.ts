@@ -252,7 +252,7 @@ export class WorkContributionView extends ItemView {
   private unsubscribe: (() => void) | null = null;
   private state: ContributionDashboardState | null = null;
   private activeTab: HomeTab = 'overview';
-  private pulseMode: PulseMode = 'tasks';
+  private pulseMode: PulseMode = 'ai';
 
   constructor(
     leaf: WorkspaceLeaf,
