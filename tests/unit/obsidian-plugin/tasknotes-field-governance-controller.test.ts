@@ -242,6 +242,52 @@ describe('TaskNotesFieldGovernanceController', () => {
     expect(store.backup()).toBeDefined();
   });
 
+  it('persists recovered apply settings after a save persists and then rejects', async () => {
+    const taskNotes = runtime();
+    const before = structuredClone(taskNotes.settings);
+    const persistedSettings: TaskNotesSettings[] = [];
+    taskNotes.saveSettings.mockImplementation(async () => {
+      persistedSettings.push(structuredClone(taskNotes.settings));
+      if (persistedSettings.length === 1) throw new Error('save failed after persistence');
+    });
+    const controller = new TaskNotesFieldGovernanceController(taskNotes, backupStore());
+
+    await expect(controller.applyPreset()).rejects.toThrow(
+      '保存 TaskNotes 字段设置失败，已保存恢复后的内存字段设置',
+    );
+
+    expect(persistedSettings).toHaveLength(2);
+    const firstPersistedSettings = persistedSettings[0];
+    if (firstPersistedSettings === undefined) throw new Error('expected first persisted settings');
+    for (const id of GOVERNED_TASKNOTES_FIELD_IDS) {
+      expect(field(firstPersistedSettings, id)).toMatchObject({
+        visibleInCreation: false,
+        visibleInEdit: false,
+      });
+    }
+    expect(persistedSettings[1]).toEqual(before);
+    expect(taskNotes.settings).toEqual(before);
+  });
+
+  it('reports possible persistence divergence when recovered apply settings cannot be saved', async () => {
+    const taskNotes = runtime();
+    const persistedSettings: TaskNotesSettings[] = [];
+    taskNotes.saveSettings.mockImplementation(async () => {
+      if (persistedSettings.length === 0) {
+        persistedSettings.push(structuredClone(taskNotes.settings));
+      }
+      throw new Error('save failed');
+    });
+    const controller = new TaskNotesFieldGovernanceController(taskNotes, backupStore());
+
+    await expect(controller.applyPreset()).rejects.toThrow(
+      '保存 TaskNotes 字段设置失败，且恢复保存失败；持久化状态可能不一致。',
+    );
+
+    expect(taskNotes.saveSettings).toHaveBeenCalledTimes(2);
+    expect(persistedSettings).toHaveLength(1);
+  });
+
   it('rolls back only restore visibility mutations in memory when saveSettings fails', async () => {
     const taskNotes = runtime();
     const store = backupStore();
@@ -251,6 +297,28 @@ describe('TaskNotesFieldGovernanceController', () => {
     taskNotes.saveSettings.mockRejectedValueOnce(new Error('save failed'));
 
     await expect(controller.restorePreset()).rejects.toThrow('保存 TaskNotes 字段设置失败');
+    expect(taskNotes.settings).toEqual(beforeRestore);
+  });
+
+  it('persists recovered restore settings after a save persists and then rejects', async () => {
+    const taskNotes = runtime();
+    const store = backupStore();
+    const controller = new TaskNotesFieldGovernanceController(taskNotes, store);
+    await controller.applyPreset();
+    const beforeRestore = structuredClone(taskNotes.settings);
+    const persistedSettings: TaskNotesSettings[] = [];
+    taskNotes.saveSettings.mockImplementation(async () => {
+      persistedSettings.push(structuredClone(taskNotes.settings));
+      if (persistedSettings.length === 1) throw new Error('save failed after persistence');
+    });
+
+    await expect(controller.restorePreset()).rejects.toThrow(
+      '保存 TaskNotes 字段设置失败，已保存恢复后的内存字段设置',
+    );
+
+    expect(persistedSettings).toHaveLength(2);
+    expect(persistedSettings[0]).toEqual(settingsFixture());
+    expect(persistedSettings[1]).toEqual(beforeRestore);
     expect(taskNotes.settings).toEqual(beforeRestore);
   });
 

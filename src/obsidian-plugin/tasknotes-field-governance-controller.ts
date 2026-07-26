@@ -186,8 +186,8 @@ function rollbackVisibilityIfUnchanged(
   expectedSettings: JsonRecord,
   previous: TaskNotesFieldLayoutBackup,
   applied: TaskNotesFieldLayoutBackup,
-): void {
-  if (runtime.settings !== expectedSettings) return;
+): boolean {
+  if (runtime.settings !== expectedSettings) return false;
   try {
     const configuration = parseConfiguration(runtime.settings);
     for (const id of GOVERNED_TASKNOTES_FIELD_IDS) {
@@ -201,8 +201,30 @@ function rollbackVisibilityIfUnchanged(
         field.visibleInEdit = prior.visibleInEdit;
       }
     }
+    return true;
   } catch {
     // The runtime replaced or invalidated settings while its save failed.
+    return false;
+  }
+}
+
+async function persistRecoveredVisibility(
+  runtime: TaskNotesRuntimeAdapter,
+  expectedSettings: JsonRecord,
+  previous: TaskNotesFieldLayoutBackup,
+  applied: TaskNotesFieldLayoutBackup,
+): Promise<void> {
+  if (!rollbackVisibilityIfUnchanged(runtime, expectedSettings, previous, applied)) {
+    throw new TaskNotesFieldGovernanceError(
+      '保存 TaskNotes 字段设置失败，无法恢复当前运行时设置；持久化状态可能不一致。',
+    );
+  }
+  try {
+    await runtime.saveSettings();
+  } catch {
+    throw new TaskNotesFieldGovernanceError(
+      '保存 TaskNotes 字段设置失败，且恢复保存失败；持久化状态可能不一致。',
+    );
   }
 }
 
@@ -301,8 +323,8 @@ export class TaskNotesFieldGovernanceController {
       try {
         await runtime.saveSettings();
       } catch {
-        rollbackVisibilityIfUnchanged(runtime, configuration.settings, previous, applied);
-        throw new TaskNotesFieldGovernanceError('保存 TaskNotes 字段设置失败，已回滚本次内存修改。');
+        await persistRecoveredVisibility(runtime, configuration.settings, previous, applied);
+        throw new TaskNotesFieldGovernanceError('保存 TaskNotes 字段设置失败，已保存恢复后的内存字段设置。');
       }
     });
   }
@@ -324,8 +346,8 @@ export class TaskNotesFieldGovernanceController {
       try {
         await runtime.saveSettings();
       } catch {
-        rollbackVisibilityIfUnchanged(runtime, configuration.settings, previous, backup);
-        throw new TaskNotesFieldGovernanceError('保存 TaskNotes 字段设置失败，已回滚本次内存修改。');
+        await persistRecoveredVisibility(runtime, configuration.settings, previous, backup);
+        throw new TaskNotesFieldGovernanceError('保存 TaskNotes 字段设置失败，已保存恢复后的内存字段设置。');
       }
     });
   }
