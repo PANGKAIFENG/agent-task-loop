@@ -48,6 +48,12 @@ type FieldLayoutBackup = {
   version: number;
   fields: Record<string, Visibility>;
 };
+type FileIdentity = {
+  device: number;
+  inode: number;
+};
+
+const vaultTransactions = new Map<string, Promise<void>>();
 
 export class TaskNotesFieldGovernanceError extends Error {
   constructor(message: string) {
@@ -217,6 +223,46 @@ async function safeParent(path: string, root: string, label: string): Promise<st
   }
 }
 
+async function withVaultTransaction<T>(root: string, operation: () => Promise<T>): Promise<T> {
+  const previous = vaultTransactions.get(root) ?? Promise.resolve();
+  let release: (() => void) | undefined;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  vaultTransactions.set(root, current);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release?.();
+    if (vaultTransactions.get(root) === current) vaultTransactions.delete(root);
+  }
+}
+
+function configurationChangedError(): TaskNotesFieldGovernanceError {
+  return new TaskNotesFieldGovernanceError('TaskNotes 配置已变更，请重试。');
+}
+
+async function restoreJournalIfDestinationMissing(
+  journalPath: string,
+  path: string,
+  root: string,
+  label: string,
+): Promise<void> {
+  await rejectSymlinkPathComponents(dirname(path), root, label);
+  try {
+    await lstat(path);
+    return;
+  } catch (error) {
+    if (!hasCode(error, 'ENOENT')) throw error;
+  }
+  try {
+    await link(journalPath, path);
+  } catch (error) {
+    if (!hasCode(error, 'EEXIST')) throw error;
+  }
+}
+
 async function atomicWrite(
   path: string,
   content: string,
@@ -226,8 +272,12 @@ async function atomicWrite(
 ): Promise<void> {
   const parent = await safeParent(path, root, label);
   const temporaryPath = join(parent, `.atl-tasknotes-fields-${randomUUID()}.tmp`);
+  const journalPath = join(parent, `.atl-tasknotes-original-${randomUUID()}.journal`);
   let handle;
   let temporaryExists = false;
+  let journalExists = false;
+  let journalIsSafe = false;
+  let committed = false;
   try {
     handle = await open(
       temporaryPath,
@@ -239,18 +289,35 @@ async function atomicWrite(
     await handle.sync();
     await handle.close();
     handle = undefined;
-    const currentContent = await readSafeFile(path, root, label);
-    if (currentContent === null) {
-      throw new TaskNotesFieldGovernanceError(`${label}文件不存在，未做任何修改。`);
+    try {
+      await rename(path, journalPath);
+      journalExists = true;
+    } catch (error) {
+      if (hasCode(error, 'ENOENT')) throw configurationChangedError();
+      throw error;
     }
-    if (currentContent !== expectedContent) {
-      throw new TaskNotesFieldGovernanceError('TaskNotes 配置已变更，请重试。');
+    const capturedContent = await readSafeFile(journalPath, root, label);
+    if (capturedContent === null) {
+      throw configurationChangedError();
     }
-    await rename(temporaryPath, path);
-    temporaryExists = false;
+    journalIsSafe = true;
+    if (capturedContent !== expectedContent) throw configurationChangedError();
+    try {
+      await link(temporaryPath, path);
+    } catch (error) {
+      if (hasCode(error, 'EEXIST')) throw configurationChangedError();
+      throw error;
+    }
+    committed = true;
   } finally {
     await handle?.close();
     if (temporaryExists) await unlink(temporaryPath).catch(() => undefined);
+    if (journalExists) {
+      if (!committed && journalIsSafe) {
+        await restoreJournalIfDestinationMissing(journalPath, path, root, label);
+      }
+      await unlink(journalPath).catch(() => undefined);
+    }
   }
 }
 
@@ -258,16 +325,17 @@ async function createBackupIfMissing(
   path: string,
   backup: FieldLayoutBackup,
   root: string,
-): Promise<void> {
+): Promise<FileIdentity | undefined> {
   const existing = await readSafeFile(path, root, 'ATL 字段布局备份');
   if (existing !== null) {
     parseBackup(existing);
-    return;
+    return undefined;
   }
   const parent = await safeParent(path, root, 'ATL 字段布局备份');
   const temporaryPath = join(parent, `.atl-tasknotes-backup-${randomUUID()}.tmp`);
   let handle;
   let temporaryExists = false;
+  let createdBackup: FileIdentity | undefined;
   try {
     handle = await open(
       temporaryPath,
@@ -277,6 +345,8 @@ async function createBackupIfMissing(
     temporaryExists = true;
     await handle.writeFile(JSON.stringify(backup, null, 2), 'utf8');
     await handle.sync();
+    const metadata = await handle.stat();
+    createdBackup = { device: metadata.dev, inode: metadata.ino };
     await handle.close();
     handle = undefined;
     await link(temporaryPath, path);
@@ -284,6 +354,7 @@ async function createBackupIfMissing(
     temporaryExists = false;
   } catch (error) {
     if (!hasCode(error, 'EEXIST')) throw error;
+    createdBackup = undefined;
   } finally {
     await handle?.close();
     if (temporaryExists) await unlink(temporaryPath).catch(() => undefined);
@@ -293,6 +364,28 @@ async function createBackupIfMissing(
     throw new TaskNotesFieldGovernanceError('ATL 字段布局备份文件不存在，未做任何修改。');
   }
   parseBackup(persisted);
+  return createdBackup;
+}
+
+async function removeCreatedBackupIfUnchanged(
+  path: string,
+  createdBackup: FileIdentity | undefined,
+  root: string,
+): Promise<void> {
+  if (createdBackup === undefined) return;
+  try {
+    await rejectSymlinkPathComponents(path, root, 'ATL 字段布局备份');
+    const metadata = await lstat(path);
+    if (!metadata.isFile()
+      || metadata.isSymbolicLink()
+      || metadata.dev !== createdBackup.device
+      || metadata.ino !== createdBackup.inode) {
+      return;
+    }
+    await unlink(path);
+  } catch {
+    // A replaced or unsafe backup is no longer owned by this transaction.
+  }
 }
 
 function presetApplied(configuration: TaskNotesConfiguration): boolean {
@@ -333,62 +426,72 @@ export class TaskNotesFieldGovernanceController {
 
   async applyPreset(vaultRoot: string): Promise<void> {
     const root = await canonicalVault(vaultRoot);
-    const dataPath = join(root, TASKNOTES_DATA_PATH);
-    const content = await readSafeFile(dataPath, root, 'TaskNotes 数据');
-    if (content === null) {
-      throw new TaskNotesFieldGovernanceError('未找到 TaskNotes 数据配置。');
-    }
-    const configuration = parseConfiguration(content);
-    await createBackupIfMissing(
-      join(root, TASKNOTES_FIELD_LAYOUT_BACKUP_PATH),
-      createBackupDocument(configuration),
-      root,
-    );
-    for (const id of GOVERNED_TASKNOTES_FIELD_IDS) {
-      const field = governedField(configuration, id);
-      field.visibleInCreation = false;
-      field.visibleInEdit = false;
-    }
-    await atomicWrite(
-      dataPath,
-      JSON.stringify(configuration.document, null, 2),
-      content,
-      root,
-      'TaskNotes 数据',
-    );
+    await withVaultTransaction(root, async () => {
+      const dataPath = join(root, TASKNOTES_DATA_PATH);
+      const backupPath = join(root, TASKNOTES_FIELD_LAYOUT_BACKUP_PATH);
+      const content = await readSafeFile(dataPath, root, 'TaskNotes 数据');
+      if (content === null) {
+        throw new TaskNotesFieldGovernanceError('未找到 TaskNotes 数据配置。');
+      }
+      const configuration = parseConfiguration(content);
+      const createdBackup = await createBackupIfMissing(
+        backupPath,
+        createBackupDocument(configuration),
+        root,
+      );
+      for (const id of GOVERNED_TASKNOTES_FIELD_IDS) {
+        const field = governedField(configuration, id);
+        field.visibleInCreation = false;
+        field.visibleInEdit = false;
+      }
+      try {
+        await atomicWrite(
+          dataPath,
+          JSON.stringify(configuration.document, null, 2),
+          content,
+          root,
+          'TaskNotes 数据',
+        );
+      } catch (error) {
+        await removeCreatedBackupIfUnchanged(backupPath, createdBackup, root);
+        throw error;
+      }
+    });
   }
 
   async restorePreset(vaultRoot: string): Promise<void> {
     const root = await canonicalVault(vaultRoot);
-    const dataPath = join(root, TASKNOTES_DATA_PATH);
-    const backupPath = join(root, TASKNOTES_FIELD_LAYOUT_BACKUP_PATH);
-    const [content, backupContent] = await Promise.all([
-      readSafeFile(dataPath, root, 'TaskNotes 数据'),
-      readSafeFile(backupPath, root, 'ATL 字段布局备份'),
-    ]);
-    if (content === null) {
-      throw new TaskNotesFieldGovernanceError('未找到 TaskNotes 数据配置。');
-    }
-    if (backupContent === null) {
-      throw new TaskNotesFieldGovernanceError('没有可恢复的 ATL 字段布局备份。');
-    }
-    const configuration = parseConfiguration(content);
-    const backup = parseBackup(backupContent);
-    for (const id of GOVERNED_TASKNOTES_FIELD_IDS) {
-      const field = governedField(configuration, id);
-      const visibility = backup.fields[id];
-      if (visibility === undefined) {
-        throw new TaskNotesFieldGovernanceError('ATL 字段布局备份无效，未做任何修改。');
+    await withVaultTransaction(root, async () => {
+      const dataPath = join(root, TASKNOTES_DATA_PATH);
+      const backupPath = join(root, TASKNOTES_FIELD_LAYOUT_BACKUP_PATH);
+      const [content, backupContent] = await Promise.all([
+        readSafeFile(dataPath, root, 'TaskNotes 数据'),
+        readSafeFile(backupPath, root, 'ATL 字段布局备份'),
+      ]);
+      if (content === null) {
+        throw new TaskNotesFieldGovernanceError('未找到 TaskNotes 数据配置。');
       }
-      field.visibleInCreation = visibility.visibleInCreation;
-      field.visibleInEdit = visibility.visibleInEdit;
-    }
-    await atomicWrite(
-      dataPath,
-      JSON.stringify(configuration.document, null, 2),
-      content,
-      root,
-      'TaskNotes 数据',
-    );
+      if (backupContent === null) {
+        throw new TaskNotesFieldGovernanceError('没有可恢复的 ATL 字段布局备份。');
+      }
+      const configuration = parseConfiguration(content);
+      const backup = parseBackup(backupContent);
+      for (const id of GOVERNED_TASKNOTES_FIELD_IDS) {
+        const field = governedField(configuration, id);
+        const visibility = backup.fields[id];
+        if (visibility === undefined) {
+          throw new TaskNotesFieldGovernanceError('ATL 字段布局备份无效，未做任何修改。');
+        }
+        field.visibleInCreation = visibility.visibleInCreation;
+        field.visibleInEdit = visibility.visibleInEdit;
+      }
+      await atomicWrite(
+        dataPath,
+        JSON.stringify(configuration.document, null, 2),
+        content,
+        root,
+        'TaskNotes 数据',
+      );
+    });
   }
 }

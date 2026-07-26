@@ -2,6 +2,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   rm,
   symlink,
   writeFile,
@@ -13,6 +14,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const fsHooks = vi.hoisted(() => ({
   beforeTaskNotesAtomicWrite: undefined as (() => Promise<void>) | undefined,
+  beforeDataInstall: undefined as (() => Promise<void>) | undefined,
 }));
 
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -27,6 +29,22 @@ vi.mock('node:fs/promises', async (importOriginal) => {
         await hook?.();
       }
       return handle;
+    },
+    rename: async (...args: Parameters<typeof fs.rename>) => {
+      if (typeof args[0] === 'string' && args[0].includes('.atl-tasknotes-fields-')) {
+        const hook = fsHooks.beforeDataInstall;
+        fsHooks.beforeDataInstall = undefined;
+        await hook?.();
+      }
+      return fs.rename(...args);
+    },
+    link: async (...args: Parameters<typeof fs.link>) => {
+      if (typeof args[0] === 'string' && args[0].includes('.atl-tasknotes-fields-')) {
+        const hook = fsHooks.beforeDataInstall;
+        fsHooks.beforeDataInstall = undefined;
+        await hook?.();
+      }
+      return fs.link(...args);
     },
   };
 });
@@ -89,8 +107,13 @@ async function fixture(config = taskNotesConfig()) {
   return { vaultRoot, dataPath, backupPath, config };
 }
 
+async function transactionArtifacts(dataPath: string): Promise<string[]> {
+  return (await readdir(dirname(dataPath))).filter((name) => name.startsWith('.atl-tasknotes-'));
+}
+
 afterEach(async () => {
   fsHooks.beforeTaskNotesAtomicWrite = undefined;
+  fsHooks.beforeDataInstall = undefined;
   await Promise.all(roots.splice(0).map((root) => rm(root, {
     recursive: true,
     force: true,
@@ -178,7 +201,7 @@ describe('TaskNotesFieldGovernanceController', () => {
     });
   });
 
-  it('rejects apply when TaskNotes changes its data after ATL reads it', async () => {
+  it('removes a failed apply attempt backup when TaskNotes changes its data after ATL reads it', async () => {
     const paths = await fixture();
     const original = await readFile(paths.dataPath, 'utf8');
     const taskNotesChange = JSON.parse(original) as TaskNotesConfig;
@@ -192,14 +215,35 @@ describe('TaskNotesFieldGovernanceController', () => {
       'TaskNotes 配置已变更，请重试',
     );
     expect(await readFile(paths.dataPath, 'utf8')).toBe(JSON.stringify(taskNotesChange, null, 2));
-    expect(JSON.parse(await readFile(paths.backupPath, 'utf8'))).toMatchObject({
-      version: 1,
-      fields: {
-        contexts: {
-          visibleInCreation: true,
-          visibleInEdit: false,
-        },
-      },
+    await expect(readFile(paths.backupPath, 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    expect(await transactionArtifacts(paths.dataPath)).toEqual([]);
+  });
+
+  it('uses the retry visibility snapshot after a failed apply attempt', async () => {
+    const paths = await fixture();
+    const initial = await readFile(paths.dataPath, 'utf8');
+    const taskNotesChange = JSON.parse(initial) as TaskNotesConfig;
+    const tags = taskNotesChange.modalFieldsConfig.fields.find((field) => field.id === 'tags');
+    if (tags === undefined) throw new Error('missing tags field');
+    tags.visibleInCreation = true;
+    tags.visibleInEdit = false;
+    fsHooks.beforeTaskNotesAtomicWrite = async () => {
+      await writeFile(paths.dataPath, JSON.stringify(taskNotesChange, null, 2), 'utf8');
+    };
+    const controller = new TaskNotesFieldGovernanceController();
+
+    await expect(controller.applyPreset(paths.vaultRoot)).rejects.toThrow(
+      'TaskNotes 配置已变更，请重试',
+    );
+    await controller.applyPreset(paths.vaultRoot);
+    await controller.restorePreset(paths.vaultRoot);
+
+    const restored = JSON.parse(await readFile(paths.dataPath, 'utf8')) as TaskNotesConfig;
+    expect(restored.modalFieldsConfig.fields.find((field) => field.id === 'tags')).toMatchObject({
+      visibleInCreation: true,
+      visibleInEdit: false,
     });
   });
 
@@ -210,6 +254,55 @@ describe('TaskNotesFieldGovernanceController', () => {
     const taskNotesChange = JSON.parse(await readFile(paths.dataPath, 'utf8')) as TaskNotesConfig;
     taskNotesChange.generalSetting = { keep: 'changed by TaskNotes' };
     fsHooks.beforeTaskNotesAtomicWrite = async () => {
+      await writeFile(paths.dataPath, JSON.stringify(taskNotesChange, null, 2), 'utf8');
+    };
+
+    await expect(controller.restorePreset(paths.vaultRoot)).rejects.toThrow(
+      'TaskNotes 配置已变更，请重试',
+    );
+    expect(await readFile(paths.dataPath, 'utf8')).toBe(JSON.stringify(taskNotesChange, null, 2));
+    expect(await transactionArtifacts(paths.dataPath)).toEqual([]);
+  });
+
+  it('preserves a pre-existing backup when a later apply attempt conflicts', async () => {
+    const paths = await fixture();
+    const controller = new TaskNotesFieldGovernanceController();
+    await controller.applyPreset(paths.vaultRoot);
+    const firstBackup = await readFile(paths.backupPath, 'utf8');
+    const taskNotesChange = JSON.parse(await readFile(paths.dataPath, 'utf8')) as TaskNotesConfig;
+    taskNotesChange.generalSetting = { keep: 'changed by TaskNotes' };
+    fsHooks.beforeTaskNotesAtomicWrite = async () => {
+      await writeFile(paths.dataPath, JSON.stringify(taskNotesChange, null, 2), 'utf8');
+    };
+
+    await expect(controller.applyPreset(paths.vaultRoot)).rejects.toThrow(
+      'TaskNotes 配置已变更，请重试',
+    );
+    expect(await readFile(paths.backupPath, 'utf8')).toBe(firstBackup);
+  });
+
+  it('does not overwrite a TaskNotes save in the final apply installation window', async () => {
+    const paths = await fixture();
+    const taskNotesChange = JSON.parse(await readFile(paths.dataPath, 'utf8')) as TaskNotesConfig;
+    taskNotesChange.generalSetting = { keep: 'saved during installation' };
+    fsHooks.beforeDataInstall = async () => {
+      await writeFile(paths.dataPath, JSON.stringify(taskNotesChange, null, 2), 'utf8');
+    };
+    const controller = new TaskNotesFieldGovernanceController();
+
+    await expect(controller.applyPreset(paths.vaultRoot)).rejects.toThrow(
+      'TaskNotes 配置已变更，请重试',
+    );
+    expect(await readFile(paths.dataPath, 'utf8')).toBe(JSON.stringify(taskNotesChange, null, 2));
+  });
+
+  it('does not overwrite a TaskNotes save in the final restore installation window', async () => {
+    const paths = await fixture();
+    const controller = new TaskNotesFieldGovernanceController();
+    await controller.applyPreset(paths.vaultRoot);
+    const taskNotesChange = JSON.parse(await readFile(paths.dataPath, 'utf8')) as TaskNotesConfig;
+    taskNotesChange.generalSetting = { keep: 'saved during installation' };
+    fsHooks.beforeDataInstall = async () => {
       await writeFile(paths.dataPath, JSON.stringify(taskNotesChange, null, 2), 'utf8');
     };
 
