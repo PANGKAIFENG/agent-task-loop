@@ -1,65 +1,14 @@
-import {
-  mkdir,
-  mkdtemp,
-  readFile,
-  readdir,
-  rm,
-  symlink,
-  writeFile,
-} from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-
-import { afterEach, describe, expect, it, vi } from 'vitest';
-
-const fsHooks = vi.hoisted(() => ({
-  beforeTaskNotesAtomicWrite: undefined as (() => Promise<void>) | undefined,
-  beforeDataInstall: undefined as (() => Promise<void>) | undefined,
-}));
-
-vi.mock('node:fs/promises', async (importOriginal) => {
-  const fs = await importOriginal<typeof import('node:fs/promises')>();
-  return {
-    ...fs,
-    open: async (...args: Parameters<typeof fs.open>) => {
-      const handle = await fs.open(...args);
-      if (typeof args[0] === 'string' && args[0].includes('.atl-tasknotes-fields-')) {
-        const hook = fsHooks.beforeTaskNotesAtomicWrite;
-        fsHooks.beforeTaskNotesAtomicWrite = undefined;
-        await hook?.();
-      }
-      return handle;
-    },
-    rename: async (...args: Parameters<typeof fs.rename>) => {
-      if (typeof args[0] === 'string' && args[0].includes('.atl-tasknotes-fields-')) {
-        const hook = fsHooks.beforeDataInstall;
-        fsHooks.beforeDataInstall = undefined;
-        await hook?.();
-      }
-      return fs.rename(...args);
-    },
-    link: async (...args: Parameters<typeof fs.link>) => {
-      if (typeof args[0] === 'string' && args[0].includes('.atl-tasknotes-fields-')) {
-        const hook = fsHooks.beforeDataInstall;
-        fsHooks.beforeDataInstall = undefined;
-        await hook?.();
-      }
-      return fs.link(...args);
-    },
-  };
-});
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   GOVERNED_TASKNOTES_FIELD_IDS,
-  TASKNOTES_DATA_PATH,
-  TASKNOTES_FIELD_LAYOUT_BACKUP_PATH,
   TaskNotesFieldGovernanceController,
+  type TaskNotesFieldLayoutBackup,
+  type TaskNotesRuntimeAdapter,
 } from '../../../src/obsidian-plugin/tasknotes-field-governance-controller.js';
 
-const roots: string[] = [];
-
 type Field = Record<string, unknown> & { id: string };
-type TaskNotesConfig = {
+type TaskNotesSettings = {
   modalFieldsConfig: {
     version: number;
     fields: Field[];
@@ -68,7 +17,7 @@ type TaskNotesConfig = {
   [key: string]: unknown;
 };
 
-function taskNotesConfig(): TaskNotesConfig {
+function settingsFixture(): TaskNotesSettings {
   return {
     generalSetting: { keep: 'unchanged' },
     modalFieldsConfig: {
@@ -97,359 +46,252 @@ function taskNotesConfig(): TaskNotesConfig {
   };
 }
 
-async function fixture(config = taskNotesConfig()) {
-  const vaultRoot = await mkdtemp(join(tmpdir(), 'atl-tasknotes-fields-'));
-  roots.push(vaultRoot);
-  const dataPath = join(vaultRoot, TASKNOTES_DATA_PATH);
-  const backupPath = join(vaultRoot, TASKNOTES_FIELD_LAYOUT_BACKUP_PATH);
-  await mkdir(dirname(dataPath), { recursive: true });
-  await writeFile(dataPath, JSON.stringify(config, null, 2), 'utf8');
-  return { vaultRoot, dataPath, backupPath, config };
+function runtime(settings = settingsFixture(), saveSettings = vi.fn(async () => undefined)) {
+  return {
+    settings,
+    saveSettings,
+  } satisfies TaskNotesRuntimeAdapter & { saveSettings: ReturnType<typeof vi.fn> };
 }
 
-async function transactionArtifacts(dataPath: string): Promise<string[]> {
-  return (await readdir(dirname(dataPath))).filter((name) => name.startsWith('.atl-tasknotes-'));
+function backupStore(initialBackup?: unknown, onPersist?: () => Promise<void>) {
+  let backup = initialBackup;
+  return {
+    getBackup: vi.fn(async () => backup),
+    persistFirstBackup: vi.fn(async (candidate: TaskNotesFieldLayoutBackup) => {
+      if (backup === undefined || backup === null) backup = candidate;
+      await onPersist?.();
+    }),
+    backup: () => backup,
+  };
 }
 
-afterEach(async () => {
-  fsHooks.beforeTaskNotesAtomicWrite = undefined;
-  fsHooks.beforeDataInstall = undefined;
-  await Promise.all(roots.splice(0).map((root) => rm(root, {
-    recursive: true,
-    force: true,
-  })));
-});
+function field(settings: TaskNotesSettings, id: string): Field {
+  const candidate = settings.modalFieldsConfig.fields.find((item) => item.id === id);
+  if (candidate === undefined) throw new Error(`missing ${id}`);
+  return candidate;
+}
 
 describe('TaskNotesFieldGovernanceController', () => {
-  it('hides exactly the governed field visibility flags and writes a selective backup', async () => {
-    const paths = await fixture();
-    const controller = new TaskNotesFieldGovernanceController();
+  it('hides only the governed visibility pairs and persists a selective first backup', async () => {
+    const taskNotes = runtime();
+    const original = structuredClone(taskNotes.settings);
+    const store = backupStore();
+    const controller = new TaskNotesFieldGovernanceController(taskNotes, store);
 
-    await controller.applyPreset(paths.vaultRoot);
+    await controller.applyPreset();
 
-    const updated = JSON.parse(await readFile(paths.dataPath, 'utf8')) as TaskNotesConfig;
-    const originalFields = paths.config.modalFieldsConfig.fields;
     for (const id of GOVERNED_TASKNOTES_FIELD_IDS) {
-      const field = updated.modalFieldsConfig.fields.find((candidate) => candidate.id === id);
-      const original = originalFields.find((candidate) => candidate.id === id);
-      expect(field).toEqual({
-        ...original,
+      expect(field(taskNotes.settings, id)).toEqual({
+        ...field(original, id),
         visibleInCreation: false,
         visibleInEdit: false,
       });
     }
-    expect(updated.modalFieldsConfig.fields.find((field) => field.id === 'atl_origin')).toEqual(
-      paths.config.modalFieldsConfig.fields.find((field) => field.id === 'atl_origin'),
+    expect(field(taskNotes.settings, 'atl_origin')).toEqual(field(original, 'atl_origin'));
+    expect(taskNotes.settings.generalSetting).toEqual(original.generalSetting);
+    expect(taskNotes.settings.modalFieldsConfig.userFields).toEqual(
+      original.modalFieldsConfig.userFields,
     );
-    expect(updated.modalFieldsConfig.userFields).toEqual(paths.config.modalFieldsConfig.userFields);
-    expect(updated.generalSetting).toEqual(paths.config.generalSetting);
-
-    expect(JSON.parse(await readFile(paths.backupPath, 'utf8'))).toEqual({
+    expect(store.backup()).toEqual({
       version: 1,
       fields: Object.fromEntries(GOVERNED_TASKNOTES_FIELD_IDS.map((id) => [id, {
-        visibleInCreation: paths.config.modalFieldsConfig.fields.find(
-          (field) => field.id === id,
-        )?.visibleInCreation,
-        visibleInEdit: paths.config.modalFieldsConfig.fields.find(
-          (field) => field.id === id,
-        )?.visibleInEdit,
+        visibleInCreation: field(original, id).visibleInCreation,
+        visibleInEdit: field(original, id).visibleInEdit,
       }])),
     });
+    expect(taskNotes.saveSettings).toHaveBeenCalledTimes(1);
   });
 
-  it('restores only governed visibility pairs after unrelated TaskNotes settings change', async () => {
-    const paths = await fixture();
-    const controller = new TaskNotesFieldGovernanceController();
-    await controller.applyPreset(paths.vaultRoot);
+  it('keeps the first backup when the preset is reapplied', async () => {
+    const taskNotes = runtime();
+    const store = backupStore();
+    const controller = new TaskNotesFieldGovernanceController(taskNotes, store);
+    await controller.applyPreset();
+    const firstBackup = structuredClone(store.backup());
 
-    const changed = JSON.parse(await readFile(paths.dataPath, 'utf8')) as TaskNotesConfig;
-    changed.generalSetting = { keep: 'changed later' };
-    const retained = changed.modalFieldsConfig.fields.find((field) => field.id === 'atl_origin');
-    if (retained === undefined) throw new Error('missing retained field');
-    retained.displayName = 'Renamed later';
-    await writeFile(paths.dataPath, JSON.stringify(changed, null, 2), 'utf8');
+    await controller.applyPreset();
 
-    await controller.restorePreset(paths.vaultRoot);
+    expect(store.backup()).toEqual(firstBackup);
+    expect(store.persistFirstBackup).toHaveBeenCalledTimes(1);
+    expect(taskNotes.saveSettings).toHaveBeenCalledTimes(2);
+  });
 
-    const restored = JSON.parse(await readFile(paths.dataPath, 'utf8')) as TaskNotesConfig;
-    expect(restored.generalSetting).toEqual({ keep: 'changed later' });
-    expect(restored.modalFieldsConfig.fields.find((field) => field.id === 'atl_origin')).toMatchObject({
-      displayName: 'Renamed later',
-    });
+  it('restores only backed-up visibility pairs after unrelated live settings change', async () => {
+    const taskNotes = runtime();
+    const store = backupStore();
+    const controller = new TaskNotesFieldGovernanceController(taskNotes, store);
+    await controller.applyPreset();
+    taskNotes.settings.generalSetting = { keep: 'changed later' };
+    field(taskNotes.settings, 'atl_origin').displayName = 'Renamed later';
+
+    await controller.restorePreset();
+
+    expect(taskNotes.settings.generalSetting).toEqual({ keep: 'changed later' });
+    expect(field(taskNotes.settings, 'atl_origin')).toMatchObject({ displayName: 'Renamed later' });
     for (const id of GOVERNED_TASKNOTES_FIELD_IDS) {
-      const restoredField = restored.modalFieldsConfig.fields.find((field) => field.id === id);
-      const originalField = paths.config.modalFieldsConfig.fields.find((field) => field.id === id);
-      expect(restoredField).toBeDefined();
-      expect(originalField).toBeDefined();
-      expect(restoredField).toMatchObject(originalField!);
+      expect(field(taskNotes.settings, id)).toMatchObject(field(settingsFixture(), id));
     }
+    expect(taskNotes.saveSettings).toHaveBeenCalledTimes(2);
   });
 
-  it('preserves the first selective backup when reapplied', async () => {
-    const paths = await fixture();
-    const controller = new TaskNotesFieldGovernanceController();
-    await controller.applyPreset(paths.vaultRoot);
-    const firstBackup = await readFile(paths.backupPath, 'utf8');
+  it('reports live availability, application, and valid backup restoration state', async () => {
+    const taskNotes = runtime();
+    const store = backupStore();
+    const controller = new TaskNotesFieldGovernanceController(taskNotes, store);
 
-    await controller.applyPreset(paths.vaultRoot);
-
-    expect(await readFile(paths.backupPath, 'utf8')).toBe(firstBackup);
-    await expect(controller.status(paths.vaultRoot)).resolves.toEqual({
+    await expect(controller.status()).resolves.toEqual({
+      available: true,
+      applied: false,
+      restorable: false,
+    });
+    await controller.applyPreset();
+    await expect(controller.status()).resolves.toEqual({
       available: true,
       applied: true,
       restorable: true,
     });
   });
 
-  it('removes a failed apply attempt backup when TaskNotes changes its data after ATL reads it', async () => {
-    const paths = await fixture();
-    const original = await readFile(paths.dataPath, 'utf8');
-    const taskNotesChange = JSON.parse(original) as TaskNotesConfig;
-    taskNotesChange.generalSetting = { keep: 'changed by TaskNotes' };
-    fsHooks.beforeTaskNotesAtomicWrite = async () => {
-      await writeFile(paths.dataPath, JSON.stringify(taskNotesChange, null, 2), 'utf8');
-    };
-    const controller = new TaskNotesFieldGovernanceController();
+  it.each([
+    ['unsupported version', (settings: TaskNotesSettings) => {
+      settings.modalFieldsConfig.version = 2;
+    }],
+    ['duplicate governed field', (settings: TaskNotesSettings) => {
+      settings.modalFieldsConfig.fields.push({ ...field(settings, 'tags') });
+    }],
+    ['missing governed field', (settings: TaskNotesSettings) => {
+      settings.modalFieldsConfig.fields = settings.modalFieldsConfig.fields.filter(
+        (item) => item.id !== 'tags',
+      );
+    }],
+    ['invalid visibility', (settings: TaskNotesSettings) => {
+      field(settings, 'tags').visibleInEdit = 'yes';
+    }],
+  ])('fails closed for %s runtime settings', async (_name, mutate) => {
+    const taskNotes = runtime();
+    mutate(taskNotes.settings);
+    const before = structuredClone(taskNotes.settings);
+    const store = backupStore();
+    const controller = new TaskNotesFieldGovernanceController(taskNotes, store);
 
-    await expect(controller.applyPreset(paths.vaultRoot)).rejects.toThrow(
-      'TaskNotes 配置已变更，请重试',
-    );
-    expect(await readFile(paths.dataPath, 'utf8')).toBe(JSON.stringify(taskNotesChange, null, 2));
-    await expect(readFile(paths.backupPath, 'utf8')).rejects.toMatchObject({
-      code: 'ENOENT',
-    });
-    expect(await transactionArtifacts(paths.dataPath)).toEqual([]);
-  });
-
-  it('uses the retry visibility snapshot after a failed apply attempt', async () => {
-    const paths = await fixture();
-    const initial = await readFile(paths.dataPath, 'utf8');
-    const taskNotesChange = JSON.parse(initial) as TaskNotesConfig;
-    const tags = taskNotesChange.modalFieldsConfig.fields.find((field) => field.id === 'tags');
-    if (tags === undefined) throw new Error('missing tags field');
-    tags.visibleInCreation = true;
-    tags.visibleInEdit = false;
-    fsHooks.beforeTaskNotesAtomicWrite = async () => {
-      await writeFile(paths.dataPath, JSON.stringify(taskNotesChange, null, 2), 'utf8');
-    };
-    const controller = new TaskNotesFieldGovernanceController();
-
-    await expect(controller.applyPreset(paths.vaultRoot)).rejects.toThrow(
-      'TaskNotes 配置已变更，请重试',
-    );
-    await controller.applyPreset(paths.vaultRoot);
-    await controller.restorePreset(paths.vaultRoot);
-
-    const restored = JSON.parse(await readFile(paths.dataPath, 'utf8')) as TaskNotesConfig;
-    expect(restored.modalFieldsConfig.fields.find((field) => field.id === 'tags')).toMatchObject({
-      visibleInCreation: true,
-      visibleInEdit: false,
-    });
-  });
-
-  it('rejects restore when TaskNotes changes its data after ATL reads it', async () => {
-    const paths = await fixture();
-    const controller = new TaskNotesFieldGovernanceController();
-    await controller.applyPreset(paths.vaultRoot);
-    const taskNotesChange = JSON.parse(await readFile(paths.dataPath, 'utf8')) as TaskNotesConfig;
-    taskNotesChange.generalSetting = { keep: 'changed by TaskNotes' };
-    fsHooks.beforeTaskNotesAtomicWrite = async () => {
-      await writeFile(paths.dataPath, JSON.stringify(taskNotesChange, null, 2), 'utf8');
-    };
-
-    await expect(controller.restorePreset(paths.vaultRoot)).rejects.toThrow(
-      'TaskNotes 配置已变更，请重试',
-    );
-    expect(await readFile(paths.dataPath, 'utf8')).toBe(JSON.stringify(taskNotesChange, null, 2));
-    expect(await transactionArtifacts(paths.dataPath)).toEqual([]);
-  });
-
-  it('preserves a pre-existing backup when a later apply attempt conflicts', async () => {
-    const paths = await fixture();
-    const controller = new TaskNotesFieldGovernanceController();
-    await controller.applyPreset(paths.vaultRoot);
-    const firstBackup = await readFile(paths.backupPath, 'utf8');
-    const taskNotesChange = JSON.parse(await readFile(paths.dataPath, 'utf8')) as TaskNotesConfig;
-    taskNotesChange.generalSetting = { keep: 'changed by TaskNotes' };
-    fsHooks.beforeTaskNotesAtomicWrite = async () => {
-      await writeFile(paths.dataPath, JSON.stringify(taskNotesChange, null, 2), 'utf8');
-    };
-
-    await expect(controller.applyPreset(paths.vaultRoot)).rejects.toThrow(
-      'TaskNotes 配置已变更，请重试',
-    );
-    expect(await readFile(paths.backupPath, 'utf8')).toBe(firstBackup);
-  });
-
-  it('does not overwrite a TaskNotes save in the final apply installation window', async () => {
-    const paths = await fixture();
-    const taskNotesChange = JSON.parse(await readFile(paths.dataPath, 'utf8')) as TaskNotesConfig;
-    taskNotesChange.generalSetting = { keep: 'saved during installation' };
-    fsHooks.beforeDataInstall = async () => {
-      await writeFile(paths.dataPath, JSON.stringify(taskNotesChange, null, 2), 'utf8');
-    };
-    const controller = new TaskNotesFieldGovernanceController();
-
-    await expect(controller.applyPreset(paths.vaultRoot)).rejects.toThrow(
-      'TaskNotes 配置已变更，请重试',
-    );
-    expect(await readFile(paths.dataPath, 'utf8')).toBe(JSON.stringify(taskNotesChange, null, 2));
-  });
-
-  it('does not overwrite a TaskNotes save in the final restore installation window', async () => {
-    const paths = await fixture();
-    const controller = new TaskNotesFieldGovernanceController();
-    await controller.applyPreset(paths.vaultRoot);
-    const taskNotesChange = JSON.parse(await readFile(paths.dataPath, 'utf8')) as TaskNotesConfig;
-    taskNotesChange.generalSetting = { keep: 'saved during installation' };
-    fsHooks.beforeDataInstall = async () => {
-      await writeFile(paths.dataPath, JSON.stringify(taskNotesChange, null, 2), 'utf8');
-    };
-
-    await expect(controller.restorePreset(paths.vaultRoot)).rejects.toThrow(
-      'TaskNotes 配置已变更，请重试',
-    );
-    expect(await readFile(paths.dataPath, 'utf8')).toBe(JSON.stringify(taskNotesChange, null, 2));
-  });
-
-  it('reports applied only while every governed visibility pair is false', async () => {
-    const paths = await fixture();
-    const controller = new TaskNotesFieldGovernanceController();
-    await controller.applyPreset(paths.vaultRoot);
-    const changed = JSON.parse(await readFile(paths.dataPath, 'utf8')) as TaskNotesConfig;
-    const field = changed.modalFieldsConfig.fields.find((candidate) => candidate.id === 'tags');
-    if (field === undefined) throw new Error('missing tags field');
-    field.visibleInEdit = true;
-    await writeFile(paths.dataPath, JSON.stringify(changed, null, 2), 'utf8');
-
-    await expect(controller.status(paths.vaultRoot)).resolves.toEqual({
+    await expect(controller.applyPreset()).rejects.toThrow('TaskNotes 字段配置无效或版本不受支持');
+    expect(taskNotes.settings).toEqual(before);
+    expect(store.persistFirstBackup).not.toHaveBeenCalled();
+    expect(taskNotes.saveSettings).not.toHaveBeenCalled();
+    await expect(controller.status()).resolves.toEqual({
       available: true,
       applied: false,
-      restorable: true,
+      restorable: false,
     });
   });
 
-  it('reports unavailable without creating a TaskNotes configuration', async () => {
-    const vaultRoot = await mkdtemp(join(tmpdir(), 'atl-tasknotes-missing-'));
-    roots.push(vaultRoot);
-    const controller = new TaskNotesFieldGovernanceController();
+  it.each([
+    ['missing runtime', undefined],
+    ['missing save method', { settings: settingsFixture() }],
+  ])('fails closed when TaskNotes runtime is %s', async (_name, taskNotes) => {
+    const store = backupStore();
+    const controller = new TaskNotesFieldGovernanceController(taskNotes, store);
 
-    await expect(controller.status(vaultRoot)).resolves.toEqual({
+    await expect(controller.status()).resolves.toEqual({
       available: false,
       applied: false,
       restorable: false,
     });
-    await expect(controller.applyPreset(vaultRoot)).rejects.toThrow('未找到 TaskNotes 数据配置');
-    await expect(readFile(join(vaultRoot, TASKNOTES_DATA_PATH), 'utf8')).rejects.toMatchObject({
-      code: 'ENOENT',
-    });
+    await expect(controller.applyPreset()).rejects.toThrow('TaskNotes 运行时不可用');
   });
 
-  it.each([
-    ['invalid JSON', '{not json'],
-    ['unsupported version', JSON.stringify({
-      modalFieldsConfig: { version: 2, fields: [] },
-    })],
-  ])('rejects %s without creating a backup or changing TaskNotes data', async (_name, content) => {
-    const paths = await fixture();
-    await writeFile(paths.dataPath, content, 'utf8');
-    const controller = new TaskNotesFieldGovernanceController();
+  it('fails closed for a malformed ATL-owned backup', async () => {
+    const taskNotes = runtime();
+    const store = backupStore({ version: 1, fields: {} });
+    const before = structuredClone(taskNotes.settings);
+    const controller = new TaskNotesFieldGovernanceController(taskNotes, store);
 
-    await expect(controller.applyPreset(paths.vaultRoot)).rejects.toThrow(
-      'TaskNotes 字段配置无效或版本不受支持',
-    );
-    expect(await readFile(paths.dataPath, 'utf8')).toBe(content);
-    await expect(readFile(paths.backupPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
-  });
-
-  it.each([
-    ['duplicate governed field', (config: TaskNotesConfig) => {
-      config.modalFieldsConfig.fields.push({
-        ...config.modalFieldsConfig.fields[0]!,
-      });
-    }],
-    ['missing governed field', (config: TaskNotesConfig) => {
-      config.modalFieldsConfig.fields = config.modalFieldsConfig.fields.filter(
-        (field) => field.id !== 'tags',
-      );
-    }],
-    ['non-boolean visibility', (config: TaskNotesConfig) => {
-      const field = config.modalFieldsConfig.fields.find((candidate) => candidate.id === 'tags');
-      if (field === undefined) throw new Error('missing tags field');
-      field.visibleInEdit = 'yes';
-    }],
-  ])('rejects %s without partial writes', async (_name, mutate) => {
-    const config = taskNotesConfig();
-    mutate(config);
-    const paths = await fixture(config);
-    const original = await readFile(paths.dataPath, 'utf8');
-    const controller = new TaskNotesFieldGovernanceController();
-
-    await expect(controller.applyPreset(paths.vaultRoot)).rejects.toThrow(
-      'TaskNotes 字段配置无效或版本不受支持',
-    );
-    expect(await readFile(paths.dataPath, 'utf8')).toBe(original);
-    await expect(readFile(paths.backupPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
-  });
-
-  it('rejects restore with no backup and keeps TaskNotes data unchanged', async () => {
-    const paths = await fixture();
-    const original = await readFile(paths.dataPath, 'utf8');
-    const controller = new TaskNotesFieldGovernanceController();
-
-    await expect(controller.restorePreset(paths.vaultRoot)).rejects.toThrow(
-      '没有可恢复的 ATL 字段布局备份',
-    );
-    expect(await readFile(paths.dataPath, 'utf8')).toBe(original);
-  });
-
-  it('fails closed on malformed backups and does not alter TaskNotes data', async () => {
-    const paths = await fixture();
-    const controller = new TaskNotesFieldGovernanceController();
-    await mkdir(dirname(paths.backupPath), { recursive: true });
-    await writeFile(paths.backupPath, JSON.stringify({ version: 1, fields: {} }), 'utf8');
-    const original = await readFile(paths.dataPath, 'utf8');
-
-    await expect(controller.status(paths.vaultRoot)).resolves.toEqual({
+    await expect(controller.status()).resolves.toEqual({
       available: true,
       applied: false,
       restorable: false,
     });
-    await expect(controller.applyPreset(paths.vaultRoot)).rejects.toThrow('ATL 字段布局备份无效');
-    await expect(controller.restorePreset(paths.vaultRoot)).rejects.toThrow('ATL 字段布局备份无效');
-    expect(await readFile(paths.dataPath, 'utf8')).toBe(original);
+    await expect(controller.applyPreset()).rejects.toThrow('ATL 字段布局备份无效');
+    await expect(controller.restorePreset()).rejects.toThrow('ATL 字段布局备份无效');
+    expect(taskNotes.settings).toEqual(before);
+    expect(taskNotes.saveSettings).not.toHaveBeenCalled();
   });
 
-  it('rejects a TaskNotes data path that escapes the Vault through a symlink', async () => {
-    const paths = await fixture();
-    const outsideRoot = await mkdtemp(join(tmpdir(), 'atl-tasknotes-outside-'));
-    roots.push(outsideRoot);
-    const outsidePath = join(outsideRoot, 'data.json');
-    const outsideContent = await readFile(paths.dataPath, 'utf8');
-    await writeFile(outsidePath, outsideContent, 'utf8');
-    await rm(paths.dataPath);
-    await symlink(outsidePath, paths.dataPath);
-    const controller = new TaskNotesFieldGovernanceController();
+  it('rejects restore without an ATL-owned backup and leaves live settings untouched', async () => {
+    const taskNotes = runtime();
+    const before = structuredClone(taskNotes.settings);
+    const store = backupStore();
+    const controller = new TaskNotesFieldGovernanceController(taskNotes, store);
 
-    await expect(controller.applyPreset(paths.vaultRoot)).rejects.toThrow('TaskNotes 数据文件不安全');
-    expect(await readFile(outsidePath, 'utf8')).toBe(outsideContent);
-    await expect(readFile(paths.backupPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(controller.restorePreset()).rejects.toThrow('没有可恢复的 ATL 字段布局备份');
+    expect(taskNotes.settings).toEqual(before);
+    expect(taskNotes.saveSettings).not.toHaveBeenCalled();
   });
 
-  it('rejects a TaskNotes parent directory symlink even when its target remains in the Vault', async () => {
-    const paths = await fixture();
-    const taskNotesDirectory = dirname(paths.dataPath);
-    const targetDirectory = join(paths.vaultRoot, 'real-tasknotes');
-    const targetPath = join(targetDirectory, 'data.json');
-    const targetContent = await readFile(paths.dataPath, 'utf8');
-    await mkdir(targetDirectory);
-    await writeFile(targetPath, targetContent, 'utf8');
-    await rm(taskNotesDirectory, { recursive: true, force: true });
-    await symlink(targetDirectory, taskNotesDirectory);
-    const controller = new TaskNotesFieldGovernanceController();
+  it('rolls back only apply visibility mutations in memory when saveSettings fails', async () => {
+    const saveFailure = new Error('save failed');
+    const taskNotes = runtime(settingsFixture(), vi.fn(async () => {
+      throw saveFailure;
+    }));
+    const before = structuredClone(taskNotes.settings);
+    const store = backupStore();
+    const controller = new TaskNotesFieldGovernanceController(taskNotes, store);
 
-    await expect(controller.applyPreset(paths.vaultRoot)).rejects.toThrow('TaskNotes 数据文件不安全');
-    expect(await readFile(targetPath, 'utf8')).toBe(targetContent);
-    await expect(readFile(paths.backupPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(controller.applyPreset()).rejects.toThrow('保存 TaskNotes 字段设置失败');
+    expect(taskNotes.settings).toEqual(before);
+    expect(store.backup()).toBeDefined();
+  });
+
+  it('rolls back only restore visibility mutations in memory when saveSettings fails', async () => {
+    const taskNotes = runtime();
+    const store = backupStore();
+    const controller = new TaskNotesFieldGovernanceController(taskNotes, store);
+    await controller.applyPreset();
+    const beforeRestore = structuredClone(taskNotes.settings);
+    taskNotes.saveSettings.mockRejectedValueOnce(new Error('save failed'));
+
+    await expect(controller.restorePreset()).rejects.toThrow('保存 TaskNotes 字段设置失败');
+    expect(taskNotes.settings).toEqual(beforeRestore);
+  });
+
+  it('fails closed if governed visibility changes while the first backup is persisted', async () => {
+    const taskNotes = runtime();
+    const store = backupStore(undefined, async () => {
+      field(taskNotes.settings, 'tags').visibleInCreation = true;
+    });
+    const controller = new TaskNotesFieldGovernanceController(taskNotes, store);
+
+    await expect(controller.applyPreset()).rejects.toThrow('TaskNotes 配置已变更，请重试');
+    expect(taskNotes.saveSettings).not.toHaveBeenCalled();
+  });
+
+  it('serializes overlapping operations against the live runtime', async () => {
+    let releaseFirstSave: (() => void) | undefined;
+    const firstSaveStarted = new Promise<void>((resolve) => {
+      releaseFirstSave = resolve;
+    });
+    let saveCalls = 0;
+    const taskNotes = runtime(settingsFixture(), vi.fn(async () => {
+      saveCalls += 1;
+      if (saveCalls === 1) {
+        await firstSaveStarted;
+      }
+    }));
+    const store = backupStore();
+    const controller = new TaskNotesFieldGovernanceController(taskNotes, store);
+
+    const apply = controller.applyPreset();
+    await vi.waitFor(() => expect(saveCalls).toBe(1));
+    const restore = controller.restorePreset();
+    await Promise.resolve();
+    expect(saveCalls).toBe(1);
+    releaseFirstSave?.();
+    await Promise.all([apply, restore]);
+
+    expect(saveCalls).toBe(2);
+    expect(field(taskNotes.settings, 'tags')).toMatchObject({
+      visibleInCreation: false,
+      visibleInEdit: true,
+    });
   });
 });

@@ -43,29 +43,34 @@ restore, and cannot become a reliable ATL default.
 This gives full UI control but creates a permanent upstream maintenance burden
 and violates ATL's existing integration boundary. Rejected.
 
-### C. Apply a reversible TaskNotes data preset from ATL
+### C. Apply a reversible TaskNotes runtime preset from ATL
 
-ATL updates only the documented field visibility entries in TaskNotes'
-`modalFieldsConfig`. It preserves all task files and unrelated TaskNotes
-settings, records the previous visibility values, and provides a restore
+ATL updates only the documented field visibility entries in the live TaskNotes
+runtime. It preserves all task files and unrelated TaskNotes settings, records
+the previous visibility values in ATL-owned state, and provides a restore
 button. This is the selected approach.
 
 ## Architecture
 
-Add a focused `TaskNotesFieldGovernanceController` owned by the ATL Obsidian
-adapter. It reads `.obsidian/plugins/tasknotes/data.json`, validates the
-supported version and the nine exact field records, and changes only
-`visibleInCreation` and `visibleInEdit` to `false`.
+Add a focused `TaskNotesFieldGovernanceController` that accepts a structural
+TaskNotes runtime adapter: `{ settings: unknown; saveSettings(): Promise<void> }`.
+The installed TaskNotes 4.11.1 runtime was confirmed to expose `settings` plus
+async `saveSettings()` and `saveSettingsDataOnly()`; the controller uses
+`saveSettings()` so TaskNotes owns persistence and save serialization.
 
-Before the first write, the controller stores the previous visibility values in
-`.obsidian/plugins/agent-task-loop/tasknotes-field-layout-backup.json`. The
-backup contains only the nine governed fields, so restoration does not roll
-back unrelated TaskNotes settings changed later.
+The controller validates `modalFieldsConfig.version: 1` and the nine exact
+field records, then changes only `visibleInCreation` and `visibleInEdit` to
+`false`. It receives an ATL-owned backup-store adapter that loads and persists
+the first versioned selective visibility backup. The backup contains only the
+nine governed fields, so restoration does not roll back unrelated TaskNotes
+settings changed later.
 
-All writes are atomic. Symlinks, paths outside the current Vault, malformed
-JSON, unsupported modal configuration versions, duplicate field ids, missing
-fields, or non-boolean visibility values fail closed without changing either
-file.
+Controller operations are serialized per live runtime. After awaiting first
+backup persistence, apply re-reads and revalidates the runtime and fails closed
+when governed visibility changed. A failed TaskNotes save conditionally rolls
+back only the visibility properties still matching ATL's in-memory mutation.
+No ATL code directly reads, writes, renames, links, or otherwise manages
+TaskNotes `data.json`.
 
 ## User Experience
 
@@ -83,6 +88,8 @@ TaskNotes editor to reload its settings. No terminal is required.
 ## Data and Compatibility
 
 - No Markdown task file is read or written by this feature.
+- ATL does not write TaskNotes plugin files directly; TaskNotes persists its own
+  live settings through `saveSettings()`.
 - No field key, display name, order, type, `enabled` value, or user field
   definition is changed.
 - TaskNotes remains independently upgradeable.
@@ -92,18 +99,21 @@ TaskNotes editor to reload its settings. No terminal is required.
 
 ## Error Handling
 
-- Missing TaskNotes data: report unavailable; do not create a synthetic config.
-- Invalid or unsupported config: show a concise error and do not write.
-- Unsafe file or backup path: reject the operation.
-- Failed atomic write: keep the original data file and report failure.
+- Missing or malformed TaskNotes runtime, including a missing `saveSettings()`:
+  report unavailable or reject the operation without mutation.
+- Invalid or unsupported config: show a concise error and do not save.
+- Invalid ATL-owned backup: fail closed and do not save.
+- Failed `saveSettings()`: conditionally roll back only ATL's in-memory
+  visibility mutations and retain the first backup for retry.
 - Missing backup during restore: report that there is nothing to restore.
 
 ## Testing
 
-Unit tests use temporary Vault fixtures and cover status reporting, exact field
-changes, preservation of unrelated settings, idempotent backup, selective
-restore, malformed configuration, duplicate/missing fields, and symlink escape
-rejection. Plugin settings rendering remains covered by the existing settings
+Unit tests use in-memory TaskNotes runtime and ATL backup-store fixtures. They
+cover status reporting, exact field changes, preservation of unrelated
+settings, idempotent first backup, selective restore, malformed runtime
+configuration and backup data, save-failure rollback, and overlapping
+operations. Plugin settings rendering remains covered by the existing settings
 test suite. Final verification runs tests, typecheck, lint, and the production
 build before installing the built plugin into ClawVault.
 
@@ -118,7 +128,8 @@ build before installing the built plugin into ClawVault.
    unrelated TaskNotes settings changed after apply.
 6. The feature is operated entirely from Obsidian settings and communicates the
    restart requirement.
-7. Unsupported or unsafe configurations fail without partial writes.
+7. Unsupported runtime configurations, invalid backups, and failed saves fail
+   closed without direct TaskNotes-file writes.
 
 ## Out of Scope
 

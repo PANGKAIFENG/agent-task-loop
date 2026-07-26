@@ -4,16 +4,21 @@
 
 **Goal:** Add a reversible ATL settings action that hides the nine confirmed low-frequency or system fields from TaskNotes creation and editing without changing task data.
 
-**Architecture:** A standalone controller safely patches TaskNotes `modalFieldsConfig` and stores a selective visibility backup under the ATL plugin directory. The existing ATL settings tab reads controller status and exposes apply/restore actions with restart feedback.
+**Architecture:** A standalone controller validates and mutates TaskNotes'
+live `modalFieldsConfig` through its verified runtime `settings` plus
+`saveSettings()` API. A selective visibility backup belongs to ATL state through
+an injected backup-store adapter. The existing ATL settings tab will later read
+controller status and expose apply/restore actions with restart feedback.
 
-**Tech Stack:** TypeScript, Node.js file APIs, Obsidian Plugin API, JSON, Vitest, Vite, pnpm 10, Node.js 24.
+**Tech Stack:** TypeScript, Obsidian Plugin API, TaskNotes runtime API, JSON,
+Vitest, Vite, pnpm 10, Node.js 24.
 
 ---
 
 ## File Map
 
 - `src/obsidian-plugin/tasknotes-field-governance-controller.ts`: validate, inspect, apply, back up, and restore TaskNotes field visibility.
-- `tests/unit/obsidian-plugin/tasknotes-field-governance-controller.test.ts`: temporary-Vault behavioral and file-safety tests.
+- `tests/unit/obsidian-plugin/tasknotes-field-governance-controller.test.ts`: in-memory runtime, backup-store, save-failure, and serialization tests.
 - `src/obsidian-plugin/main.ts`: controller ownership, settings status, apply/restore buttons, and notices.
 - `tests/unit/obsidian-plugin/settings.test.ts`: settings source assertions for the new user-facing controls.
 - `docs/operations/obsidian-plugin.md`: user instructions and exact governed field list.
@@ -26,8 +31,9 @@
 
 - [ ] **Step 1: Write the failing behavior tests**
 
-Create fixtures containing all nine governed ids plus one retained field. Assert
-that `applyPreset()` changes only each governed field's
+Create live runtime fixtures containing all nine governed ids plus one retained
+field, and an ATL-owned backup-store fixture. Assert that `applyPreset()`
+changes only each governed field's
 `visibleInCreation/visibleInEdit`, preserves `enabled`, user fields and unrelated
 settings, and writes a selective backup.
 
@@ -49,14 +55,16 @@ PATH="$HOME/.nvm/versions/node/v24.15.0/bin:$PATH" \
   pnpm test tests/unit/obsidian-plugin/tasknotes-field-governance-controller.test.ts
 ```
 
-Expected: the test fails because the controller module does not exist.
+Expected: the test fails because the runtime-controller API is not implemented.
 
-- [ ] **Step 3: Implement validation and atomic patching**
+- [ ] **Step 3: Implement runtime validation and TaskNotes-owned persistence**
 
-Export the two paths, the exact governed ids, status type, error class, and
-controller. Require one record for every governed id and boolean visibility
-values. Store a versioned selective backup before atomically replacing the
-TaskNotes data file.
+Export the exact governed ids, runtime/backup-store contracts, versioned backup
+type, status type, error class, and controller. Require one record for every
+governed id and boolean visibility values. Persist the first selective backup
+through ATL before mutating the runtime, then call TaskNotes `saveSettings()`.
+Re-read and validate after backup-store awaits, serialize operations, and
+conditionally roll back in-memory visibility mutations after a failed save.
 
 ```ts
 export const GOVERNED_TASKNOTES_FIELD_IDS = [
@@ -66,11 +74,13 @@ export const GOVERNED_TASKNOTES_FIELD_IDS = [
 ] as const;
 ```
 
-- [ ] **Step 4: Add restore and safety tests**
+- [ ] **Step 4: Add restore and runtime safety tests**
 
 Cover selective restore after an unrelated setting changes, reapply without
-backup replacement, missing/duplicate fields, unsupported version, invalid JSON,
-missing backup, and TaskNotes data reached through a symlink.
+backup replacement, missing/duplicate fields, unsupported version, invalid
+visibility data, missing/malformed runtime or backup, failed saves, and
+overlapping controller operations. Do not add TaskNotes file or symlink tests;
+the controller does not access plugin files.
 
 - [ ] **Step 5: Run the focused test and verify GREEN**
 
