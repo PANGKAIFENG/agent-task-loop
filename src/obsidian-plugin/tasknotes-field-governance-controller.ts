@@ -217,7 +217,13 @@ async function safeParent(path: string, root: string, label: string): Promise<st
   }
 }
 
-async function atomicWrite(path: string, content: string, root: string, label: string): Promise<void> {
+async function atomicWrite(
+  path: string,
+  content: string,
+  expectedContent: string,
+  root: string,
+  label: string,
+): Promise<void> {
   const parent = await safeParent(path, root, label);
   const temporaryPath = join(parent, `.atl-tasknotes-fields-${randomUUID()}.tmp`);
   let handle;
@@ -233,8 +239,12 @@ async function atomicWrite(path: string, content: string, root: string, label: s
     await handle.sync();
     await handle.close();
     handle = undefined;
-    if (await readSafeFile(path, root, label) === null) {
+    const currentContent = await readSafeFile(path, root, label);
+    if (currentContent === null) {
       throw new TaskNotesFieldGovernanceError(`${label}文件不存在，未做任何修改。`);
+    }
+    if (currentContent !== expectedContent) {
+      throw new TaskNotesFieldGovernanceError('TaskNotes 配置已变更，请重试。');
     }
     await rename(temporaryPath, path);
     temporaryExists = false;
@@ -339,7 +349,13 @@ export class TaskNotesFieldGovernanceController {
       field.visibleInCreation = false;
       field.visibleInEdit = false;
     }
-    await atomicWrite(dataPath, JSON.stringify(configuration.document, null, 2), root, 'TaskNotes 数据');
+    await atomicWrite(
+      dataPath,
+      JSON.stringify(configuration.document, null, 2),
+      content,
+      root,
+      'TaskNotes 数据',
+    );
   }
 
   async restorePreset(vaultRoot: string): Promise<void> {
@@ -367,6 +383,12 @@ export class TaskNotesFieldGovernanceController {
       field.visibleInCreation = visibility.visibleInCreation;
       field.visibleInEdit = visibility.visibleInEdit;
     }
-    await atomicWrite(dataPath, JSON.stringify(configuration.document, null, 2), root, 'TaskNotes 数据');
+    await atomicWrite(
+      dataPath,
+      JSON.stringify(configuration.document, null, 2),
+      content,
+      root,
+      'TaskNotes 数据',
+    );
   }
 }

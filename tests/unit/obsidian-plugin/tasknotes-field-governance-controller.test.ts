@@ -9,7 +9,27 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const fsHooks = vi.hoisted(() => ({
+  beforeTaskNotesAtomicWrite: undefined as (() => Promise<void>) | undefined,
+}));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const fs = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...fs,
+    open: async (...args: Parameters<typeof fs.open>) => {
+      const handle = await fs.open(...args);
+      if (typeof args[0] === 'string' && args[0].includes('.atl-tasknotes-fields-')) {
+        const hook = fsHooks.beforeTaskNotesAtomicWrite;
+        fsHooks.beforeTaskNotesAtomicWrite = undefined;
+        await hook?.();
+      }
+      return handle;
+    },
+  };
+});
 
 import {
   GOVERNED_TASKNOTES_FIELD_IDS,
@@ -70,6 +90,7 @@ async function fixture(config = taskNotesConfig()) {
 }
 
 afterEach(async () => {
+  fsHooks.beforeTaskNotesAtomicWrite = undefined;
   await Promise.all(roots.splice(0).map((root) => rm(root, {
     recursive: true,
     force: true,
@@ -155,6 +176,47 @@ describe('TaskNotesFieldGovernanceController', () => {
       applied: true,
       restorable: true,
     });
+  });
+
+  it('rejects apply when TaskNotes changes its data after ATL reads it', async () => {
+    const paths = await fixture();
+    const original = await readFile(paths.dataPath, 'utf8');
+    const taskNotesChange = JSON.parse(original) as TaskNotesConfig;
+    taskNotesChange.generalSetting = { keep: 'changed by TaskNotes' };
+    fsHooks.beforeTaskNotesAtomicWrite = async () => {
+      await writeFile(paths.dataPath, JSON.stringify(taskNotesChange, null, 2), 'utf8');
+    };
+    const controller = new TaskNotesFieldGovernanceController();
+
+    await expect(controller.applyPreset(paths.vaultRoot)).rejects.toThrow(
+      'TaskNotes 配置已变更，请重试',
+    );
+    expect(await readFile(paths.dataPath, 'utf8')).toBe(JSON.stringify(taskNotesChange, null, 2));
+    expect(JSON.parse(await readFile(paths.backupPath, 'utf8'))).toMatchObject({
+      version: 1,
+      fields: {
+        contexts: {
+          visibleInCreation: true,
+          visibleInEdit: false,
+        },
+      },
+    });
+  });
+
+  it('rejects restore when TaskNotes changes its data after ATL reads it', async () => {
+    const paths = await fixture();
+    const controller = new TaskNotesFieldGovernanceController();
+    await controller.applyPreset(paths.vaultRoot);
+    const taskNotesChange = JSON.parse(await readFile(paths.dataPath, 'utf8')) as TaskNotesConfig;
+    taskNotesChange.generalSetting = { keep: 'changed by TaskNotes' };
+    fsHooks.beforeTaskNotesAtomicWrite = async () => {
+      await writeFile(paths.dataPath, JSON.stringify(taskNotesChange, null, 2), 'utf8');
+    };
+
+    await expect(controller.restorePreset(paths.vaultRoot)).rejects.toThrow(
+      'TaskNotes 配置已变更，请重试',
+    );
+    expect(await readFile(paths.dataPath, 'utf8')).toBe(JSON.stringify(taskNotesChange, null, 2));
   });
 
   it('reports applied only while every governed visibility pair is false', async () => {
