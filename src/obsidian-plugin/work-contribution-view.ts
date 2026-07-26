@@ -109,6 +109,14 @@ function formatNumber(value: number): string {
   return new Intl.NumberFormat('zh-CN').format(value);
 }
 
+function formatCompactToken(value: number): string {
+  const absolute = Math.abs(value);
+  if (absolute < 10_000) return formatNumber(value);
+  const divisor = absolute >= 100_000_000 ? 100_000_000 : 10_000;
+  const suffix = divisor === 100_000_000 ? '亿' : '万';
+  return `${Number((value / divisor).toFixed(2))}${suffix}`;
+}
+
 function formatTime(value: string): string {
   const parsed = new Date(value);
   return Number.isFinite(parsed.getTime())
@@ -144,7 +152,12 @@ interface TrendPoint {
   value: number;
 }
 
-function lineChart(points: TrendPoint[], label: string, suffix: string): HTMLDivElement {
+function lineChart(
+  points: TrendPoint[],
+  label: string,
+  suffix: string,
+  formatValue: (value: number) => string = formatNumber,
+): HTMLDivElement {
   const plot = element('div', 'atl-contribution-chart-plot');
   plot.setAttribute('role', 'img');
   plot.setAttribute('aria-label', `${label}，聚焦后可使用左右方向键查看每日数据`);
@@ -190,7 +203,7 @@ function lineChart(points: TrendPoint[], label: string, suffix: string): HTMLDiv
     marker.setAttribute('cx', coordinate.x.toFixed(2));
     marker.setAttribute('cy', coordinate.y.toFixed(2));
     marker.style.display = '';
-    tooltip.textContent = `${point.date} · ${formatNumber(point.value)} ${suffix}`;
+    tooltip.textContent = `${point.date} · ${formatValue(point.value)} ${suffix}`;
     tooltip.style.left = `${coordinate.x}%`;
     tooltip.style.top = `${coordinate.y}%`;
     tooltip.hidden = false;
@@ -538,7 +551,7 @@ export class WorkContributionView extends ItemView {
         ? `${day.completed} 个完成任务，${day.projectCount} 个项目`
         : mode === 'outputs'
           ? `${value} 个有效产出`
-          : `${formatNumber(value)} Normalized Token`;
+          : `${formatCompactToken(value)} Normalized Token`;
       button.setAttribute('aria-label', `${day.date}，${valueLabel}`);
       button.title = `${day.date} · ${valueLabel}`;
       button.style.gridRow = String(row);
@@ -571,7 +584,7 @@ export class WorkContributionView extends ItemView {
     const values = [
       ['本周完成', snapshot === null ? '--' : `${formatNumber(snapshot.kpis.completedThisWeek)} 项`],
       ['今日完成', snapshot === null ? '--' : `${formatNumber(snapshot.kpis.completedToday)} 项`],
-      ['今日 Token', tokenToday === undefined ? '--' : formatNumber(tokenToday.normalized)],
+      ['今日 Token', tokenToday === undefined ? '--' : formatCompactToken(tokenToday.normalized)],
     ];
     const summary = element('div', 'atl-home-pulse-summary');
     const hero = element('div', 'atl-home-pulse-hero');
@@ -637,6 +650,7 @@ export class WorkContributionView extends ItemView {
           value: tokenByDate.get(day.date)?.normalized ?? 0,
         })),
         suffix: 'Token',
+        formatValue: formatCompactToken,
         label: '每日 Normalized Token 趋势',
         className: 'is-token atl-contribution-chart',
       },
@@ -664,8 +678,20 @@ export class WorkContributionView extends ItemView {
       chart.dataset.pointCount = String(definition.points.length);
       const caption = element('div', 'atl-contribution-chart-caption');
       caption.append(element('span', 'atl-contribution-chart-title', definition.title));
-      caption.append(element('strong', 'atl-contribution-chart-total', formatNumber(definition.value)));
-      chart.append(caption, lineChart(definition.points, definition.label, definition.suffix));
+      caption.append(element(
+        'strong',
+        'atl-contribution-chart-total',
+        (definition.formatValue ?? formatNumber)(definition.value),
+      ));
+      chart.append(
+        caption,
+        lineChart(
+          definition.points,
+          definition.label,
+          definition.suffix,
+          definition.formatValue,
+        ),
+      );
       grid.append(chart);
     }
     return grid;

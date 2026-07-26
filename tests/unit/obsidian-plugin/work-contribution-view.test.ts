@@ -377,6 +377,42 @@ describe('WorkContributionView', () => {
     expect(marker.style.display).toBe('none');
   });
 
+  it('formats large Token values with Chinese compact units in trend tooltips', async () => {
+    const base = state();
+    const { view } = setup(state({
+      token: {
+        ...base.token,
+        snapshot: {
+          ...base.token.snapshot!,
+          days: [{
+            ...base.token.snapshot!.days[0]!,
+            normalized: 64_229_257,
+          }],
+        },
+      },
+    }));
+    await view.onOpen();
+
+    const plot = view.contentEl.querySelector<HTMLElement>(
+      '.atl-home-trend.is-token .atl-contribution-chart-plot',
+    )!;
+    vi.spyOn(plot, 'getBoundingClientRect').mockReturnValue({
+      bottom: 40,
+      height: 40,
+      left: 0,
+      right: 300,
+      top: 0,
+      width: 300,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+
+    fireEvent.pointerMove(plot, { clientX: 150 });
+    expect(plot.querySelector('.atl-contribution-chart-tooltip')?.textContent)
+      .toBe('2026-07-20 · 6422.93万 Token');
+  });
+
   it('exposes exact trend values through keyboard focus and arrow keys', async () => {
     const { view } = setup();
     await view.onOpen();
@@ -444,6 +480,40 @@ describe('WorkContributionView', () => {
     ]);
   });
 
+  it('formats today Token and Token trend totals with the same Chinese units', async () => {
+    const base = state();
+    const { view } = setup(state({
+      token: {
+        ...base.token,
+        snapshot: {
+          ...base.token.snapshot!,
+          days: [
+            {
+              ...base.token.snapshot!.days[0]!,
+              normalized: 64_229_257,
+            },
+            {
+              ...base.token.snapshot!.days[0]!,
+              date: '2026-07-21',
+              normalized: 716_000_000,
+            },
+          ],
+        },
+      },
+    }));
+    await view.onOpen();
+
+    const details = [...view.contentEl.querySelectorAll('.atl-home-pulse-detail')];
+    expect(details.find((detail) => detail.querySelector('span')?.textContent === '今日 Token')
+      ?.querySelector('strong')?.textContent).toBe('7.16亿');
+    expect(view.contentEl.querySelector(
+      '.atl-home-trend.is-token .atl-contribution-chart-total',
+    )?.textContent).toBe('7.8亿');
+    expect(view.contentEl.querySelector(
+      '.atl-home-trend.is-task .atl-contribution-chart-total',
+    )?.textContent).toBe('3');
+  });
+
   it('keeps overview previews compact while full tabs show every task', async () => {
     const base = state();
     const focusTasks = Array.from({ length: 4 }, (_, index) => ({
@@ -485,7 +555,19 @@ describe('WorkContributionView', () => {
   });
 
   it('describes heatmap days using the selected contribution mode', async () => {
-    const { view } = setup();
+    const base = state();
+    const { view } = setup(state({
+      token: {
+        ...base.token,
+        snapshot: {
+          ...base.token.snapshot!,
+          days: [{
+            ...base.token.snapshot!.days[0]!,
+            normalized: 64_229_257,
+          }],
+        },
+      },
+    }));
     await view.onOpen();
 
     const outputsMode = [...view.contentEl.querySelectorAll<HTMLButtonElement>('.atl-pulse-mode')]
@@ -500,9 +582,9 @@ describe('WorkContributionView', () => {
       .find((button) => button.textContent === 'AI');
     fireEvent.click(aiMode!);
     expect(view.contentEl.querySelector('[data-date="2026-07-20"]')?.getAttribute('aria-label'))
-      .toContain('180 Normalized Token');
+      .toContain('6422.93万 Normalized Token');
     expect(view.contentEl.querySelector('[data-date="2026-07-20"]')?.getAttribute('title'))
-      .toContain('180 Normalized Token');
+      .toContain('6422.93万 Normalized Token');
   });
 
   it('switches between real task views and marks article consumption as pending', async () => {
