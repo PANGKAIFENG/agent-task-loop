@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import * as taskEligibility from '../../../src/obsidian-plugin/task-eligibility.js';
 import {
   isAtlInboxTaskPath,
   isAtlTaskPath,
@@ -8,6 +9,29 @@ import {
 } from '../../../src/obsidian-plugin/task-eligibility.js';
 
 describe('ATL Inbox task eligibility', () => {
+  it('accepts a TaskNotes-native task without requiring an ATL filename', () => {
+    const isTaskNotesTaskPath = (taskEligibility as unknown as {
+      isTaskNotesTaskPath?: (
+        path: string,
+        frontmatter: Record<string, unknown> | null,
+      ) => boolean;
+    }).isTaskNotesTaskPath;
+
+    expect(isTaskNotesTaskPath).toBeTypeOf('function');
+    expect(isTaskNotesTaskPath?.(
+      '10_Tasks/Inbox/实验：工作流skill完善.md',
+      { type: 'task', status: 'ready' },
+    )).toBe(true);
+    expect(isTaskNotesTaskPath?.(
+      '10_Tasks/Inbox/普通笔记.md',
+      { type: 'note' },
+    )).toBe(false);
+    expect(isTaskNotesTaskPath?.(
+      '10_Tasks/Views/任务说明.md',
+      { type: 'task' },
+    )).toBe(false);
+  });
+
   it.each([
     '10_Tasks/Inbox/2026-07-16/task-20260716-abc12345.md',
     '10_Tasks/Inbox/undated/task-manual.md',

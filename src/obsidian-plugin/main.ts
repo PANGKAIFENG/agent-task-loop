@@ -101,6 +101,7 @@ import {
 import {
   isAtlInboxTaskPath,
   isAtlTaskPath,
+  isTaskNotesTaskPath,
   taskIdFromMetadata,
   taskIdFromPath,
 } from './task-eligibility.js';
@@ -134,7 +135,10 @@ import {
   taskNotesFieldControlState,
 } from './tasknotes-field-governance-plugin-integration.js';
 import { SerializedSettingsWriter } from './serialized-settings-writer.js';
-import { TaskBriefController } from './task-brief-controller.js';
+import {
+  TaskBriefController,
+  TaskNotesTaskBriefController,
+} from './task-brief-controller.js';
 import { generateTaskBrief } from './task-brief-generation.js';
 import { TaskBriefModal } from './task-brief-modal.js';
 import { TaskBriefPluginLifecycle } from './task-brief-plugin-lifecycle.js';
@@ -305,6 +309,14 @@ export default class AgentTaskLoopPlugin extends Plugin {
         ));
       },
       getActiveFilePath: () => this.app.workspace.getActiveFile()?.path ?? null,
+      isTaskPath: (path) => {
+        if (isAtlTaskPath(path)) return true;
+        const file = this.app.vault.getAbstractFileByPath(path);
+        return file instanceof TFile && isTaskNotesTaskPath(
+          path,
+          this.app.metadataCache.getFileCache(file)?.frontmatter,
+        );
+      },
       open: (path) => {
         void this.openTaskBrief(path);
       },
@@ -1232,14 +1244,60 @@ export default class AgentTaskLoopPlugin extends Plugin {
     const authorized = this.authorizedServiceContext();
     if (authorized === null) return;
     const file = this.app.vault.getAbstractFileByPath(path);
-    if (!(file instanceof TFile) || !isAtlTaskPath(file.path)) {
-      new Notice('请选择有效的 ATL 任务');
+    if (!(file instanceof TFile)) {
+      new Notice('请选择有效的 TaskNotes 任务');
+      return;
+    }
+
+    let raw: string;
+    try {
+      raw = await this.app.vault.cachedRead(file);
+    } catch {
+      new Notice('无法读取这项任务，请刷新看板后重试');
+      return;
+    }
+    const atlTask = isAtlTaskPath(file.path);
+    const taskNotesTask = isTaskNotesTaskPath(file.path, raw);
+    if (!atlTask && !taskNotesTask) {
+      new Notice('请选择有效的 TaskNotes 任务');
+      return;
+    }
+
+    if (taskNotesTask && !atlTask) {
+      const controller = new TaskNotesTaskBriefController({
+        path: file.path,
+        read: (taskPath) => authorized.adapter.read(taskPath),
+        process: async (taskPath, update) => {
+          if (!this.settings.allowVaultManagement) {
+            throw new Error('vault_management_disabled');
+          }
+          const target = this.app.vault.getAbstractFileByPath(taskPath);
+          if (!(target instanceof TFile)) throw new Error('task_not_found');
+          return this.app.vault.process(target, update);
+        },
+        appendAudit: (event) => authorized.context.audit.append(event),
+        clock: authorized.context.clock,
+      });
+      try {
+        const prepared = await controller.prepare();
+        new TaskBriefModal(
+          this.app,
+          controller,
+          prepared,
+          async (input) => generateTaskBrief(
+            await this.createStructuredExecutor(),
+            input,
+          ),
+        ).open();
+      } catch {
+        new Notice('无法读取这项任务，请刷新看板后重试');
+      }
       return;
     }
 
     let taskId: string | null;
     try {
-      taskId = taskIdFromMetadata(file.path, await this.app.vault.cachedRead(file));
+      taskId = taskIdFromMetadata(file.path, raw);
     } catch {
       taskId = taskIdFromMetadata(
         file.path,

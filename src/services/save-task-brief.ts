@@ -51,7 +51,13 @@ const saveTaskBriefInputSchema: z.ZodType<SaveTaskBriefInput> = z
   })
   .strict();
 
-function nextTaskBriefTimestamp(now: Date, previous: string | null): string {
+export function validateTaskBriefInput(input: SaveTaskBriefInput): SaveTaskBriefInput {
+  const parsed = saveTaskBriefInputSchema.safeParse(input);
+  if (!parsed.success) throw new InvalidTaskBriefInputError();
+  return parsed.data;
+}
+
+export function nextTaskBriefTimestamp(now: Date, previous: string | null): string {
   const timestamp = now.toISOString();
   if (previous === null) return timestamp;
   const previousTime = Date.parse(previous);
@@ -65,8 +71,7 @@ export async function saveTaskBrief(
   input: SaveTaskBriefInput,
   expectedTaskBriefUpdatedAt: string | null,
 ): Promise<Task> {
-  const parsed = saveTaskBriefInputSchema.safeParse(input);
-  if (!parsed.success) throw new InvalidTaskBriefInputError();
+  const parsed = validateTaskBriefInput(input);
 
   return ctx.tasks.withTaskLock(taskId, async () => {
     const original = await ctx.tasks.get(taskId);
@@ -82,7 +87,7 @@ export async function saveTaskBrief(
       ...original,
       taskBrief: {
         schemaVersion: 1,
-        ...parsed.data,
+        ...parsed,
         updatedAt: timestamp,
       },
       updatedAt: timestamp,

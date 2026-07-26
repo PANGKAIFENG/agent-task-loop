@@ -7,6 +7,7 @@ import {
 } from '../../../src/obsidian-plugin/task-brief-plugin-lifecycle.js';
 
 const TASK_PATH = '10_Tasks/Active/personal/task-synthetic-brief.md';
+const TASKNOTES_PATH = '10_Tasks/Inbox/实验：工作流skill完善.md';
 
 function fixture() {
   let activePath: string | null = TASK_PATH;
@@ -19,6 +20,7 @@ function fixture() {
       fileMenu = handler;
     },
     getActiveFilePath: () => activePath,
+    isTaskPath: (path: string) => path === TASK_PATH || path === TASKNOTES_PATH,
     open,
   });
   return {
@@ -110,5 +112,19 @@ describe('TaskBriefPluginLifecycle', () => {
     expect(regularMenu.items).toEqual([]);
     taskMenu.items[0]!.callback();
     expect(context.open).toHaveBeenCalledWith(TASK_PATH);
+  });
+
+  it('exposes the command and file-menu action for a TaskNotes-native task', () => {
+    const context = fixture();
+    context.setActivePath(TASKNOTES_PATH);
+    context.lifecycle.start();
+    const command = context.commands[0]!;
+    const taskMenu = menu();
+
+    expect(command.checkCallback(true)).toBe(true);
+    context.invokeFileMenu(taskMenu.value, TASKNOTES_PATH);
+    expect(taskMenu.items).toEqual([expect.objectContaining({
+      title: '智能完善任务',
+    })]);
   });
 });

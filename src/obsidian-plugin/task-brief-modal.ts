@@ -7,8 +7,8 @@ import {
 
 import { InvalidTaskBriefInputError } from '../services/save-task-brief.js';
 import {
-  TaskBriefController,
   type PreparedTaskBrief,
+  type TaskBriefSaver,
 } from './task-brief-controller.js';
 import type {
   TaskBriefDraft,
@@ -47,7 +47,7 @@ export class TaskBriefModal extends Modal {
 
   constructor(
     app: App,
-    private readonly controller: TaskBriefController,
+    private readonly controller: TaskBriefSaver,
     private readonly prepared: PreparedTaskBrief,
     private readonly generate?: (
       input: TaskBriefGenerationInput,
