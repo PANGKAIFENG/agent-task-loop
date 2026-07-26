@@ -134,6 +134,10 @@ import {
   taskNotesFieldControlState,
 } from './tasknotes-field-governance-plugin-integration.js';
 import { SerializedSettingsWriter } from './serialized-settings-writer.js';
+import { TaskBriefController } from './task-brief-controller.js';
+import { generateTaskBrief } from './task-brief-generation.js';
+import { TaskBriefModal } from './task-brief-modal.js';
+import { TaskBriefPluginLifecycle } from './task-brief-plugin-lifecycle.js';
 
 const CARD_THEME_CLASS = 'atl-task-card-theme';
 
@@ -285,6 +289,24 @@ export default class AgentTaskLoopPlugin extends Plugin {
       getActiveFilePath: () => this.app.workspace.getActiveFile()?.path ?? null,
       open: (path) => {
         void this.openMeetingTranscript(path);
+      },
+    }).start();
+
+    new TaskBriefPluginLifecycle({
+      addCommand: (command) => {
+        this.addCommand(command);
+      },
+      registerFileMenu: (handler) => {
+        this.registerEvent(this.app.workspace.on(
+          'file-menu',
+          (menu: Menu, file: TAbstractFile) => {
+            if (file instanceof TFile) handler(menu, file.path);
+          },
+        ));
+      },
+      getActiveFilePath: () => this.app.workspace.getActiveFile()?.path ?? null,
+      open: (path) => {
+        void this.openTaskBrief(path);
       },
     }).start();
 
@@ -1203,6 +1225,46 @@ export default class AgentTaskLoopPlugin extends Plugin {
       ).open();
     } catch {
       new Notice('无法读取这项 Inbox 任务，请刷新看板后重试');
+    }
+  }
+
+  private async openTaskBrief(path: string): Promise<void> {
+    const authorized = this.authorizedServiceContext();
+    if (authorized === null) return;
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile) || !isAtlTaskPath(file.path)) {
+      new Notice('请选择有效的 ATL 任务');
+      return;
+    }
+
+    let taskId: string | null;
+    try {
+      taskId = taskIdFromMetadata(file.path, await this.app.vault.cachedRead(file));
+    } catch {
+      taskId = taskIdFromMetadata(
+        file.path,
+        this.app.metadataCache.getFileCache(file)?.frontmatter,
+      );
+    }
+    if (taskId === null) {
+      new Notice('无法识别这项 ATL 任务');
+      return;
+    }
+
+    const controller = new TaskBriefController(authorized.context);
+    try {
+      const prepared = await controller.prepare(taskId);
+      new TaskBriefModal(
+        this.app,
+        controller,
+        prepared,
+        async (input) => generateTaskBrief(
+          await this.createStructuredExecutor(),
+          input,
+        ),
+      ).open();
+    } catch {
+      new Notice('无法读取这项任务，请刷新看板后重试');
     }
   }
 
