@@ -576,7 +576,7 @@ describe('WorkContributionView', () => {
     expect(view.contentEl.querySelector('[data-date="2026-07-20"]')?.getAttribute('aria-label'))
       .toContain('1 个有效产出');
     expect(view.contentEl.querySelector('[data-date="2026-07-20"]')?.getAttribute('title'))
-      .toContain('1 个有效产出');
+      .toBeNull();
 
     const aiMode = [...view.contentEl.querySelectorAll<HTMLButtonElement>('.atl-pulse-mode')]
       .find((button) => button.textContent === 'AI');
@@ -584,7 +584,7 @@ describe('WorkContributionView', () => {
     expect(view.contentEl.querySelector('[data-date="2026-07-20"]')?.getAttribute('aria-label'))
       .toContain('6422.93万 Normalized Token');
     expect(view.contentEl.querySelector('[data-date="2026-07-20"]')?.getAttribute('title'))
-      .toContain('6422.93万 Normalized Token');
+      .toBeNull();
   });
 
   it('switches between real task views and marks article consumption as pending', async () => {
