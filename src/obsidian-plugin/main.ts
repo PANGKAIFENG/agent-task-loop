@@ -133,6 +133,7 @@ import {
   createTaskNotesFieldGovernancePluginIntegration,
   taskNotesFieldControlState,
 } from './tasknotes-field-governance-plugin-integration.js';
+import { SerializedSettingsWriter } from './serialized-settings-writer.js';
 
 const CARD_THEME_CLASS = 'atl-task-card-theme';
 
@@ -198,6 +199,9 @@ function isContributionDataPath(path: string): boolean {
 export default class AgentTaskLoopPlugin extends Plugin {
   settings: AtlPluginSettings = DEFAULT_SETTINGS;
   readonly boardAppearance = new BoardAppearanceController();
+  private readonly settingsWriter = new SerializedSettingsWriter<AtlPluginSettings>(
+    (snapshot) => this.saveData(snapshot),
+  );
   private syncScanInFlight: Promise<void> | null = null;
   private unifiedCalendarOpenInFlight: Promise<void> | null = null;
   private taskLifecycleReconciliation: TaskLifecycleReconciliationController | null = null;
@@ -346,7 +350,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
 
   async saveSettings(): Promise<void> {
     this.applyTaskCardTheme();
-    await this.saveData(this.settings);
+    await this.settingsWriter.write(structuredClone(this.settings));
   }
 
   createTaskNotesFieldGovernanceIntegration() {

@@ -9,6 +9,7 @@ import {
   taskNotesFieldControlState,
   type TaskNotesFieldGovernanceActions,
 } from '../../../src/obsidian-plugin/tasknotes-field-governance-plugin-integration.js';
+import { SerializedSettingsWriter } from '../../../src/obsidian-plugin/serialized-settings-writer.js';
 
 function runtimeSettings() {
   return {
@@ -109,6 +110,53 @@ describe('TaskNotes field governance plugin integration', () => {
 
     expect(settings).not.toHaveProperty('taskNotesFieldLayoutBackup');
     expect(runtime.saveSettings).not.toHaveBeenCalled();
+  });
+
+  it('persists the field backup after an earlier stale ATL settings save', async () => {
+    const runtime = validRuntime();
+    const settings: { allowVaultManagement: boolean; taskNotesFieldLayoutBackup?: unknown } = {
+      allowVaultManagement: true,
+    };
+    let releaseFirstWrite: (() => void) | undefined;
+    const firstWriteBlocked = new Promise<void>((resolve) => {
+      releaseFirstWrite = resolve;
+    });
+    let firstWriteStarted: (() => void) | undefined;
+    const firstWriteRunning = new Promise<void>((resolve) => {
+      firstWriteStarted = resolve;
+    });
+    let persistedSettings: typeof settings | undefined;
+    let writeCount = 0;
+    const writer = new SerializedSettingsWriter<typeof settings>(async (snapshot) => {
+      writeCount += 1;
+      if (writeCount === 1) {
+        firstWriteStarted?.();
+        await firstWriteBlocked;
+      }
+      persistedSettings = structuredClone(snapshot);
+    });
+    const staleSave = writer.write(structuredClone(settings));
+    await firstWriteRunning;
+    const integration = createTaskNotesFieldGovernancePluginIntegration({
+      registry: { getPlugin: vi.fn(() => runtime) },
+      getSettings: () => settings,
+      saveSettings: () => writer.write(structuredClone(settings)),
+      notice: vi.fn(),
+    });
+
+    const apply = integration.apply();
+    await Promise.resolve();
+
+    expect(writeCount).toBe(1);
+    expect(runtime.saveSettings).not.toHaveBeenCalled();
+    releaseFirstWrite?.();
+    await Promise.all([staleSave, apply]);
+
+    expect(writeCount).toBe(2);
+    expect(persistedSettings?.taskNotesFieldLayoutBackup).toBeDefined();
+    expect(runtime.settings.modalFieldsConfig.fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({ visibleInCreation: false, visibleInEdit: false }),
+    ]));
   });
 
   it('does not invoke the controller when Vault management is disabled', async () => {

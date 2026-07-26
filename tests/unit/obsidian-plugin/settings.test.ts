@@ -334,6 +334,8 @@ describe('TaskNotes editor field settings integration', () => {
   it('keeps the TaskNotes field controls labeled in Chinese without reading plugin files', async () => {
     const source = await readFile(resolve('src/obsidian-plugin/main.ts'), 'utf8');
 
+    expect(source).toContain('private readonly settingsWriter = new SerializedSettingsWriter');
+    expect(source).toContain('await this.settingsWriter.write(structuredClone(this.settings))');
     expect(source).toContain(".setName('任务编辑字段')");
     expect(source).toContain(".setButtonText('应用精简字段')");
     expect(source).toContain(".setButtonText('恢复原字段')");
