@@ -52,7 +52,27 @@ Agent Task Loop（ATL）负责收集、去重、任务文件和可选的 AI 能�
 
 开启同一设置区的“ATL 紧凑卡片”后，过长的日历标题会限制在事件卡片内，超出部分显示为 `...`。这个显示优化不会修改任务标题，也不会改变 TaskNotes 的拖动、缩放或点击行为。TaskNotes 仍是独立插件，ATL 不会修改它的插件文件。
 
-### 3. 自定义状态
+### 3. 精简任务编辑字段
+
+在“设置 → Agent Task Loop → 任务看板 → 任务编辑字段”点击“应用精简字段”。ATL 会在 TaskNotes 的新建和编辑面板中隐藏以下低频或系统字段：
+
+| 面板字段 | 字段 ID |
+| --- | --- |
+| Contexts | `contexts` |
+| Tags | `tags` |
+| TaskNotes projects | `projects` |
+| Blocked by | `blocked-by` |
+| Blocking | `blocking` |
+| ATL project | `atl_project_id` |
+| Confirmation state | `atl_review_state` |
+| Task ID | `atl_task_id` |
+| Review feedback | `atl_review_feedback` |
+
+这只改变字段在 TaskNotes 编辑器中的可见性：已有 Markdown 属性和值不会被删除或重命名，任务状态、看板和日历也不会变。`atl_auto_executable`、`atl_origin` 和 `atl_artifact_refs` 仍保持原样。
+
+ATL 会保留首次应用前的可见性备份。需要撤销时，在同一位置点击“恢复原字段”。无论应用还是恢复，都要完全重启 Obsidian 后才会在 TaskNotes 编辑器中生效；整个过程不需要终端。
+
+### 4. 自定义状态
 
 四列只是默认值。需要“等待回复”“以后再做”等列时，在 TaskNotes 的状态设置中增加状态值和显示名称，再把它加入相应视图。ATL 支持安全的自定义状态字符串并原样保存。
 
