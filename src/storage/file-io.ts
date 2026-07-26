@@ -220,6 +220,98 @@ export async function atomicWriteTextFile(
   }
 }
 
+export async function atomicReplaceSafeTextFile(
+  targetPath: string,
+  expectedContent: string,
+  content: string,
+  boundary: StorageReadBoundary,
+): Promise<boolean> {
+  const temporaryPath = `${targetPath}.${randomUUID()}.tmp`;
+  let targetHandle: FileHandle | undefined;
+  let temporaryHandle: FileHandle | undefined;
+  let createdIdentity: { dev: number | bigint; ino: number | bigint } | undefined;
+
+  try {
+    if (!isStrictlyWithin(resolve(boundary.subtree), resolve(targetPath))) {
+      throw new InvalidStorageEntryError();
+    }
+    const { canonicalSubtree, directoryIdentities } = await prepareSafeWritableSubtree(
+      boundary,
+      false,
+    );
+    const targetDirectoryIdentities = await safeDirectoryChain(
+      boundary.subtree,
+      dirname(targetPath),
+      false,
+    );
+    const targetPathStat = await lstat(targetPath);
+    if (targetPathStat.isSymbolicLink() || !targetPathStat.isFile()) {
+      throw new InvalidStorageEntryError();
+    }
+    targetHandle = await open(targetPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const openedTargetStat = await targetHandle.stat();
+    if (!openedTargetStat.isFile() || !sameIdentity(targetPathStat, openedTargetStat)) {
+      throw new InvalidStorageEntryError();
+    }
+    if (await targetHandle.readFile('utf8') !== expectedContent) return false;
+
+    temporaryHandle = await open(
+      temporaryPath,
+      constants.O_WRONLY
+        | constants.O_CREAT
+        | constants.O_EXCL
+        | constants.O_NOFOLLOW,
+      0o600,
+    );
+    const openedTemporaryStat = await temporaryHandle.stat();
+    if (!openedTemporaryStat.isFile()) {
+      throw new InvalidStorageEntryError();
+    }
+    createdIdentity = {
+      dev: openedTemporaryStat.dev,
+      ino: openedTemporaryStat.ino,
+    };
+    await temporaryHandle.writeFile(content, 'utf8');
+    await temporaryHandle.sync();
+    await temporaryHandle.close();
+    temporaryHandle = undefined;
+
+    const [temporaryStat, canonicalTemporaryPath, finalTargetStat] = await Promise.all([
+      lstat(temporaryPath),
+      realpath(temporaryPath),
+      lstat(targetPath),
+    ]);
+    if (
+      temporaryStat.isSymbolicLink()
+      || !temporaryStat.isFile()
+      || !sameIdentity(createdIdentity, temporaryStat)
+      || !isStrictlyWithin(canonicalSubtree, canonicalTemporaryPath)
+      || finalTargetStat.isSymbolicLink()
+      || !finalTargetStat.isFile()
+      || !sameIdentity(openedTargetStat, finalTargetStat)
+      || !(await directoryChainMatches(directoryIdentities))
+      || !(await directoryChainMatches(targetDirectoryIdentities))
+    ) {
+      throw new InvalidStorageEntryError();
+    }
+
+    await rename(temporaryPath, targetPath);
+    createdIdentity = undefined;
+    return true;
+  } catch (error) {
+    if (error instanceof InvalidStorageEntryError || isUnsafePathError(error)) {
+      throw new InvalidStorageEntryError();
+    }
+    throw error;
+  } finally {
+    await targetHandle?.close();
+    await temporaryHandle?.close();
+    if (createdIdentity !== undefined) {
+      await unlinkCreatedFile(temporaryPath, createdIdentity);
+    }
+  }
+}
+
 export async function atomicCreateTextFile(
   targetPath: string,
   content: string,
@@ -702,6 +794,7 @@ async function safeDirectoryChain(
 
 async function prepareSafeWritableSubtree(
   boundary: StorageReadBoundary,
+  createMissing = true,
 ): Promise<{
   canonicalSubtree: string;
   directoryIdentities: PathIdentity[];
@@ -718,7 +811,7 @@ async function prepareSafeWritableSubtree(
   const directoryIdentities = await safeDirectoryChain(
     boundary.vaultRoot,
     boundary.subtree,
-    true,
+    createMissing,
   );
   const [canonicalVaultRoot, canonicalTasksRoot, canonicalSubtree] = await Promise.all([
     realpath(boundary.vaultRoot),
