@@ -10,7 +10,7 @@ import {
   stat,
   unlink,
 } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative } from 'node:path';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 
 export const TASKNOTES_DATA_PATH = '.obsidian/plugins/tasknotes/data.json';
 export const TASKNOTES_FIELD_LAYOUT_BACKUP_PATH =
@@ -80,9 +80,30 @@ async function canonicalVault(vaultRoot: string): Promise<string> {
   }
 }
 
+async function rejectSymlinkPathComponents(path: string, root: string, label: string): Promise<void> {
+  const difference = relative(root, path);
+  if (!isWithin(root, path)) {
+    throw new TaskNotesFieldGovernanceError(`${label}文件不安全，未做任何修改。`);
+  }
+  let current = root;
+  for (const component of difference.split(sep).filter(Boolean)) {
+    current = join(current, component);
+    try {
+      if ((await lstat(current)).isSymbolicLink()) {
+        throw new TaskNotesFieldGovernanceError(`${label}文件不安全，未做任何修改。`);
+      }
+    } catch (error) {
+      if (hasCode(error, 'ENOENT')) return;
+      if (error instanceof TaskNotesFieldGovernanceError) throw error;
+      throw new TaskNotesFieldGovernanceError(`${label}文件不安全，未做任何修改。`);
+    }
+  }
+}
+
 async function readSafeFile(path: string, root: string, label: string): Promise<string | null> {
   let handle;
   try {
+    await rejectSymlinkPathComponents(path, root, label);
     const metadata = await lstat(path);
     if (metadata.isSymbolicLink() || !metadata.isFile()) {
       throw new TaskNotesFieldGovernanceError(`${label}文件不安全，未做任何修改。`);
@@ -185,7 +206,9 @@ function parseBackup(content: string): FieldLayoutBackup {
 
 async function safeParent(path: string, root: string, label: string): Promise<string> {
   try {
+    await rejectSymlinkPathComponents(dirname(path), root, label);
     await mkdir(dirname(path), { recursive: true });
+    await rejectSymlinkPathComponents(dirname(path), root, label);
     const parent = await realpath(dirname(path));
     if (!isWithin(root, parent)) throw new Error('outside vault');
     return parent;

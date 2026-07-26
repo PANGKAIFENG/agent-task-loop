@@ -280,4 +280,21 @@ describe('TaskNotesFieldGovernanceController', () => {
     expect(await readFile(outsidePath, 'utf8')).toBe(outsideContent);
     await expect(readFile(paths.backupPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
+
+  it('rejects a TaskNotes parent directory symlink even when its target remains in the Vault', async () => {
+    const paths = await fixture();
+    const taskNotesDirectory = dirname(paths.dataPath);
+    const targetDirectory = join(paths.vaultRoot, 'real-tasknotes');
+    const targetPath = join(targetDirectory, 'data.json');
+    const targetContent = await readFile(paths.dataPath, 'utf8');
+    await mkdir(targetDirectory);
+    await writeFile(targetPath, targetContent, 'utf8');
+    await rm(taskNotesDirectory, { recursive: true, force: true });
+    await symlink(targetDirectory, taskNotesDirectory);
+    const controller = new TaskNotesFieldGovernanceController();
+
+    await expect(controller.applyPreset(paths.vaultRoot)).rejects.toThrow('TaskNotes 数据文件不安全');
+    expect(await readFile(targetPath, 'utf8')).toBe(targetContent);
+    await expect(readFile(paths.backupPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
 });
