@@ -553,7 +553,6 @@ export class WorkContributionView extends ItemView {
           ? `${value} 个有效产出`
           : `${formatCompactToken(value)} Normalized Token`;
       button.setAttribute('aria-label', `${day.date}，${valueLabel}`);
-      button.title = `${day.date} · ${valueLabel}`;
       button.style.gridRow = String(row);
       button.style.gridColumn = String(column);
       if (state.selectedDate === day.date) {
