@@ -20,7 +20,7 @@ export interface ExtractedCandidate {
 }
 
 const extractedCandidateSchema: z.ZodType<ExtractedCandidate> = z.object({
-  title: z.string().trim().min(1).max(200),
+  title: z.string().trim().min(1).max(60),
   summary: z.string().trim().min(1).max(1_000),
   priority: z.enum(PRIORITIES),
   topicKey: z.string().trim().min(1).max(120),
@@ -51,7 +51,12 @@ export const candidateExtractionJsonSchema: Record<string, unknown> = {
           'sourceQuote',
         ],
         properties: {
-          title: { type: 'string', minLength: 1, maxLength: 200 },
+          title: {
+            type: 'string',
+            minLength: 1,
+            maxLength: 60,
+            description: '使用来源语言的简短行动标题，优先使用明确动词 + 对象或成果；只使用来源中存在的信息，不编造对象、结果或承诺。',
+          },
           summary: { type: 'string', minLength: 1, maxLength: 1_000 },
           priority: { type: 'string', enum: [...PRIORITIES] },
           topicKey: { type: 'string', minLength: 1, maxLength: 120 },
@@ -109,7 +114,13 @@ function extractionPrompt(records: readonly SyncSourceRecord[]): string {
     '提取规则：',
     '- 提取明确待办，或有明确行动意图且尚未完成的想法。',
     '- 排除纯资讯、情绪记录、已经完成的行动和没有行动意图的观察。',
+    '- title 使用来源语言。',
+    '- title 写成简短行动短语，优先使用“明确动词 + 对象或成果”，建议 8 到 30 个中文字符，最多 60 个字符。',
+    '- title 保留来源中的具体对象；可以使用调研、评估、整理、设计、补齐、确认、尝试、跟进等明确动作。',
+    '- 不要使用“处理一下”“跟进一下”“看看这个”“了解一下”“弄一下”等只有模糊动作、没有对象或成果的标题。',
+    '- 来源只有模糊动作且无法识别具体对象时，不要生成候选。',
     '- 不要补充项目、任务目标、验收标准、执行权限或来源中不存在的事实。',
+    '- 不编造结果承诺，也不要把来源背景整句复制成 title。',
     '- 每个候选必须引用一条给定记录的 fingerprint。',
     '- topicKey 用简短稳定的中文或英文短语表示预期成果；指向同一个预期成果的记录必须使用完全相同的 topicKey。',
     '- 不确定是否属于同一成果时使用不同 topicKey，不要为了减少数量强行合并。',

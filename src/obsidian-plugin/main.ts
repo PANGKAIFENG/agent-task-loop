@@ -24,6 +24,7 @@ import { recordTaskCompletionDate } from '../services/record-task-completion-dat
 import type { ServiceContext } from '../services/service-context.js';
 import { createVaultWriteAuthorization } from '../storage/task-paths.js';
 import { parseArtifactReference } from '../storage/artifact-reference.js';
+import { MarkdownTaskTitleRepairRepository } from '../storage/markdown-task-title-repair-repository.js';
 import {
   BackgroundRuntimeController,
   createBackgroundRuntimeDependencies,
@@ -105,6 +106,8 @@ import { MeetingCandidateController } from './meeting-candidate-controller.js';
 import { parseDingTalkMeetingSource } from './meeting-note.js';
 import { MeetingPluginLifecycle } from './meeting-plugin-lifecycle.js';
 import { MeetingTranscriptModal } from './meeting-transcript-modal.js';
+import { LegacyTaskTitleRepairController } from './legacy-task-title-repair-controller.js';
+import { LegacyTaskTitleRepairModal } from './legacy-task-title-repair-modal.js';
 
 const CARD_THEME_CLASS = 'atl-task-card-theme';
 
@@ -227,6 +230,13 @@ export default class AgentTaskLoopPlugin extends Plugin {
       name: '打开个人首页',
       callback: () => {
         void this.activateContributionView();
+      },
+    });
+    this.addCommand({
+      id: 'repair-legacy-task-titles',
+      name: '修复旧任务标题',
+      callback: () => {
+        void this.openLegacyTaskTitleRepair();
       },
     });
 
@@ -363,6 +373,50 @@ export default class AgentTaskLoopPlugin extends Plugin {
             }
           }),
       );
+    }, () => this.settings.allowVaultManagement).open();
+  }
+
+  private async openLegacyTaskTitleRepair(): Promise<void> {
+    if (!this.settings.allowVaultManagement) {
+      new Notice('请先在“设置 → Agent Task Loop”中允许 ATL 管理此 Vault');
+      return;
+    }
+    const paths = this.localPluginPaths();
+    if (paths === null) {
+      new Notice('Agent Task Loop 仅支持桌面版本地 Vault');
+      return;
+    }
+    const previewController = new LegacyTaskTitleRepairController(
+      new MarkdownTaskTitleRepairRepository(paths.root),
+    );
+    let preview;
+    try {
+      preview = await previewController.preview();
+    } catch {
+      new Notice('无法扫描旧任务标题，请检查任务文件后重试');
+      return;
+    }
+    if (preview.candidates.length === 0) {
+      new Notice(`已扫描 ${preview.filesScanned} 个 Markdown 文件，没有需要修复的旧任务标题`);
+      return;
+    }
+
+    new LegacyTaskTitleRepairModal(this.app, preview, async () => {
+      if (!this.settings.allowVaultManagement) {
+        throw new Error('vault_management_disabled');
+      }
+      const currentPaths = this.localPluginPaths();
+      if (currentPaths === null || currentPaths.root !== paths.root) {
+        throw new Error('local_vault_changed');
+      }
+      const controller = new LegacyTaskTitleRepairController(
+        new MarkdownTaskTitleRepairRepository(currentPaths.root, {
+          writeAuthorization: createVaultWriteAuthorization(currentPaths.root),
+        }),
+      );
+      const result = await controller.repair(preview);
+      new Notice(`旧任务标题修复完成：成功 ${result.repaired} 个，跳过 ${result.skipped} 个`);
+      return result;
     }, () => this.settings.allowVaultManagement).open();
   }
 

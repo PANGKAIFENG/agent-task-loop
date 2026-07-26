@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   batchCandidateSourceRecords,
+  candidateExtractionJsonSchema,
   extractTaskCandidates,
 } from '../../../src/obsidian-plugin/candidate-extractor.js';
 import type { SyncSourceRecord } from '../../../src/obsidian-plugin/sync-source-reader.js';
@@ -87,8 +88,29 @@ describe('extractTaskCandidates', () => {
     expect(input.prompt).toContain('不要补充项目');
     expect(input.prompt).toContain('topicKey');
     expect(input.prompt).toContain('同一个预期成果');
+    expect(input.prompt).toContain('明确动词 + 对象或成果');
+    expect(input.prompt).toContain('使用来源语言');
+    expect(input.prompt).toContain('处理一下');
+    expect(input.prompt).toContain('无法识别具体对象');
+    expect(input.prompt).toContain('不编造');
     expect(input.prompt).toContain(source.fingerprint);
     expect(input.prompt).toContain(source.content);
+    expect(JSON.stringify(candidateExtractionJsonSchema)).toContain('不编造对象');
+  });
+
+  it('rejects model-generated titles longer than 60 characters', async () => {
+    const source = record(1, '#待办 调研真实存在的工具');
+    const executor = fakeExecutor([{ candidates: [{
+      title: '调'.repeat(61),
+      summary: '比较工具能力与适用场景。',
+      priority: 'normal',
+      topicKey: '工具调研',
+      sourceRecordFingerprint: source.fingerprint,
+      sourceQuote: '#待办 调研真实存在的工具',
+    }] }]);
+
+    await expect(extractTaskCandidates({ records: [source], executor }))
+      .rejects.toThrow();
   });
 
   it.each([

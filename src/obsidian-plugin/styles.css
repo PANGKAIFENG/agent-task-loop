@@ -11,6 +11,51 @@
   width: min(680px, calc(100vw - 32px));
 }
 
+.atl-legacy-title-repair-modal {
+  max-height: min(720px, calc(100vh - 32px));
+  width: min(680px, calc(100vw - 32px));
+}
+
+.atl-legacy-title-repair-boundary {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  line-height: 1.5;
+}
+
+.atl-legacy-title-repair-list {
+  border-block: 1px solid var(--background-modifier-border);
+  max-height: min(390px, calc(100vh - 300px));
+  overflow-y: auto;
+}
+
+.atl-legacy-title-repair-row {
+  border-bottom: 1px solid var(--background-modifier-border);
+  display: grid;
+  gap: 4px;
+  padding: 10px 4px;
+}
+
+.atl-legacy-title-repair-row:last-child {
+  border-bottom: 0;
+}
+
+.atl-legacy-title-repair-row strong,
+.atl-legacy-title-repair-row span {
+  overflow-wrap: anywhere;
+}
+
+.atl-legacy-title-repair-row span {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.atl-legacy-title-repair-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  padding-top: 18px;
+}
+
 .atl-completion-backfill-list {
   border-top: 1px solid var(--background-modifier-border);
   max-height: min(460px, calc(100vh - 250px));
