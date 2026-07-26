@@ -127,11 +127,12 @@ import {
   runAuthorizedWeeklyFocusWrite,
 } from './weekly-focus-vault-gateway.js';
 import {
-  TaskNotesFieldGovernanceController,
   type TaskNotesFieldGovernanceStatus,
-  type TaskNotesFieldLayoutBackup,
-  type TaskNotesRuntimeAdapter,
 } from './tasknotes-field-governance-controller.js';
+import {
+  createTaskNotesFieldGovernancePluginIntegration,
+  taskNotesFieldControlState,
+} from './tasknotes-field-governance-plugin-integration.js';
 
 const CARD_THEME_CLASS = 'atl-task-card-theme';
 
@@ -192,13 +193,6 @@ function isContributionDataPath(path: string): boolean {
   return isAtlTaskPath(path)
     || /^10_Tasks\/Audit\/\d{4}-\d{2}-\d{2}\.jsonl$/u.test(path)
     || /^05_Reviews\/Weekly\/\d{4}-W\d{2} 周度重点\.md$/u.test(path);
-}
-
-function taskNotesRuntimeAdapter(value: unknown): TaskNotesRuntimeAdapter | undefined {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  if (!('settings' in value) || !('saveSettings' in value)) return undefined;
-  if (typeof value.saveSettings !== 'function') return undefined;
-  return value as TaskNotesRuntimeAdapter;
 }
 
 export default class AgentTaskLoopPlugin extends Plugin {
@@ -355,30 +349,15 @@ export default class AgentTaskLoopPlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
-  createTaskNotesFieldGovernanceController(): TaskNotesFieldGovernanceController {
+  createTaskNotesFieldGovernanceIntegration() {
     const appWithPluginRegistry = this.app as typeof this.app & {
       plugins?: { getPlugin(id: string): unknown };
     };
-    const runtime = taskNotesRuntimeAdapter(
-      appWithPluginRegistry.plugins?.getPlugin('tasknotes'),
-    );
-    return new TaskNotesFieldGovernanceController(runtime, {
-      getBackup: async () => this.settings.taskNotesFieldLayoutBackup,
-      persistFirstBackup: async (backup: TaskNotesFieldLayoutBackup) => {
-        const previous = this.settings.taskNotesFieldLayoutBackup;
-        if (previous !== undefined && previous !== null) return;
-        this.settings.taskNotesFieldLayoutBackup = backup;
-        try {
-          await this.saveSettings();
-        } catch (error) {
-          if (previous === undefined) {
-            delete this.settings.taskNotesFieldLayoutBackup;
-          } else {
-            this.settings.taskNotesFieldLayoutBackup = previous;
-          }
-          throw error;
-        }
-      },
+    return createTaskNotesFieldGovernancePluginIntegration({
+      registry: appWithPluginRegistry.plugins,
+      getSettings: () => this.settings,
+      saveSettings: () => this.saveSettings(),
+      notice: (message) => new Notice(message),
     });
   }
 
@@ -1610,31 +1589,24 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
           await this.atlPlugin.saveSettings();
         }));
 
-    const fieldStatus = this.taskNotesFieldStatus;
+    const fieldControlState = taskNotesFieldControlState(
+      this.taskNotesFieldStatus,
+      this.atlPlugin.settings.allowVaultManagement,
+    );
     const fieldSetting = new Setting(containerEl)
       .setName('任务编辑字段')
-      .setDesc(fieldStatus === null
-        ? '正在检查 TaskNotes 任务编辑字段…'
-        : !fieldStatus.available
-          ? 'TaskNotes 未安装或运行时不可用，无法管理字段。'
-          : fieldStatus.applied
-            ? fieldStatus.restorable
-              ? '已隐藏 9 项低频或系统字段；可恢复原字段。'
-              : '已隐藏 9 项低频或系统字段。'
-            : fieldStatus.restorable
-              ? '当前未应用精简字段；已保留可恢复的原字段备份。'
-              : '当前未应用精简字段。');
-    if (fieldStatus?.available === true && !fieldStatus.applied) {
+      .setDesc(fieldControlState.description);
+    if (fieldControlState.showApply) {
       fieldSetting.addButton((button) => button
         .setCta()
         .setButtonText('应用精简字段')
-        .setDisabled(!this.atlPlugin.settings.allowVaultManagement)
+        .setDisabled(fieldControlState.disabled)
         .onClick(() => this.applyTaskNotesFieldPreset()));
     }
-    if (fieldStatus?.available === true && fieldStatus.restorable) {
+    if (fieldControlState.showRestore) {
       fieldSetting.addButton((button) => button
         .setButtonText('恢复原字段')
-        .setDisabled(!this.atlPlugin.settings.allowVaultManagement)
+        .setDisabled(fieldControlState.disabled)
         .onClick(() => this.restoreTaskNotesFieldPreset()));
     }
 
@@ -1701,7 +1673,7 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
     }
     try {
       this.taskNotesFieldStatus = await this.atlPlugin
-        .createTaskNotesFieldGovernanceController()
+        .createTaskNotesFieldGovernanceIntegration()
         .status();
     } finally {
       this.refreshing = false;
@@ -1789,20 +1761,13 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
 
   private async refreshTaskNotesFieldStatus(): Promise<void> {
     this.taskNotesFieldStatus = await this.atlPlugin
-      .createTaskNotesFieldGovernanceController()
+      .createTaskNotesFieldGovernanceIntegration()
       .status();
   }
 
   private async applyTaskNotesFieldPreset(): Promise<void> {
-    if (!this.atlPlugin.settings.allowVaultManagement) {
-      new Notice('请先在“设置 → Agent Task Loop”中允许 ATL 管理此 Vault');
-      return;
-    }
     try {
-      await this.atlPlugin.createTaskNotesFieldGovernanceController().applyPreset();
-      new Notice('已应用精简字段，重启 Obsidian 后生效。');
-    } catch (error) {
-      new Notice(errorMessage(error, '无法应用精简字段'));
+      await this.atlPlugin.createTaskNotesFieldGovernanceIntegration().apply();
     } finally {
       await this.refreshTaskNotesFieldStatus();
       this.display();
@@ -1810,15 +1775,8 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
   }
 
   private async restoreTaskNotesFieldPreset(): Promise<void> {
-    if (!this.atlPlugin.settings.allowVaultManagement) {
-      new Notice('请先在“设置 → Agent Task Loop”中允许 ATL 管理此 Vault');
-      return;
-    }
     try {
-      await this.atlPlugin.createTaskNotesFieldGovernanceController().restorePreset();
-      new Notice('已恢复原字段，重启 Obsidian 后生效。');
-    } catch (error) {
-      new Notice(errorMessage(error, '无法恢复原字段'));
+      await this.atlPlugin.createTaskNotesFieldGovernanceIntegration().restore();
     } finally {
       await this.refreshTaskNotesFieldStatus();
       this.display();

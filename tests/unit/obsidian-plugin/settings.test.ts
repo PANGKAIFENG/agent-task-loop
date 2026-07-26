@@ -331,18 +331,12 @@ describe('normalizeSettings', () => {
 });
 
 describe('TaskNotes editor field settings integration', () => {
-  it('uses the live TaskNotes runtime, ATL backup persistence, and guarded field actions', async () => {
+  it('keeps the TaskNotes field controls labeled in Chinese without reading plugin files', async () => {
     const source = await readFile(resolve('src/obsidian-plugin/main.ts'), 'utf8');
 
-    expect(source).toContain("getPlugin('tasknotes')");
-    expect(source).toContain('TaskNotesFieldGovernanceController');
-    expect(source).toContain('persistFirstBackup');
     expect(source).toContain(".setName('任务编辑字段')");
     expect(source).toContain(".setButtonText('应用精简字段')");
     expect(source).toContain(".setButtonText('恢复原字段')");
-    expect(source).toContain('重启 Obsidian 后生效');
-    expect(source).toMatch(/applyTaskNotesFieldPreset\(\)[\s\S]*?allowVaultManagement/);
-    expect(source).toMatch(/restoreTaskNotesFieldPreset\(\)[\s\S]*?allowVaultManagement/);
     expect(source).not.toContain('tasknotes/data.json');
   });
 });
