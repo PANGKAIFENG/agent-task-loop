@@ -33,14 +33,18 @@ function settingsFixture(): TaskNotesSettings {
           visibleInEdit: index % 2 !== 0,
           preserved: { index },
         })),
-        {
-          id: 'atl_origin',
-          displayName: 'Origin',
+        ...[
+          ['atl_auto_executable', 'Auto executable'],
+          ['atl_origin', 'Origin'],
+          ['atl_artifact_refs', 'Artifact refs'],
+        ].map(([id, displayName]) => ({
+          id: id as string,
+          displayName,
           type: 'text',
           enabled: true,
           visibleInCreation: true,
           visibleInEdit: true,
-        },
+        })),
       ],
     },
   };
@@ -61,6 +65,13 @@ function backupStore(initialBackup?: unknown, onPersist?: () => Promise<void>) {
       if (backup === undefined || backup === null) backup = candidate;
       await onPersist?.();
     }),
+    clearBackupIfMatches: vi.fn(async (candidate: TaskNotesFieldLayoutBackup) => {
+      if (backup === candidate) {
+        backup = undefined;
+        return true;
+      }
+      return false;
+    }),
     backup: () => backup,
   };
 }
@@ -72,6 +83,20 @@ function field(settings: TaskNotesSettings, id: string): Field {
 }
 
 describe('TaskNotesFieldGovernanceController', () => {
+  it('locks the concise preset to the nine confirmed field ids', () => {
+    expect(GOVERNED_TASKNOTES_FIELD_IDS).toEqual([
+      'contexts',
+      'tags',
+      'projects',
+      'blocked-by',
+      'blocking',
+      'atl_project_id',
+      'atl_review_state',
+      'atl_task_id',
+      'atl_review_feedback',
+    ]);
+  });
+
   it('hides only the governed visibility pairs and persists a selective first backup', async () => {
     const taskNotes = runtime();
     const original = structuredClone(taskNotes.settings);
@@ -87,7 +112,9 @@ describe('TaskNotesFieldGovernanceController', () => {
         visibleInEdit: false,
       });
     }
-    expect(field(taskNotes.settings, 'atl_origin')).toEqual(field(original, 'atl_origin'));
+    for (const id of ['atl_auto_executable', 'atl_origin', 'atl_artifact_refs']) {
+      expect(field(taskNotes.settings, id)).toEqual(field(original, id));
+    }
     expect(taskNotes.settings.generalSetting).toEqual(original.generalSetting);
     expect(taskNotes.settings.modalFieldsConfig.userFields).toEqual(
       original.modalFieldsConfig.userFields,
@@ -331,6 +358,10 @@ describe('TaskNotesFieldGovernanceController', () => {
 
     await expect(controller.applyPreset()).rejects.toThrow('TaskNotes 配置已变更，请重试');
     expect(taskNotes.saveSettings).not.toHaveBeenCalled();
+    expect(store.backup()).toBeUndefined();
+    expect(store.clearBackupIfMatches).toHaveBeenCalledOnce();
+
+    await expect(controller.restorePreset()).rejects.toThrow('没有可恢复的 ATL 字段布局备份');
   });
 
   it('serializes overlapping operations against the live runtime', async () => {

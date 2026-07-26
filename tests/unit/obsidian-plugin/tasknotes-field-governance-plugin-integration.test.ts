@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   GOVERNED_TASKNOTES_FIELD_IDS,
+  type TaskNotesFieldGovernanceBackupStore,
   type TaskNotesFieldGovernanceStatus,
+  type TaskNotesFieldLayoutBackup,
 } from '../../../src/obsidian-plugin/tasknotes-field-governance-controller.js';
 import {
   createTaskNotesFieldGovernancePluginIntegration,
@@ -21,6 +23,16 @@ function runtimeSettings() {
         visibleInEdit: index % 2 !== 0,
       })),
     },
+  };
+}
+
+function backupFixture(): TaskNotesFieldLayoutBackup {
+  return {
+    version: 1,
+    fields: Object.fromEntries(GOVERNED_TASKNOTES_FIELD_IDS.map((id, index) => [id, {
+      visibleInCreation: index % 2 === 0,
+      visibleInEdit: index % 2 !== 0,
+    }])) as TaskNotesFieldLayoutBackup['fields'],
   };
 }
 
@@ -110,6 +122,63 @@ describe('TaskNotes field governance plugin integration', () => {
 
     expect(settings).not.toHaveProperty('taskNotesFieldLayoutBackup');
     expect(runtime.saveSettings).not.toHaveBeenCalled();
+  });
+
+  it('persists removal of an ATL backup when the first save persists and then rejects', async () => {
+    const runtime = validRuntime();
+    const settings: { allowVaultManagement: boolean; taskNotesFieldLayoutBackup?: unknown } = {
+      allowVaultManagement: true,
+    };
+    const persistedSettings: typeof settings[] = [];
+    const saveSettings = vi.fn(async () => {
+      persistedSettings.push(structuredClone(settings));
+      if (persistedSettings.length === 1) throw new Error('ATL save failed after persistence');
+    });
+    const integration = createTaskNotesFieldGovernancePluginIntegration({
+      registry: { getPlugin: vi.fn(() => runtime) },
+      getSettings: () => settings,
+      saveSettings,
+      notice: vi.fn(),
+    });
+
+    await integration.apply();
+
+    expect(saveSettings).toHaveBeenCalledTimes(2);
+    expect(persistedSettings[0]).toHaveProperty('taskNotesFieldLayoutBackup');
+    expect(persistedSettings[1]).not.toHaveProperty('taskNotesFieldLayoutBackup');
+    expect(settings).not.toHaveProperty('taskNotesFieldLayoutBackup');
+    expect(runtime.saveSettings).not.toHaveBeenCalled();
+  });
+
+  it('clears only the matching ATL backup and persists its removal', async () => {
+    const settings: { allowVaultManagement: boolean; taskNotesFieldLayoutBackup?: unknown } = {
+      allowVaultManagement: true,
+    };
+    const backup = backupFixture();
+    const saveSettings = vi.fn(async () => undefined);
+    let capturedBackups: TaskNotesFieldGovernanceBackupStore | undefined;
+    const actions = actionFixture({
+      applyPreset: vi.fn(async () => {
+        if (capturedBackups === undefined) throw new Error('missing backup store');
+        await capturedBackups.persistFirstBackup(backup);
+        await expect(capturedBackups.clearBackupIfMatches(backup)).resolves.toBe(true);
+      }),
+    });
+    const integration = createTaskNotesFieldGovernancePluginIntegration({
+      registry: { getPlugin: vi.fn() },
+      getSettings: () => settings,
+      saveSettings,
+      notice: vi.fn(),
+      createActions: (_runtime, backups) => {
+        capturedBackups = backups;
+        return actions;
+      },
+    });
+
+    await integration.apply();
+
+    expect(saveSettings).toHaveBeenCalledTimes(2);
+    expect(settings).not.toHaveProperty('taskNotesFieldLayoutBackup');
   });
 
   it('persists the field backup after an earlier stale ATL settings save', async () => {

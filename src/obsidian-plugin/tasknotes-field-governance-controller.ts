@@ -34,6 +34,7 @@ export interface TaskNotesFieldLayoutBackup {
 export interface TaskNotesFieldGovernanceBackupStore {
   getBackup(): Promise<unknown | null | undefined>;
   persistFirstBackup(backup: TaskNotesFieldLayoutBackup): Promise<void>;
+  clearBackupIfMatches(backup: TaskNotesFieldLayoutBackup): Promise<boolean>;
 }
 
 export interface TaskNotesFieldGovernanceStatus {
@@ -65,7 +66,8 @@ function runtimeAdapter(value: unknown): TaskNotesRuntimeAdapter | undefined {
 function backupStore(value: unknown): TaskNotesFieldGovernanceBackupStore {
   if (!isRecord(value)
     || typeof value.getBackup !== 'function'
-    || typeof value.persistFirstBackup !== 'function') {
+    || typeof value.persistFirstBackup !== 'function'
+    || typeof value.clearBackupIfMatches !== 'function') {
     throw new TaskNotesFieldGovernanceError('ATL 字段布局备份存储不可用。');
   }
   return value as unknown as TaskNotesFieldGovernanceBackupStore;
@@ -270,6 +272,19 @@ async function persistFirstBackup(
   }
 }
 
+async function clearBackupIfMatches(
+  store: TaskNotesFieldGovernanceBackupStore,
+  backup: TaskNotesFieldLayoutBackup,
+): Promise<void> {
+  try {
+    await store.clearBackupIfMatches(backup);
+  } catch {
+    throw new TaskNotesFieldGovernanceError(
+      'TaskNotes 配置已变更，且无法清理本次 ATL 字段布局备份。',
+    );
+  }
+}
+
 export class TaskNotesFieldGovernanceController {
   constructor(
     private readonly runtime: unknown,
@@ -314,6 +329,7 @@ export class TaskNotesFieldGovernanceController {
         await persistFirstBackup(store, firstBackup);
         configuration = parseConfiguration(runtime.settings);
         if (!visibilityEquals(firstBackup, createBackup(configuration))) {
+          await clearBackupIfMatches(store, firstBackup);
           throw new TaskNotesFieldGovernanceError('TaskNotes 配置已变更，请重试。');
         }
       }

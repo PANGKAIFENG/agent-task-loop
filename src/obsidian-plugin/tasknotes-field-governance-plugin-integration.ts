@@ -1,4 +1,5 @@
 import {
+  GOVERNED_TASKNOTES_FIELD_IDS,
   TaskNotesFieldGovernanceController,
   type TaskNotesFieldGovernanceBackupStore,
   type TaskNotesFieldGovernanceStatus,
@@ -42,6 +43,25 @@ const VAULT_PERMISSION_NOTICE = '请先在“设置 → Agent Task Loop”中允
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message.trim() !== '' ? error.message : fallback;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function backupMatches(left: unknown, right: TaskNotesFieldLayoutBackup): boolean {
+  if (!isRecord(left) || left.version !== 1) return false;
+  const fields = left.fields;
+  if (!isRecord(fields)) return false;
+  const fieldIds = Object.keys(fields);
+  if (fieldIds.length !== GOVERNED_TASKNOTES_FIELD_IDS.length) return false;
+  return GOVERNED_TASKNOTES_FIELD_IDS.every((id) => {
+    const leftVisibility = fields[id];
+    const rightVisibility = right.fields[id];
+    return isRecord(leftVisibility)
+      && leftVisibility.visibleInCreation === rightVisibility.visibleInCreation
+      && leftVisibility.visibleInEdit === rightVisibility.visibleInEdit;
+  });
 }
 
 export function taskNotesFieldControlState(
@@ -102,8 +122,28 @@ export function createTaskNotesFieldGovernancePluginIntegration(
         } else {
           settings.taskNotesFieldLayoutBackup = previous;
         }
+        try {
+          await options.saveSettings();
+        } catch {
+          throw new Error('ATL 字段布局备份保存失败，且回滚保存失败；持久化状态可能不一致。');
+        }
         throw error;
       }
+    },
+    clearBackupIfMatches: async (backup: TaskNotesFieldLayoutBackup) => {
+      const settings = options.getSettings();
+      if (!backupMatches(settings.taskNotesFieldLayoutBackup, backup)) return false;
+      delete settings.taskNotesFieldLayoutBackup;
+      try {
+        await options.saveSettings();
+      } catch {
+        try {
+          await options.saveSettings();
+        } catch {
+          throw new Error('ATL 字段布局备份清理失败；持久化状态可能不一致。');
+        }
+      }
+      return true;
     },
   };
 
