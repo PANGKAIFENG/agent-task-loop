@@ -25,6 +25,38 @@ export function isAtlTaskPath(path: string): boolean {
     && TASK_FILENAME.test(filename);
 }
 
+export function isTaskNotesTaskPath(
+  path: string,
+  frontmatter: Record<string, unknown> | string | null | undefined,
+): boolean {
+  if (!path.startsWith(ATL_TASK_PREFIX) || !hasSafeSegments(path)) {
+    return false;
+  }
+  const segments = path.slice(ATL_TASK_PREFIX.length).split('/');
+  const [lifecycle] = segments;
+  const filename = segments.at(-1) ?? '';
+  if (
+    lifecycle === undefined
+    || !LIFECYCLE_FOLDERS.has(lifecycle)
+    || segments.length < 2
+    || !filename.endsWith('.md')
+  ) {
+    return false;
+  }
+
+  let data: Record<string, unknown> | null = null;
+  if (typeof frontmatter === 'string') {
+    try {
+      data = parseTaskDocument(frontmatter).data;
+    } catch {
+      return false;
+    }
+  } else {
+    data = frontmatter ?? null;
+  }
+  return data?.type === 'task';
+}
+
 export function isAtlInboxTaskPath(path: string): boolean {
   if (
     !path.startsWith(ATL_INBOX_PREFIX)

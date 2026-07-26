@@ -2,6 +2,17 @@
   width: min(640px, calc(100vw - 32px));
 }
 
+.atl-task-brief-modal {
+  max-height: min(820px, calc(100vh - 32px));
+  width: min(680px, calc(100vw - 32px));
+}
+
+.atl-task-brief-modal .modal-content {
+  max-height: calc(100vh - 76px);
+  overflow-y: auto;
+  padding-bottom: 8px;
+}
+
 .atl-quick-capture-modal {
   width: min(600px, calc(100vw - 32px));
 }
@@ -345,6 +356,89 @@
   resize: vertical;
 }
 
+.atl-task-brief-context {
+  align-items: center;
+  border-block: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--font-ui-small);
+  gap: 6px 12px;
+  padding: 10px 0;
+}
+
+.atl-task-brief-context strong {
+  color: var(--text-normal);
+}
+
+.atl-task-brief-banner {
+  border-inline-start: 3px solid var(--color-orange);
+  color: var(--text-normal);
+  line-height: 1.5;
+  margin: 14px 0 4px;
+  padding: 8px 10px;
+}
+
+.atl-task-brief-banner.is-error {
+  border-inline-start-color: var(--color-red);
+  color: var(--text-error);
+}
+
+.atl-task-brief-banner.is-success {
+  border-inline-start-color: var(--color-green);
+}
+
+.atl-task-brief-fields {
+  border-top: 1px solid var(--background-modifier-border);
+  margin-top: 12px;
+  padding-top: 16px;
+}
+
+.atl-task-brief-section-title {
+  color: var(--text-normal);
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-semibold);
+}
+
+.atl-task-brief-section-note {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  margin: 4px 0 8px;
+}
+
+.atl-task-brief-modal .setting-item {
+  align-items: flex-start;
+}
+
+.atl-task-brief-modal .setting-item-control textarea {
+  min-height: 78px;
+  min-width: min(360px, 54vw);
+  resize: vertical;
+}
+
+.atl-task-brief-summary {
+  border-block: 1px solid var(--background-modifier-border);
+  margin-top: 16px;
+}
+
+.atl-task-brief-summary-row {
+  border-bottom: 1px solid var(--background-modifier-border);
+  display: grid;
+  gap: 4px;
+  grid-template-columns: 88px minmax(0, 1fr);
+  line-height: 1.5;
+  padding: 11px 0;
+}
+
+.atl-task-brief-summary-row:last-child {
+  border-bottom: 0;
+}
+
+.atl-task-brief-summary-row span {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .atl-task-details {
   margin: 14px 0 4px;
 }
@@ -442,13 +536,15 @@
 
   .atl-quick-capture-modal .setting-item,
   .atl-meeting-transcript-modal .setting-item,
-  .atl-task-confirmation-modal .setting-item {
+  .atl-task-confirmation-modal .setting-item,
+  .atl-task-brief-modal .setting-item {
     display: block;
   }
 
   .atl-quick-capture-modal .setting-item-control,
   .atl-meeting-transcript-modal .setting-item-control,
-  .atl-task-confirmation-modal .setting-item-control {
+  .atl-task-confirmation-modal .setting-item-control,
+  .atl-task-brief-modal .setting-item-control {
     justify-content: flex-start;
     margin-top: 8px;
   }
@@ -458,8 +554,13 @@
   .atl-meeting-transcript-modal .setting-item-control textarea,
   .atl-meeting-transcript-modal .setting-item-control input[type='text'],
   .atl-task-confirmation-modal .setting-item-control textarea,
-  .atl-task-confirmation-modal .setting-item-control input[type='text'] {
+  .atl-task-confirmation-modal .setting-item-control input[type='text'],
+  .atl-task-brief-modal .setting-item-control textarea {
     min-width: 100%;
+  }
+
+  .atl-task-brief-summary-row {
+    grid-template-columns: 1fr;
   }
 
   .atl-completion-backfill-row {

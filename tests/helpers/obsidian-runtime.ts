@@ -1,5 +1,19 @@
 export class App {}
 
+export class Notice {
+  constructor(
+    readonly message: string | DocumentFragment,
+    readonly timeout?: number,
+  ) {}
+
+  setMessage(message: string | DocumentFragment): this {
+    void message;
+    return this;
+  }
+
+  hide(): void {}
+}
+
 export class WorkspaceLeaf {
   readonly app = new App();
   view: unknown = null;

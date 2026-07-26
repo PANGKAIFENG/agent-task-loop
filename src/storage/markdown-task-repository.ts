@@ -7,6 +7,7 @@ import {
   taskSchema,
   type Priority,
   type Task,
+  type TaskBrief,
   type TaskStatus,
 } from '../domain/task.js';
 import type { TaskRepository } from './contracts.js';
@@ -277,10 +278,38 @@ function mapClaim(value: unknown): Task['claim'] {
   };
 }
 
+function mapTaskBrief(value: unknown): TaskBrief | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new InvalidTaskDataError('task_brief');
+  }
+  const brief = value as Record<string, unknown>;
+  const hasSnakeVersion = brief.schema_version !== undefined;
+  const hasCamelVersion = brief.schemaVersion !== undefined;
+  if (
+    (!hasSnakeVersion && !hasCamelVersion)
+    || (hasSnakeVersion && brief.schema_version !== 1)
+    || (hasCamelVersion && brief.schemaVersion !== 1)
+  ) {
+    throw new InvalidTaskDataError('task_brief');
+  }
+  const mapped: TaskBrief = {
+    schemaVersion: 1,
+    objective: stringValue(brief.objective),
+    nextAction: stringValue(brief.next_action ?? brief.nextAction),
+    completionCriteria: stringValue(
+      brief.completion_criteria ?? brief.completionCriteria,
+    ),
+    updatedAt: stringValue(brief.updated_at ?? brief.updatedAt),
+  };
+  return mapped;
+}
+
 export function taskFromDocument(
   record: Pick<TaskRecord, 'path' | 'data' | 'body'>,
 ): Task {
   const data = record.data;
+  const taskBrief = mapTaskBrief(data.task_brief);
   const reviewState = legacyEnum(data, 'review_state', [
     'candidate',
     'ready_for_confirm',
@@ -321,6 +350,7 @@ export function taskFromDocument(
     artifactRefs: stringArray(data.artifact_refs),
     reviewFeedback: nullableString(data.review_feedback),
     readyAt: nullableString(data.ready_at),
+    ...(taskBrief === null ? {} : { taskBrief }),
     createdAt: stringValue(data.created_at, '1970-01-01T00:00:00.000Z'),
     updatedAt: stringValue(data.updated_at, '1970-01-01T00:00:00.000Z'),
   };
@@ -347,12 +377,27 @@ function claimFrontmatter(claim: Task['claim']): Record<string, string> | null {
   };
 }
 
+function taskBriefFrontmatter(brief: Task['taskBrief']): Record<string, unknown> | null {
+  return brief === null || brief === undefined ? null : {
+    schema_version: brief.schemaVersion,
+    objective: brief.objective,
+    next_action: brief.nextAction,
+    completion_criteria: brief.completionCriteria,
+    updated_at: brief.updatedAt,
+  };
+}
+
 function mergeTaskData(
   original: Record<string, unknown>,
   task: Task,
 ): Record<string, unknown> {
+  const taskBrief = taskBriefFrontmatter(task.taskBrief);
+  const base = { ...original };
+  if (task.taskBrief === null) {
+    delete base.task_brief;
+  }
   return {
-    ...original,
+    ...base,
     type: 'task',
     schema_version: task.schemaVersion,
     task_id: task.taskId,
@@ -377,6 +422,7 @@ function mergeTaskData(
     artifact_refs: task.artifactRefs,
     review_feedback: task.reviewFeedback,
     ready_at: task.readyAt,
+    ...(taskBrief === null ? {} : { task_brief: taskBrief }),
     created_at: task.createdAt,
     updated_at: task.updatedAt,
   };
