@@ -2,6 +2,7 @@ import { ItemView, setIcon, type WorkspaceLeaf } from 'obsidian';
 
 import type { ContributionRange } from '../services/query-contribution.js';
 import type { PersonalHomeTask } from '../services/query-personal-home.js';
+import type { WeeklyFocusDocument } from '../services/weekly-focus.js';
 import {
   type ContributionDashboardController,
   type ContributionDashboardState,
@@ -18,6 +19,11 @@ export interface WorkContributionViewDependencies {
     tasks: readonly CompletionDateBackfillTask[],
   ) => Promise<void> | void;
   openSettings: () => Promise<void> | void;
+  loadWeeklyFocus: () => Promise<WeeklyFocusDocument | null>;
+  openWeeklyCoach: (
+    onChanged: (document: WeeklyFocusDocument) => void,
+  ) => Promise<void> | void;
+  openWeeklyFocus: (path: string) => Promise<void> | void;
 }
 
 type HomeTab = 'overview' | 'today' | 'input' | 'review';
@@ -253,6 +259,7 @@ export class WorkContributionView extends ItemView {
   private state: ContributionDashboardState | null = null;
   private activeTab: HomeTab = 'overview';
   private pulseMode: PulseMode = 'ai';
+  private weeklyFocus: WeeklyFocusDocument | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -281,7 +288,10 @@ export class WorkContributionView extends ItemView {
       this.state = state;
       this.render(state);
     });
-    await this.controller.initialize();
+    await Promise.all([
+      this.controller.initialize(),
+      this.refreshWeeklyFocus(),
+    ]);
   }
 
   async onClose(): Promise<void> {
@@ -290,11 +300,21 @@ export class WorkContributionView extends ItemView {
     this.controller?.dispose();
     this.controller = null;
     this.state = null;
+    this.weeklyFocus = null;
     this.contentEl.replaceChildren();
   }
 
   refreshContribution(): Promise<void> {
     return this.controller?.refreshContribution() ?? Promise.resolve();
+  }
+
+  async refreshWeeklyFocus(): Promise<void> {
+    try {
+      this.weeklyFocus = await this.dependencies.loadWeeklyFocus();
+    } catch {
+      this.weeklyFocus = null;
+    }
+    this.rerender();
   }
 
   private render(state: ContributionDashboardState): void {
@@ -652,11 +672,29 @@ export class WorkContributionView extends ItemView {
   }
 
   private renderFocus(state: ContributionDashboardState): HTMLElement {
+    const confirmed = this.weeklyFocus?.record.status === '已确认'
+      ? this.weeklyFocus
+      : null;
     const area = this.renderCommandSection(
-      'CURRENT FOCUS · 系统候选',
+      confirmed === null ? 'CURRENT FOCUS · 系统候选' : 'CURRENT FOCUS · 用户确认',
       '当前最值得推进的三件事',
       'atl-home-focus',
+      this.weeklyFocus === null
+        ? '梳理本周重点'
+        : this.weeklyFocus.record.status === '草稿'
+          ? '继续本周思考'
+          : '查看本周判断',
+      () => {
+        void this.dependencies.openWeeklyCoach((document) => {
+          this.weeklyFocus = document;
+          this.rerender();
+        });
+      },
     );
+    if (confirmed !== null) {
+      this.renderConfirmedFocus(area.body, confirmed);
+      return area.root;
+    }
     const tasks = state.home.snapshot?.focusTasks ?? [];
     if (tasks.length === 0) {
       area.body.append(element('p', 'atl-contribution-empty', '当前没有执行中或待执行任务'));
@@ -696,6 +734,48 @@ export class WorkContributionView extends ItemView {
       area.body.append(grid);
     }
     return area.root;
+  }
+
+  private renderConfirmedFocus(
+    container: HTMLElement,
+    document: WeeklyFocusDocument,
+  ): void {
+    const { input } = document.record;
+    if (input.noNewFocus && input.focuses.length === 0) {
+      container.append(element(
+        'p',
+        'atl-contribution-empty',
+        '本周暂不新增重点，先完成既有承诺。',
+      ));
+      return;
+    }
+    const grid = element('div', 'atl-home-focus-grid');
+    for (const [index, focus] of input.focuses.slice(0, 3).entries()) {
+      const card = element('button', 'atl-home-focus-card atl-home-weekly-focus-card');
+      card.type = 'button';
+      card.dataset.weeklyFocusPath = document.path;
+      const top = element('span', 'atl-home-focus-top');
+      top.append(
+        element('span', 'atl-home-focus-number', String(index + 1).padStart(2, '0')),
+        element('span', 'atl-home-task-status is-confirmed', '用户确认'),
+      );
+      const title = element(
+        'strong',
+        'atl-home-focus-name',
+        focus.judgment.trim() === '' ? focus.problem : focus.judgment,
+      );
+      const meta = element('span', 'atl-home-focus-meta');
+      meta.append(
+        element('span', undefined, focus.problem),
+        element('span', undefined, focus.outcome),
+      );
+      card.append(top, title, meta);
+      card.addEventListener('click', () => {
+        void this.dependencies.openWeeklyFocus(document.path);
+      });
+      grid.append(card);
+    }
+    container.append(grid);
   }
 
   private renderOverviewMetrics(state: ContributionDashboardState): HTMLElement {
