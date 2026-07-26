@@ -126,6 +126,14 @@ import {
   ensureWeeklyFocusParentDirectories,
   runAuthorizedWeeklyFocusWrite,
 } from './weekly-focus-vault-gateway.js';
+import {
+  type TaskNotesFieldGovernanceStatus,
+} from './tasknotes-field-governance-controller.js';
+import {
+  createTaskNotesFieldGovernancePluginIntegration,
+  taskNotesFieldControlState,
+} from './tasknotes-field-governance-plugin-integration.js';
+import { SerializedSettingsWriter } from './serialized-settings-writer.js';
 
 const CARD_THEME_CLASS = 'atl-task-card-theme';
 
@@ -191,6 +199,9 @@ function isContributionDataPath(path: string): boolean {
 export default class AgentTaskLoopPlugin extends Plugin {
   settings: AtlPluginSettings = DEFAULT_SETTINGS;
   readonly boardAppearance = new BoardAppearanceController();
+  private readonly settingsWriter = new SerializedSettingsWriter<AtlPluginSettings>(
+    (snapshot) => this.saveData(snapshot),
+  );
   private syncScanInFlight: Promise<void> | null = null;
   private unifiedCalendarOpenInFlight: Promise<void> | null = null;
   private taskLifecycleReconciliation: TaskLifecycleReconciliationController | null = null;
@@ -339,7 +350,19 @@ export default class AgentTaskLoopPlugin extends Plugin {
 
   async saveSettings(): Promise<void> {
     this.applyTaskCardTheme();
-    await this.saveData(this.settings);
+    await this.settingsWriter.write(structuredClone(this.settings));
+  }
+
+  createTaskNotesFieldGovernanceIntegration() {
+    const appWithPluginRegistry = this.app as typeof this.app & {
+      plugins?: { getPlugin(id: string): unknown };
+    };
+    return createTaskNotesFieldGovernancePluginIntegration({
+      registry: appWithPluginRegistry.plugins,
+      getSettings: () => this.settings,
+      saveSettings: () => this.saveSettings(),
+      notice: (message) => new Notice(message),
+    });
   }
 
   private createContributionView(leaf: WorkspaceLeaf): WorkContributionView {
@@ -1231,6 +1254,7 @@ const CHECK_LABELS = {
 class AgentTaskLoopSettingTab extends PluginSettingTab {
   private inspection: BackgroundInspection | null = null;
   private boardStatus: BoardPresetStatus | null = null;
+  private taskNotesFieldStatus: TaskNotesFieldGovernanceStatus | null = null;
   private refreshing = false;
   private statusLoaded = false;
 
@@ -1569,6 +1593,27 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
           await this.atlPlugin.saveSettings();
         }));
 
+    const fieldControlState = taskNotesFieldControlState(
+      this.taskNotesFieldStatus,
+      this.atlPlugin.settings.allowVaultManagement,
+    );
+    const fieldSetting = new Setting(containerEl)
+      .setName('任务编辑字段')
+      .setDesc(fieldControlState.description);
+    if (fieldControlState.showApply) {
+      fieldSetting.addButton((button) => button
+        .setCta()
+        .setButtonText('应用精简字段')
+        .setDisabled(fieldControlState.disabled)
+        .onClick(() => this.applyTaskNotesFieldPreset()));
+    }
+    if (fieldControlState.showRestore) {
+      fieldSetting.addButton((button) => button
+        .setButtonText('恢复原字段')
+        .setDisabled(fieldControlState.disabled)
+        .onClick(() => this.restoreTaskNotesFieldPreset()));
+    }
+
     const status = this.boardStatus;
     const setting = new Setting(containerEl)
       .setName('人工任务看板布局')
@@ -1629,6 +1674,11 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
         : await this.atlPlugin.boardAppearance.status(paths.root);
     } catch (error) {
       new Notice(errorMessage(error, '无法读取 ATL 配置'));
+    }
+    try {
+      this.taskNotesFieldStatus = await this.atlPlugin
+        .createTaskNotesFieldGovernanceIntegration()
+        .status();
     } finally {
       this.refreshing = false;
       this.statusLoaded = true;
@@ -1710,6 +1760,30 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
       this.display();
     } catch (error) {
       new Notice(errorMessage(error, '无法应用推荐看板布局'));
+    }
+  }
+
+  private async refreshTaskNotesFieldStatus(): Promise<void> {
+    this.taskNotesFieldStatus = await this.atlPlugin
+      .createTaskNotesFieldGovernanceIntegration()
+      .status();
+  }
+
+  private async applyTaskNotesFieldPreset(): Promise<void> {
+    try {
+      await this.atlPlugin.createTaskNotesFieldGovernanceIntegration().apply();
+    } finally {
+      await this.refreshTaskNotesFieldStatus();
+      this.display();
+    }
+  }
+
+  private async restoreTaskNotesFieldPreset(): Promise<void> {
+    try {
+      await this.atlPlugin.createTaskNotesFieldGovernanceIntegration().restore();
+    } finally {
+      await this.refreshTaskNotesFieldStatus();
+      this.display();
     }
   }
 
