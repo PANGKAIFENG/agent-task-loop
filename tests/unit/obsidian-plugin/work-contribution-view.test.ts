@@ -11,6 +11,47 @@ import {
   WorkContributionView,
   WORK_CONTRIBUTION_VIEW_TYPE,
 } from '../../../src/obsidian-plugin/work-contribution-view.js';
+import type { WeeklyFocusDocument } from '../../../src/services/weekly-focus.js';
+
+function weeklyFocus(status: '草稿' | '已确认'): WeeklyFocusDocument {
+  return {
+    path: '05_Reviews/Weekly/2026-W30 周度重点.md',
+    raw: 'weekly focus fixture',
+    record: {
+      type: '周度重点',
+      week: '2026-W30',
+      status,
+      linkedGoals: [],
+      linkedTasks: [],
+      createdBy: 'ATL 思考教练',
+      confirmedAt: status === '已确认' ? '2026-07-26T08:00:00.000Z' : null,
+      reviewStatus: '待复盘',
+      updatedAt: '2026-07-26T08:00:00.000Z',
+      input: {
+        conversationTopic: '本周如何让产品边界更清楚',
+        selectedSources: ['目标', '项目', '任务'],
+        currentQuestion: '什么结果能证明投入值得？',
+        coachSummary: '需要先定义可观察结果。',
+        focuses: [{
+          problem: '产品边界反复变化',
+          judgment: '先验证两个真实流程',
+          outcome: '形成团队可复用的边界说明',
+          evidence: '两个流程使用同一份说明',
+          commitment: '周五前完成验证',
+        }],
+        noNewFocus: false,
+        notDoing: ['不新增 Agent 名称'],
+        background: { facts: [], assumptions: [], gaps: [], sources: [] },
+        coachInsights: [],
+        consideredDirections: [],
+        keyAnswers: [],
+        linkedGoals: [],
+        linkedTasks: [],
+        adjustmentNote: '',
+      },
+    },
+  };
+}
 
 function state(overrides: Partial<ContributionDashboardState> = {}): ContributionDashboardState {
   return {
@@ -123,7 +164,7 @@ function contributionDays(count: number) {
   });
 }
 
-function setup(initial = state()) {
+function setup(initial = state(), initialWeeklyFocus: WeeklyFocusDocument | null = null) {
   let current = initial;
   let listener: ((state: ContributionDashboardState) => void) | null = null;
   const controller = {
@@ -142,18 +183,27 @@ function setup(initial = state()) {
   const openTask = vi.fn(async () => undefined);
   const openArtifact = vi.fn(async () => undefined);
   const openCompletionDateBackfill = vi.fn(async () => undefined);
+  const loadWeeklyFocus = vi.fn(async () => initialWeeklyFocus);
+  const openWeeklyCoach = vi.fn();
+  const openWeeklyFocus = vi.fn(async () => undefined);
   const view = new WorkContributionView(new WorkspaceLeaf(), {
     createController: () => controller as never,
     openTask,
     openArtifact,
     openCompletionDateBackfill,
     openSettings: vi.fn(),
+    loadWeeklyFocus,
+    openWeeklyCoach,
+    openWeeklyFocus,
   });
   return {
     controller,
     openTask,
     openArtifact,
     openCompletionDateBackfill,
+    loadWeeklyFocus,
+    openWeeklyCoach,
+    openWeeklyFocus,
     view,
     publish(next: ContributionDashboardState) {
       current = next;
@@ -222,6 +272,48 @@ describe('WorkContributionView', () => {
       .toBe('true');
     expect(view.contentEl.querySelector('.atl-contribution-heatmap')?.getAttribute('aria-label'))
       .toBe('AI每日贡献图');
+  });
+
+  it('offers the weekly coach from the focus title bar when no session exists', async () => {
+    const { openWeeklyCoach, view } = setup();
+    await view.onOpen();
+
+    const action = [...view.contentEl.querySelectorAll<HTMLButtonElement>(
+      '.atl-home-focus .atl-home-section-link',
+    )].find((button) => button.textContent?.includes('梳理本周重点'));
+    expect(action).toBeDefined();
+    fireEvent.click(action!);
+    expect(openWeeklyCoach).toHaveBeenCalledOnce();
+  });
+
+  it('offers to continue a saved weekly thinking draft', async () => {
+    const { view } = setup(state(), weeklyFocus('草稿'));
+    await view.onOpen();
+
+    expect(view.contentEl.querySelector('.atl-home-focus .atl-home-section-link')?.textContent)
+      .toContain('继续本周思考');
+    expect(view.contentEl.querySelector('.atl-home-focus')?.textContent)
+      .toContain('CURRENT FOCUS · 系统候选');
+  });
+
+  it('replaces only focus cards with confirmed judgments and opens the weekly record', async () => {
+    const confirmed = weeklyFocus('已确认');
+    const { openTask, openWeeklyFocus, view } = setup(state(), confirmed);
+    await view.onOpen();
+
+    const focus = view.contentEl.querySelector('.atl-home-focus')!;
+    expect(focus.textContent).toContain('CURRENT FOCUS · 用户确认');
+    expect(focus.textContent).toContain('先验证两个真实流程');
+    expect(focus.textContent).toContain('形成团队可复用的边界说明');
+    expect(focus.textContent).not.toContain('完成真实个人首页');
+    expect(focus.querySelector('.atl-home-section-link')?.textContent)
+      .toContain('查看本周判断');
+    expect(view.contentEl.textContent).toContain('输入积压');
+    expect(view.contentEl.textContent).toContain('系统状态');
+
+    fireEvent.click(focus.querySelector<HTMLButtonElement>('.atl-home-focus-card')!);
+    expect(openWeeklyFocus).toHaveBeenCalledWith(confirmed.path);
+    expect(openTask).not.toHaveBeenCalled();
   });
 
   it('keeps the heatmap at 26 weeks while range controls only slice trends', async () => {

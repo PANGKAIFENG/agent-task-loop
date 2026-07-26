@@ -22,6 +22,18 @@ import { createClaudeStructuredExecutor } from '../runner/claude-driver.js';
 import { captureTask } from '../services/capture-task.js';
 import { recordTaskCompletionDate } from '../services/record-task-completion-date.js';
 import type { ServiceContext } from '../services/service-context.js';
+import {
+  collectWeeklyCoachContext,
+  type WeeklyCoachContextGateway,
+} from '../services/weekly-coach-context.js';
+import {
+  confirmWeeklyFocus,
+  currentIsoWeek,
+  loadCurrentWeeklyFocus,
+  saveWeeklyFocusDraft,
+  type WeeklyFocusDocument,
+  type WeeklyFocusGateway,
+} from '../services/weekly-focus.js';
 import { createVaultWriteAuthorization } from '../storage/task-paths.js';
 import { parseArtifactReference } from '../storage/artifact-reference.js';
 import { MarkdownTaskTitleRepairRepository } from '../storage/markdown-task-title-repair-repository.js';
@@ -108,6 +120,12 @@ import { MeetingPluginLifecycle } from './meeting-plugin-lifecycle.js';
 import { MeetingTranscriptModal } from './meeting-transcript-modal.js';
 import { LegacyTaskTitleRepairController } from './legacy-task-title-repair-controller.js';
 import { LegacyTaskTitleRepairModal } from './legacy-task-title-repair-modal.js';
+import { WeeklyThinkingCoachModal } from './weekly-thinking-coach-modal.js';
+import { runWeeklyThinkingCoach } from './weekly-thinking-coach.js';
+import {
+  ensureWeeklyFocusParentDirectories,
+  runAuthorizedWeeklyFocusWrite,
+} from './weekly-focus-vault-gateway.js';
 
 const CARD_THEME_CLASS = 'atl-task-card-theme';
 
@@ -166,7 +184,8 @@ function meetingAttachmentMediaType(path: string): string {
 
 function isContributionDataPath(path: string): boolean {
   return isAtlTaskPath(path)
-    || /^10_Tasks\/Audit\/\d{4}-\d{2}-\d{2}\.jsonl$/u.test(path);
+    || /^10_Tasks\/Audit\/\d{4}-\d{2}-\d{2}\.jsonl$/u.test(path)
+    || /^05_Reviews\/Weekly\/\d{4}-W\d{2} 周度重点\.md$/u.test(path);
 }
 
 export default class AgentTaskLoopPlugin extends Plugin {
@@ -330,7 +349,137 @@ export default class AgentTaskLoopPlugin extends Plugin {
       openArtifact: (artifactRef, taskId) => this.openContributionArtifact(artifactRef, taskId),
       openCompletionDateBackfill: (tasks) => this.openCompletionDateBackfill(tasks),
       openSettings: () => this.openPluginSettings(),
+      loadWeeklyFocus: () => this.loadWeeklyFocus(),
+      openWeeklyCoach: (onChanged) => this.openWeeklyCoach(onChanged),
+      openWeeklyFocus: (path) => this.openWeeklyFocus(path),
     });
+  }
+
+  private createWeeklyFocusGateway(): WeeklyFocusGateway {
+    const adapter = this.app.vault.adapter;
+    return {
+      read: async (path) => (
+        await adapter.exists(path) ? adapter.read(path) : null
+      ),
+      write: async (path, content, expectedContent) => {
+        if (!this.settings.allowVaultManagement) {
+          throw new Error('vault_management_disabled');
+        }
+        const exists = await adapter.exists(path);
+        const current = exists ? await adapter.read(path) : null;
+        if (current !== expectedContent) return false;
+
+        await ensureWeeklyFocusParentDirectories(
+          adapter,
+          path,
+          () => this.settings.allowVaultManagement,
+        );
+        if (!this.settings.allowVaultManagement) {
+          throw new Error('vault_management_disabled');
+        }
+
+        if (expectedContent === null) {
+          if (await adapter.exists(path)) return false;
+          await runAuthorizedWeeklyFocusWrite(
+            () => this.settings.allowVaultManagement,
+            () => this.app.vault.create(path, content),
+          );
+          return true;
+        }
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (!(file instanceof TFile)) return false;
+        let matched = false;
+        await runAuthorizedWeeklyFocusWrite(
+          () => this.settings.allowVaultManagement,
+          () => this.app.vault.process(file, (latest) => {
+            if (latest !== expectedContent) return latest;
+            matched = true;
+            return content;
+          }),
+        );
+        return matched;
+      },
+    };
+  }
+
+  private createWeeklyCoachContextGateway(): WeeklyCoachContextGateway {
+    const adapter = this.app.vault.adapter;
+    return {
+      listMarkdownPaths: async () => (
+        this.app.vault.getMarkdownFiles().map((file) => file.path)
+      ),
+      read: async (path) => adapter.read(path),
+    };
+  }
+
+  private loadWeeklyFocus() {
+    return loadCurrentWeeklyFocus(
+      this.createWeeklyFocusGateway(),
+      () => new Date(),
+      resolveSystemTimeZone(),
+    );
+  }
+
+  private weeklyCoachModelLabel(): string {
+    const modelService = modelServiceConfiguration(this.settings.background);
+    if (!modelService.valid) return '模型配置需检查（可人工整理）';
+    return modelService.model === undefined
+      ? '沿用 Claude Code / CC-Switch'
+      : `自定义模型 · ${modelService.model}`;
+  }
+
+  private openWeeklyCoach(
+    onChanged: (document: WeeklyFocusDocument) => void,
+  ): void {
+    const timeZone = resolveSystemTimeZone();
+    const clock = () => new Date();
+    const gateway = this.createWeeklyFocusGateway();
+    new WeeklyThinkingCoachModal(this.app, {
+      week: currentIsoWeek(clock(), timeZone),
+      modelLabel: this.weeklyCoachModelLabel(),
+      load: () => loadCurrentWeeklyFocus(gateway, clock, timeZone),
+      runCoach: async (turn) => {
+        const context = await collectWeeklyCoachContext(
+          this.createWeeklyCoachContextGateway(),
+          turn.selectedSources,
+          { now: clock() },
+        );
+        return runWeeklyThinkingCoach(await this.createStructuredExecutor(), {
+          topic: turn.topic,
+          latestAnswer: turn.latestAnswer,
+          keyAnswers: turn.keyAnswers,
+          previousSummary: turn.previousSummary,
+          context,
+        });
+      },
+      saveDraft: (input, expectedContent) => saveWeeklyFocusDraft(
+        gateway,
+        clock,
+        input,
+        expectedContent,
+        timeZone,
+      ),
+      confirm: (input, expectedContent) => confirmWeeklyFocus(
+        gateway,
+        clock,
+        input,
+        expectedContent,
+        timeZone,
+      ),
+      canManageVault: () => this.settings.allowVaultManagement,
+      onChanged,
+      openRecord: (path) => this.openWeeklyFocus(path),
+      notify: (message) => { new Notice(message); },
+    }).open();
+  }
+
+  private async openWeeklyFocus(path: string): Promise<void> {
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile)) {
+      new Notice('找不到本周判断记录');
+      return;
+    }
+    await this.app.workspace.getLeaf(false).openFile(file);
   }
 
   private openCompletionDateBackfill(tasks: readonly CompletionDateBackfillTask[]): void {
@@ -455,7 +604,12 @@ export default class AgentTaskLoopPlugin extends Plugin {
       this.contributionRefreshTimer = null;
       for (const leaf of this.app.workspace.getLeavesOfType(WORK_CONTRIBUTION_VIEW_TYPE)) {
         const view = leaf.view;
-        if (view instanceof WorkContributionView) void view.refreshContribution();
+        if (view instanceof WorkContributionView) {
+          void Promise.all([
+            view.refreshContribution(),
+            view.refreshWeeklyFocus(),
+          ]);
+        }
       }
     }, 250);
   }

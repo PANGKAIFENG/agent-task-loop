@@ -144,4 +144,20 @@ describe('personal home heatmap styles', () => {
     expect(declarationsFor(css, '.atl-completion-backfill-status'))
       .toMatch(/grid-column\s*:/);
   });
+
+  it('sizes the weekly coach as a centered responsive Obsidian modal', async () => {
+    const css = await readFile(
+      new URL('../../../src/obsidian-plugin/styles.css', import.meta.url),
+      'utf8',
+    );
+
+    expect(declarationsFor(css, '.atl-weekly-coach-modal'))
+      .toMatch(/max-width\s*:\s*960px/);
+    expect(declarationsFor(css, '.atl-weekly-coach-modal'))
+      .toMatch(/height\s*:\s*min\(700px,\s*calc\(100vh\s*-\s*48px\)\)/);
+    expect(declarationsFor(css, '.atl-weekly-coach-content'))
+      .toMatch(/grid-template-rows\s*:/);
+    expect(declarationsFor(css, '.atl-weekly-coach-content'))
+      .toMatch(/overflow\s*:\s*hidden/);
+  });
 });

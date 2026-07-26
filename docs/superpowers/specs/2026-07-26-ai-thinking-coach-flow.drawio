@@ -1,0 +1,62 @@
+<mxfile host="app.diagrams.net" modified="2026-07-26T00:00:00.000Z" agent="Codex" version="26.0.11">
+  <diagram id="ai-thinking-coach-flow" name="本周思考教练核心流程">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="title" value="本周思考教练核心流程&#xa;AI 研究与启发，用户完成最终判断" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=none;fontSize=24;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="28" width="700" height="54" as="geometry"/>
+        </mxCell>
+        <mxCell id="step-1" value="1. 发起本周思考&#xa;输入困惑或候选方向" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eef4ff;strokeColor=#5b8def;strokeWidth=2;fontSize=15;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="190" width="155" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="step-2" value="2. 选择授权上下文&#xa;确认本次可读取范围" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eef4ff;strokeColor=#5b8def;strokeWidth=2;fontSize=15;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="230" y="190" width="155" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="step-3" value="3. AI 整理事实与缺口&#xa;区分事实、假设和来源" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff7db;strokeColor=#d8a437;strokeWidth=2;fontSize=15;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="420" y="190" width="155" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="step-4" value="4. 形成问题地图&#xa;选择最影响判断的问题" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff7db;strokeColor=#d8a437;strokeWidth=2;fontSize=15;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="610" y="190" width="155" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="step-5" value="5. 渐进式教练对话&#xa;回答、补资料或跳过" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff7db;strokeColor=#d8a437;strokeWidth=2;fontSize=15;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="800" y="190" width="155" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="step-6" value="6. 整理方案与依据&#xa;呈现价值、代价和验证" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff7db;strokeColor=#d8a437;strokeWidth=2;fontSize=15;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="990" y="190" width="155" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="step-7" value="7. 用户确认判断&#xa;确认承诺、结果与不做" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff7db;strokeColor=#d8a437;strokeWidth=2;fontSize=15;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1180" y="182" width="155" height="116" as="geometry"/>
+        </mxCell>
+        <mxCell id="step-8" value="8. 写入周度重点&#xa;进入周月季度复盘闭环" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dff4e6;strokeColor=#2e9c61;strokeWidth=2;fontSize=15;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1370" y="190" width="155" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="branch-1" value="上下文不足&#xa;说明缺口并请求补资料" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe5e1;strokeColor=#c65d4d;strokeWidth=2;fontSize=15;" vertex="1" parent="1">
+          <mxGeometry x="420" y="390" width="190" height="86" as="geometry"/>
+        </mxCell>
+        <mxCell id="branch-2" value="用户暂未确认&#xa;保存草稿，不创建任务" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eef4ff;strokeColor=#5b8def;strokeWidth=2;fontSize=15;" vertex="1" parent="1">
+          <mxGeometry x="1160" y="390" width="190" height="86" as="geometry"/>
+        </mxCell>
+        <mxCell id="branch-3" value="AI 失败或模型不可用&#xa;保留输入，可重试或人工继续" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe5e1;strokeColor=#c65d4d;strokeWidth=2;fontSize=15;" vertex="1" parent="1">
+          <mxGeometry x="755" y="540" width="250" height="86" as="geometry"/>
+        </mxCell>
+        <mxCell id="support" value="全程边界&#xa;按次授权上下文 / 用户确认后才沉淀 / 不自动创建或改动任务 / 默认不保存完整聊天" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff1b8;strokeColor=#d8a437;strokeWidth=2;fontSize=16;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="260" y="690" width="1080" height="82" as="geometry"/>
+        </mxCell>
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4e7fd1;strokeWidth=2.5;endArrow=block;" edge="1" parent="1" source="step-1" target="step-2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4e7fd1;strokeWidth=2.5;endArrow=block;" edge="1" parent="1" source="step-2" target="step-3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4e7fd1;strokeWidth=2.5;endArrow=block;" edge="1" parent="1" source="step-3" target="step-4"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4e7fd1;strokeWidth=2.5;endArrow=block;" edge="1" parent="1" source="step-4" target="step-5"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4e7fd1;strokeWidth=2.5;endArrow=block;" edge="1" parent="1" source="step-5" target="step-6"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4e7fd1;strokeWidth=2.5;endArrow=block;" edge="1" parent="1" source="step-6" target="step-7"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e7" value="已确认" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#2e9c61;strokeWidth=2.5;endArrow=block;fontSize=13;" edge="1" parent="1" source="step-7" target="step-8"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e8" value="信息不足" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#c65d4d;strokeWidth=2.5;endArrow=block;fontSize=13;" edge="1" parent="1" source="step-3" target="branch-1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e9" value="补充后重新整理" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#c65d4d;strokeWidth=2.5;endArrow=block;fontSize=13;" edge="1" parent="1" source="branch-1" target="step-2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e10" value="暂不确认" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#5b8def;strokeWidth=2.5;endArrow=block;fontSize=13;" edge="1" parent="1" source="step-7" target="branch-2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e11" value="继续思考" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#5b8def;strokeWidth=2.5;endArrow=block;fontSize=13;" edge="1" parent="1" source="branch-2" target="step-5"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e12" value="失败" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#c65d4d;strokeWidth=2.5;endArrow=block;fontSize=13;" edge="1" parent="1" source="step-5" target="branch-3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e13" value="重试" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#c65d4d;strokeWidth=2.5;endArrow=block;fontSize=13;" edge="1" parent="1" source="branch-3" target="step-5"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
