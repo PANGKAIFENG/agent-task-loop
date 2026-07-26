@@ -1,3 +1,6 @@
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -7,7 +10,36 @@ import {
   normalizeSettings,
 } from '../../../src/obsidian-plugin/settings.js';
 
+const taskNotesFieldLayoutBackup = {
+  version: 1,
+  fields: {
+    contexts: { visibleInCreation: true, visibleInEdit: false },
+    tags: { visibleInCreation: false, visibleInEdit: true },
+    projects: { visibleInCreation: true, visibleInEdit: false },
+    'blocked-by': { visibleInCreation: false, visibleInEdit: true },
+    blocking: { visibleInCreation: true, visibleInEdit: false },
+    atl_project_id: { visibleInCreation: false, visibleInEdit: true },
+    atl_review_state: { visibleInCreation: true, visibleInEdit: false },
+    atl_task_id: { visibleInCreation: false, visibleInEdit: true },
+    atl_review_feedback: { visibleInCreation: true, visibleInEdit: false },
+  },
+};
+
 describe('normalizeSettings', () => {
+  it('retains a valid TaskNotes field-layout backup for controller restore', () => {
+    expect(normalizeSettings({
+      taskNotesFieldLayoutBackup,
+    }).taskNotesFieldLayoutBackup).toEqual(taskNotesFieldLayoutBackup);
+  });
+
+  it('retains a malformed TaskNotes field-layout backup so the controller fails closed', () => {
+    const malformedBackup = { version: 1, fields: { tags: {} } };
+
+    expect(normalizeSettings({
+      taskNotesFieldLayoutBackup: malformedBackup,
+    }).taskNotesFieldLayoutBackup).toEqual(malformedBackup);
+  });
+
   it('normalizes DingTalk calendar state without retaining persisted passwords', () => {
     const settings = normalizeSettings({
       dingtalkCalendar: {
@@ -295,6 +327,23 @@ describe('normalizeSettings', () => {
       reviewedFingerprints: [],
       processedRecordFingerprints: [],
     });
+  });
+});
+
+describe('TaskNotes editor field settings integration', () => {
+  it('uses the live TaskNotes runtime, ATL backup persistence, and guarded field actions', async () => {
+    const source = await readFile(resolve('src/obsidian-plugin/main.ts'), 'utf8');
+
+    expect(source).toContain("getPlugin('tasknotes')");
+    expect(source).toContain('TaskNotesFieldGovernanceController');
+    expect(source).toContain('persistFirstBackup');
+    expect(source).toContain(".setName('任务编辑字段')");
+    expect(source).toContain(".setButtonText('应用精简字段')");
+    expect(source).toContain(".setButtonText('恢复原字段')");
+    expect(source).toContain('重启 Obsidian 后生效');
+    expect(source).toMatch(/applyTaskNotesFieldPreset\(\)[\s\S]*?allowVaultManagement/);
+    expect(source).toMatch(/restoreTaskNotesFieldPreset\(\)[\s\S]*?allowVaultManagement/);
+    expect(source).not.toContain('tasknotes/data.json');
   });
 });
 

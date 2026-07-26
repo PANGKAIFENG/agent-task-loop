@@ -15,6 +15,7 @@ import type {
 export interface AtlPluginSettings {
   allowVaultManagement: boolean;
   taskCardThemeEnabled: boolean;
+  taskNotesFieldLayoutBackup?: unknown;
   capture: CaptureState;
   background: BackgroundSettings;
   dashboard: DashboardTokenCache;
@@ -505,6 +506,11 @@ export function normalizeSettings(value: unknown): AtlPluginSettings {
   return {
     allowVaultManagement: root.allowVaultManagement === true,
     taskCardThemeEnabled: root.taskCardThemeEnabled !== false,
+    ...(
+      Object.hasOwn(root, 'taskNotesFieldLayoutBackup')
+        ? { taskNotesFieldLayoutBackup: root.taskNotesFieldLayoutBackup }
+        : {}
+    ),
     capture: {
       captureStateVersion: 2,
       lastSuccessfulScanAt: timestampValue(rawCapture.lastSuccessfulScanAt),

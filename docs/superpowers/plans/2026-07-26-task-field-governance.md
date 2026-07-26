@@ -19,6 +19,7 @@ Vitest, Vite, pnpm 10, Node.js 24.
 
 - `src/obsidian-plugin/tasknotes-field-governance-controller.ts`: validate, inspect, apply, back up, and restore TaskNotes field visibility.
 - `tests/unit/obsidian-plugin/tasknotes-field-governance-controller.test.ts`: in-memory runtime, backup-store, save-failure, and serialization tests.
+- `src/obsidian-plugin/settings.ts`: retain the ATL-owned TaskNotes field-layout backup without normalizing malformed data into an absent backup.
 - `src/obsidian-plugin/main.ts`: controller ownership, settings status, apply/restore buttons, and notices.
 - `tests/unit/obsidian-plugin/settings.test.ts`: settings source assertions for the new user-facing controls.
 - `docs/operations/obsidian-plugin.md`: user instructions and exact governed field list.
@@ -98,6 +99,7 @@ git commit -m "feat: add reversible TaskNotes field preset"
 
 **Files:**
 - Modify: `src/obsidian-plugin/main.ts`
+- Modify: `src/obsidian-plugin/settings.ts`
 - Modify: `tests/unit/obsidian-plugin/settings.test.ts`
 
 - [ ] **Step 1: Write failing settings source tests**
