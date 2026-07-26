@@ -190,6 +190,17 @@ describe('TaskNotes field governance plugin integration', () => {
       },
     ],
     [
+      'unapplied without Vault management permission',
+      statusFixture(),
+      false,
+      {
+        description: '当前未应用精简字段。',
+        showApply: true,
+        showRestore: false,
+        disabled: true,
+      },
+    ],
+    [
       'applied',
       statusFixture({ applied: true }),
       false,
@@ -220,6 +231,17 @@ describe('TaskNotes field governance plugin integration', () => {
         showApply: true,
         showRestore: true,
         disabled: false,
+      },
+    ],
+    [
+      'restorable without Vault management permission',
+      statusFixture({ restorable: true }),
+      false,
+      {
+        description: '当前未应用精简字段；已保留可恢复的原字段备份。',
+        showApply: true,
+        showRestore: true,
+        disabled: true,
       },
     ],
   ])('maps %s status into its field-control description and buttons', (_name, status, canManage, expected) => {
