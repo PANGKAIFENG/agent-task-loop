@@ -10,6 +10,7 @@ import {
   Plugin,
   PluginSettingTab,
   Setting,
+  setIcon,
   TFile,
   WorkspaceLeaf,
   type TAbstractFile,
@@ -142,6 +143,7 @@ import {
 import { generateTaskBrief } from './task-brief-generation.js';
 import { TaskBriefModal } from './task-brief-modal.js';
 import { TaskBriefPluginLifecycle } from './task-brief-plugin-lifecycle.js';
+import { TaskNotesTaskBriefActionBridge } from './tasknotes-task-brief-action-bridge.js';
 
 const CARD_THEME_CLASS = 'atl-task-card-theme';
 
@@ -321,6 +323,48 @@ export default class AgentTaskLoopPlugin extends Plugin {
         void this.openTaskBrief(path);
       },
     }).start();
+
+    const appWithPluginRegistry = this.app as typeof this.app & {
+      plugins?: { getPlugin(id: string): unknown };
+    };
+    const taskNotesTaskBriefBridge = new TaskNotesTaskBriefActionBridge({
+      document,
+      isTaskNotesEnabled: () => (
+        appWithPluginRegistry.plugins?.getPlugin('tasknotes') != null
+      ),
+      getEligibleTaskPaths: () => this.app.vault.getMarkdownFiles()
+        .filter((file) => isAtlTaskPath(file.path) || isTaskNotesTaskPath(
+          file.path,
+          this.app.metadataCache.getFileCache(file)?.frontmatter,
+        ))
+        .map((file) => file.path),
+      open: (path) => {
+        void this.openTaskBrief(path);
+      },
+      notice: (message) => {
+        new Notice(message);
+      },
+      setIcon,
+    });
+    this.app.workspace.onLayoutReady(() => {
+      taskNotesTaskBriefBridge.start();
+      this.app.workspace.iterateAllLeaves((leaf) => {
+        taskNotesTaskBriefBridge.addDocument(leaf.view.containerEl.ownerDocument);
+      });
+    });
+    this.registerEvent(this.app.workspace.on(
+      'window-open',
+      (_workspaceWindow, openedWindow) => {
+        taskNotesTaskBriefBridge.addDocument(openedWindow.document);
+      },
+    ));
+    this.registerEvent(this.app.workspace.on(
+      'window-close',
+      (_workspaceWindow, closedWindow) => {
+        taskNotesTaskBriefBridge.removeDocument(closedWindow.document);
+      },
+    ));
+    this.register(() => taskNotesTaskBriefBridge.stop());
 
     this.registerEvent(this.app.workspace.on(
       'file-menu',
