@@ -196,7 +196,7 @@ Expected: 全部退出 0。
 - Modify: `versions.json`
 - Modify: version assertions in existing tests when required by repository release convention
 
-- [ ] **Step 1: 提交功能实现**
+- [x] **Step 1: 提交功能实现**
 
 Run:
 
@@ -205,7 +205,7 @@ git add docs/superpowers/plans/2026-07-26-tasknotes-modal-smart-action.md src/ob
 git commit -m "feat: add smart action to TaskNotes task modal"
 ```
 
-- [ ] **Step 2: 推送功能分支并创建 PR**
+- [x] **Step 2: 推送功能分支并创建 PR**
 
 Run:
 
