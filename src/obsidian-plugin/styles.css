@@ -13,6 +13,19 @@
   padding-bottom: 8px;
 }
 
+[data-atl-task-brief-action] {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+
+.atl-task-brief-action__icon,
+.atl-task-brief-action__icon svg {
+  display: inline-flex;
+  height: 16px;
+  width: 16px;
+}
+
 .atl-quick-capture-modal {
   width: min(600px, calc(100vw - 32px));
 }

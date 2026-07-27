@@ -52,31 +52,40 @@ ATL 只识别 TaskNotes 已公开到 DOM 的稳定样式类，在编辑态按钮
 6. 等待原弹窗在保存完成后关闭，再调用 ATL 现有 `open(path)`。
 
 Bridge 通过依赖注入接收 DOM 根节点、任务路径判断、Vault 文件列表、通知函数
-和 ATL 打开函数。它不读取 TaskNotes runtime 对象，不持有 TaskNotes modal
-实例，也不修改 TaskNotes 设置。
+和 ATL 打开函数。主插件在 layout ready 时覆盖已有 workspace leaves，并监听
+`window-open` / `window-close`，为每个 Obsidian `Document` 独立注册和清理观察器。
+Bridge 不读取 TaskNotes runtime 对象，不持有 TaskNotes modal 实例，也不修改
+TaskNotes 设置。
+
+ATL 与 TaskNotes 的启用顺序不固定。Bridge 即使在首次扫描时发现 TaskNotes 尚未
+启用，也会保留轻量 DOM 观察器；后续 DOM 变化触发扫描时重新检查 TaskNotes
+启用状态。这样冷启动时 TaskNotes 晚于 ATL 加载，编辑弹窗仍能自动获得入口，
+无需用户手动重载 ATL。
 
 ATL 插件卸载时必须断开 `MutationObserver`、清除等待定时器并移除所有已注入
 按钮，避免重载后重复注册。
 
 ## 当前任务识别
 
-TaskNotes 编辑弹窗会在“任务信息”区域显示完整 Vault 相对路径，但没有把路径
-作为公开 DOM 属性暴露。为避免依赖中文“文件”标签，Bridge 使用以下规则：
+TaskNotes 编辑弹窗会在“任务信息”区域把完整 Vault 相对路径渲染为可见的
+`.metadata-item .metadata-value`，但没有把路径作为公开 DOM 属性暴露。为避免依赖
+中文“文件”标签，Bridge 使用以下规则：
 
-1. 读取当前弹窗的可见文本；
+1. 只读取当前弹窗中可见的 metadata value；
 2. 从 Vault 已存在的 Markdown 文件中筛选 ATL 支持的任务路径；
-3. 找出完整路径出现在弹窗文本中的文件；
+3. 用完整字符串精确比较 metadata value 与合法任务路径；
 4. 仅在恰好匹配一个文件时继续。
 
 零匹配或多匹配时不触发保存，显示“无法识别当前任务，请使用文件菜单中的
-智能完善任务”，并保留当前弹窗和用户输入。
+智能完善任务”，并保留当前弹窗和用户输入。任务详情、隐藏元素或其他文件名
+前缀不会参与匹配。
 
 ## 保存与切换流程
 
 ```text
 点击“智能完善”
   -> 识别并验证任务路径
-  -> 禁用 ATL 按钮，显示“正在保存...”
+  -> 禁用 ATL 按钮和当前按钮栏的其他退出操作，显示“正在保存...”
   -> 点击 TaskNotes 原生“保存”
   -> 等待当前 TaskNotes 弹窗关闭
   -> 打开该路径的 ATL 智能完善弹窗
@@ -85,11 +94,13 @@ TaskNotes 编辑弹窗会在“任务信息”区域显示完整 Vault 相对路
 弹窗关闭是保存流程完成的信号。若在限定时间内没有关闭，Bridge 恢复按钮并
 提示“任务尚未保存，请检查当前字段后重试”；不会打开 ATL 弹窗。Bridge 不直接
 写任务 Markdown，因此标题、排期、状态和 TaskNotes 自定义字段仍由 TaskNotes
-负责保存。
+负责保存。等待期间同时拦截取消、关闭按钮和 Escape，避免用户先放弃修改而被
+误判为保存成功；超时、插件卸载或窗口关闭都会解除临时锁定。
 
 ## 兼容与降级
 
-- TaskNotes 未安装或未启用：不启动 Bridge，ATL 其他功能保持可用。
+- TaskNotes 未安装或持续未启用：Bridge 只保留轻量 DOM 观察器，不注入按钮，
+  ATL 其他功能保持可用；TaskNotes 后续启用时可自动恢复增强。
 - TaskNotes 创建任务弹窗：没有“打开笔记”按钮，不注入“智能完善”。
 - TaskNotes DOM 结构变化：特征检测失败后静默跳过，不影响 TaskNotes 使用。
 - 同一弹窗被多次扫描：唯一属性保证只插入一个按钮。
@@ -113,10 +124,14 @@ TaskNotes 编辑弹窗会在“任务信息”区域显示完整 Vault 相对路
 3. 重复 DOM 变更不会重复插入；
 4. 唯一任务路径匹配后触发原生保存，弹窗关闭后调用 ATL `open(path)`；
 5. 保存前按钮进入禁用状态；
-6. 路径零匹配、多匹配和非任务路径均不保存、不打开 ATL；
-7. 保存超时会恢复按钮并提示；
-8. stop/unload 会断开观察器、清除等待状态并移除注入按钮；
-9. 现有命令面板和文件菜单入口测试继续通过。
+6. 保存期间取消、关闭和 Escape 不会抢先关闭弹窗；
+7. 路径前缀、隐藏路径和详情中的其他路径不会干扰精确匹配；
+8. 路径零匹配、多匹配和非任务路径均不保存、不打开 ATL；
+9. 保存超时会恢复按钮并提示；
+10. stop/unload 会断开观察器、清除等待状态并移除注入按钮；
+11. 主窗口和 popout window 各自注入并独立清理；
+12. ATL 先启动、TaskNotes 后启用时仍能在后续弹窗中注入；
+13. 现有命令面板和文件菜单入口测试继续通过。
 
 完成实现后运行 Node 24 下的目标单测、完整测试、typecheck、lint 和生产构建，
 再安装到 ClawVault 进行真实 TaskNotes 编辑弹窗冒烟验证。
