@@ -17,9 +17,25 @@ export const ATL_BOARD_PATH = '10_Tasks/Views/任务总看板.base';
 const MANUAL_COLUMN_ORDER = JSON.stringify({
   status: ['inbox', 'ready', 'in_progress', 'done'],
 });
-const MANUAL_CARD_FIELDS = ['project_id', 'scheduled', 'due', 'priority'];
+const MANAGED_KANBAN_NAMES = new Set([
+  '任务总看板',
+  '工作任务',
+  '个人实践',
+  '待归类',
+]);
+const COLLECTED_AT_FORMULA = 'if(created_at.isEmpty(), file.ctime, if(date(created_at).isEmpty(), file.ctime, date(created_at)))';
+const PLANNED_AT_FORMULA = 'if(scheduled.isEmpty(), null, date(scheduled))';
+const MANUAL_CARD_FIELDS = [
+  'project_id',
+  'source_date',
+  'formula.atlCollectedAt',
+  'formula.atlPlannedAt',
+  'priority',
+];
 const MANUAL_CARD_SORT = [
   { column: 'tasknotes_manual_order', direction: 'DESC' },
+  { column: 'formula.atlCollectedAt', direction: 'DESC' },
+  { column: 'source_date', direction: 'DESC' },
   { column: 'formula.atlPriorityRank', direction: 'ASC' },
 ];
 const SUPPORTED_CALENDAR_NAMES = new Set(['日历', '日历视图']);
@@ -44,7 +60,7 @@ type BaseView = Record<string, unknown>;
 type BaseDocument = Record<string, unknown> & { views: BaseView[] };
 type ParsedBoard = {
   document: BaseDocument;
-  view: BaseView;
+  managedViews: BaseView[];
   calendar: BaseView | undefined;
 };
 
@@ -110,18 +126,47 @@ function calendarOptions(calendar: BaseView): BaseView | undefined {
   return calendar.options;
 }
 
+function optionalRecordSection(
+  document: BaseDocument,
+  key: 'formulas' | 'properties',
+): BaseView | undefined {
+  const value = document[key];
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new Error(`invalid ${key}`);
+  return value;
+}
+
+function recordSection(
+  document: BaseDocument,
+  key: 'formulas' | 'properties',
+): BaseView {
+  const existing = optionalRecordSection(document, key);
+  if (existing !== undefined) return existing;
+  const created: BaseView = {};
+  document[key] = created;
+  return created;
+}
+
 function parseBoard(content: string): ParsedBoard {
   try {
     const document = parse(content) as unknown;
     if (!isRecord(document)) throw new Error('invalid');
     const views = (document as { views?: unknown }).views;
     if (!Array.isArray(views)) throw new Error('invalid');
-    const matching = views.filter((view): view is BaseView => (
-      isRecord(view)
-      && view.type === 'tasknotesKanban'
-      && view.name === '任务总看板'
-    ));
-    if (matching.length !== 1) throw new Error('ambiguous');
+    optionalRecordSection(document as BaseDocument, 'formulas');
+    optionalRecordSection(document as BaseDocument, 'properties');
+    const managedByName = new Map<string, BaseView>();
+    for (const view of views) {
+      if (
+        !isRecord(view)
+        || view.type !== 'tasknotesKanban'
+        || typeof view.name !== 'string'
+        || !MANAGED_KANBAN_NAMES.has(view.name)
+      ) continue;
+      if (managedByName.has(view.name)) throw new Error('ambiguous');
+      managedByName.set(view.name, view);
+    }
+    if (!managedByName.has('任务总看板')) throw new Error('missing');
     const calendars = views.filter((view): view is BaseView => (
       isRecord(view)
       && view.type === 'tasknotesCalendar'
@@ -133,11 +178,84 @@ function parseBoard(content: string): ParsedBoard {
     if (calendar !== undefined) calendarOptions(calendar);
     return {
       document: document as BaseDocument,
-      view: matching[0] as BaseView,
+      managedViews: [...MANAGED_KANBAN_NAMES]
+        .flatMap((name) => managedByName.get(name) ?? []),
       calendar,
     };
   } catch {
     throw new BoardAppearanceError('任务总看板配置无效，未做任何修改。');
+  }
+}
+
+function propertyDisplayNameApplied(
+  properties: BaseView | undefined,
+  key: string,
+  displayName: string,
+): boolean {
+  const value = properties?.[key];
+  return isRecord(value) && value.displayName === displayName;
+}
+
+function boardMetadataApplied(document: BaseDocument): boolean {
+  const formulas = optionalRecordSection(document, 'formulas');
+  const properties = optionalRecordSection(document, 'properties');
+  return formulas?.atlCollectedAt === COLLECTED_AT_FORMULA
+    && formulas.atlPlannedAt === PLANNED_AT_FORMULA
+    && propertyDisplayNameApplied(properties, 'source_date', '来源日期')
+    && propertyDisplayNameApplied(
+      properties,
+      'formula.atlCollectedAt',
+      '入箱时间',
+    )
+    && propertyDisplayNameApplied(
+      properties,
+      'formula.atlPlannedAt',
+      '计划时间',
+    );
+}
+
+function viewPresetApplied(view: BaseView): boolean {
+  return view.groupBy !== null
+    && typeof view.groupBy === 'object'
+    && (view.groupBy as BaseView).property === 'status'
+    && (view.groupBy as BaseView).direction === 'ASC'
+    && view.pinnedColumns === 'inbox,ready,in_progress,done'
+    && view.columnOrder === MANUAL_COLUMN_ORDER
+    && view.hideEmptyColumns === true
+    && stringArrayEquals(view.order, MANUAL_CARD_FIELDS)
+    && sortEquals(view.sort)
+    && view.columnWidth === 320
+    && view.cardLayout === 'compact';
+}
+
+function applyViewPreset(view: BaseView): void {
+  view.groupBy = { property: 'status', direction: 'ASC' };
+  view.pinnedColumns = 'inbox,ready,in_progress,done';
+  view.columnOrder = MANUAL_COLUMN_ORDER;
+  view.hideEmptyColumns = true;
+  view.order = [...MANUAL_CARD_FIELDS];
+  view.sort = MANUAL_CARD_SORT.map((item) => ({ ...item }));
+  view.columnWidth = 320;
+  view.cardLayout = 'compact';
+}
+
+function applyBoardMetadata(document: BaseDocument): void {
+  const formulas = recordSection(document, 'formulas');
+  formulas.atlCollectedAt = COLLECTED_AT_FORMULA;
+  formulas.atlPlannedAt = PLANNED_AT_FORMULA;
+
+  const properties = recordSection(document, 'properties');
+  const displayNames = {
+    source_date: '来源日期',
+    'formula.atlCollectedAt': '入箱时间',
+    'formula.atlPlannedAt': '计划时间',
+  } as const;
+  for (const [key, displayName] of Object.entries(displayNames)) {
+    const existing = properties[key];
+    properties[key] = {
+      ...(isRecord(existing) ? existing : {}),
+      displayName,
+    };
   }
 }
 
@@ -230,18 +348,9 @@ export class BoardAppearanceController {
     }
     let applied = false;
     try {
-      const { view, calendar } = parseBoard(content);
-      applied = view.groupBy !== null
-        && typeof view.groupBy === 'object'
-        && (view.groupBy as BaseView).property === 'status'
-        && (view.groupBy as BaseView).direction === 'ASC'
-        && view.pinnedColumns === 'inbox,ready,in_progress,done'
-        && view.columnOrder === MANUAL_COLUMN_ORDER
-        && view.hideEmptyColumns === true
-        && stringArrayEquals(view.order, MANUAL_CARD_FIELDS)
-        && sortEquals(view.sort)
-        && view.columnWidth === 320
-        && view.cardLayout === 'compact'
+      const { document, managedViews, calendar } = parseBoard(content);
+      applied = boardMetadataApplied(document)
+        && managedViews.every(viewPresetApplied)
         && calendarPresetApplied(calendar);
     } catch {
       applied = false;
@@ -256,16 +365,10 @@ export class BoardAppearanceController {
     if (content === null) {
       throw new BoardAppearanceError('未找到 TaskNotes 任务总看板。');
     }
-    const { document, view, calendar } = parseBoard(content);
+    const { document, managedViews, calendar } = parseBoard(content);
     await createBackup(`${basePath}.atl-backup`, content, root);
-    view.groupBy = { property: 'status', direction: 'ASC' };
-    view.pinnedColumns = 'inbox,ready,in_progress,done';
-    view.columnOrder = MANUAL_COLUMN_ORDER;
-    view.hideEmptyColumns = true;
-    view.order = [...MANUAL_CARD_FIELDS];
-    view.sort = MANUAL_CARD_SORT.map((item) => ({ ...item }));
-    view.columnWidth = 320;
-    view.cardLayout = 'compact';
+    applyBoardMetadata(document);
+    managedViews.forEach(applyViewPreset);
     applyCalendarPreset(calendar);
     await atomicWrite(basePath, stringify(document, { lineWidth: 0 }), root);
   }

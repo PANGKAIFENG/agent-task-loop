@@ -16,7 +16,7 @@
 - Modify: `tests/unit/obsidian-plugin/board-appearance-controller.test.ts`
 - Test: `tests/unit/obsidian-plugin/board-appearance-controller.test.ts`
 
-- [ ] **Step 1: 扩充 Base 合成 fixture**
+- [x] **Step 1: 扩充 Base 合成 fixture**
 
 在 `original` 中保留“任务总看板”，再增加“工作任务”“个人实践”“待归类”三个 ATL 管理视图和一个“我的自建视图”。三个分类视图分别保留不同 `filters`，自建视图使用独特 `order`、`sort` 和 `columnWidth`，用于证明预设不会覆盖其配置。
 
@@ -46,7 +46,7 @@
     columnWidth: 444
 ```
 
-- [ ] **Step 2: 把主预设测试改成新契约**
+- [x] **Step 2: 把主预设测试改成新契约**
 
 对四个已管理视图逐一断言：
 
@@ -87,7 +87,7 @@ expect(parsed.views.find((view) => view.name === '我的自建视图')).toMatchO
 });
 ```
 
-- [ ] **Step 3: 增加异常和兼容性测试**
+- [x] **Step 3: 增加异常和兼容性测试**
 
 增加以下用例：
 
@@ -101,7 +101,7 @@ it('reports the preset as stale when one managed view still exposes scheduled');
 
 “缺少可选管理视图”fixture 必须仍包含唯一“任务总看板”；“重复管理视图”必须完整比较写入前后的原文并断言 `.atl-backup` 不存在。
 
-- [ ] **Step 4: 运行目标测试并确认 RED**
+- [x] **Step 4: 运行目标测试并确认 RED**
 
 Run:
 
@@ -117,7 +117,7 @@ Expected: FAIL，差异明确显示旧预设仍使用 `scheduled` / `due`、只�
 - Modify: `src/obsidian-plugin/board-appearance-controller.ts`
 - Test: `tests/unit/obsidian-plugin/board-appearance-controller.test.ts`
 
-- [ ] **Step 1: 定义受管视图、公式、字段和排序常量**
+- [x] **Step 1: 定义受管视图、公式、字段和排序常量**
 
 用以下契约替换单视图常量：
 
@@ -145,7 +145,7 @@ const MANUAL_CARD_SORT = [
 ];
 ```
 
-- [ ] **Step 2: 让解析结果返回全部受管视图**
+- [x] **Step 2: 让解析结果返回全部受管视图**
 
 将 `ParsedBoard.view` 改成 `managedViews: BaseView[]`。解析时要求“任务总看板”恰好一个；其他受管名称允许缺失，但任一名称出现两次必须以“任务总看板配置无效”失败关闭。日历识别和安全检查保持不变。
 
@@ -157,7 +157,7 @@ type ParsedBoard = {
 };
 ```
 
-- [ ] **Step 3: 增加只补充目标键的公式和属性帮助函数**
+- [x] **Step 3: 增加只补充目标键的公式和属性帮助函数**
 
 读取 `document.formulas` / `document.properties` 时：未定义则创建普通对象；已定义但不是对象则抛出配置无效。只写入以下键并保留其他键：
 
@@ -182,11 +182,11 @@ properties['formula.atlPlannedAt'] = {
 };
 ```
 
-- [ ] **Step 4: 统一应用并检测全部受管视图**
+- [x] **Step 4: 统一应用并检测全部受管视图**
 
 `applyRecommendedPreset()` 对 `managedViews` 循环应用字段、排序、列宽、紧凑布局和四列状态配置，但不重建对象，因此每个视图的 `filters` 与其他未知键保持原样。`status()` 只有在公式、属性、所有当前存在的受管视图及日历选项均满足契约时才返回 `applied: true`。
 
-- [ ] **Step 5: 运行目标测试并确认 GREEN**
+- [x] **Step 5: 运行目标测试并确认 GREEN**
 
 Run:
 
@@ -196,7 +196,7 @@ fnm exec --using 24 pnpm exec vitest run tests/unit/obsidian-plugin/board-appear
 
 Expected: 全部 PASS；输出中没有真实 Vault 路径，也没有写入个人数据。
 
-- [ ] **Step 6: 提交看板实现**
+- [x] **Step 6: 提交看板实现**
 
 ```bash
 git add src/obsidian-plugin/board-appearance-controller.ts tests/unit/obsidian-plugin/board-appearance-controller.test.ts
