@@ -209,7 +209,7 @@ git commit -m "feat: show inbox source and collection dates"
 - Modify: `tests/unit/obsidian-plugin/candidate-extractor.test.ts`
 - Modify: `src/obsidian-plugin/candidate-extractor.ts`
 
-- [ ] **Step 1: 写入分类提示词和不限量失败测试**
+- [x] **Step 1: 写入分类提示词和不限量失败测试**
 
 在受限提示词测试中增加以下断言：
 
@@ -244,7 +244,7 @@ it('returns every validated candidate when a batch contains more than five', asy
 });
 ```
 
-- [ ] **Step 2: 运行目标测试并确认 RED**
+- [x] **Step 2: 运行目标测试并确认 RED**
 
 Run:
 
@@ -254,7 +254,7 @@ fnm exec --using 24 pnpm exec vitest run tests/unit/obsidian-plugin/candidate-ex
 
 Expected: 新的六类口径提示词断言 FAIL；原有 40 条 / 60,000 字符分批测试继续 PASS。
 
-- [ ] **Step 3: 用六类判定规则替换宽泛提取描述**
+- [x] **Step 3: 用六类判定规则替换宽泛提取描述**
 
 在 `extractionPrompt()` 中明确：
 
@@ -270,7 +270,7 @@ Expected: 新的六类口径提示词断言 FAIL；原有 40 条 / 60,000 字符
 
 保留结构化输出、来源 fingerprint、逐字引文校验、40 条 / 60,000 字符技术分批和显式 `#待办` 确定性回退。
 
-- [ ] **Step 4: 运行目标测试并确认 GREEN**
+- [x] **Step 4: 运行目标测试并确认 GREEN**
 
 Run:
 
@@ -280,7 +280,7 @@ fnm exec --using 24 pnpm exec vitest run tests/unit/obsidian-plugin/candidate-ex
 
 Expected: 全部 PASS，8 个候选完整返回，分批限制保持不变。
 
-- [ ] **Step 5: 提交分类实现**
+- [x] **Step 5: 提交分类实现**
 
 ```bash
 git add src/obsidian-plugin/candidate-extractor.ts tests/unit/obsidian-plugin/candidate-extractor.test.ts
