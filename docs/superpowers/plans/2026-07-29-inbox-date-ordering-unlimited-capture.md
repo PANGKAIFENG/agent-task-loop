@@ -294,7 +294,7 @@ git commit -m "fix: align sync task candidate classification"
 - Modify: `docs/operations/obsidian-plugin.md`
 - Update in place: Codex automation `id = "obsidian"`
 
-- [ ] **Step 1: 更新插件设置文案**
+- [x] **Step 1: 更新插件设置文案**
 
 把“ATL 紧凑卡片”说明改为：
 
@@ -308,7 +308,7 @@ git commit -m "fix: align sync task candidate classification"
 按任务状态显示四列，并保留人工拖动优先；首次应用会保留原始备份。
 ```
 
-- [ ] **Step 2: 从用户视角补充三种日期和不限量说明**
+- [x] **Step 2: 从用户视角补充三种日期和不限量说明**
 
 在 `docs/operations/obsidian-plugin.md` 的“应用人工任务看板”后补充：
 
@@ -324,7 +324,7 @@ git commit -m "fix: align sync task candidate classification"
 没有计划时间时卡片不会再显示 `scheduled: false`。人工拖动顺序优先；未拖动任务默认按入箱时间从新到旧排列。每日复盘不限制合格候选数量，但所有自动整理任务仍留在 Inbox，必须由你确认后才会进入待办。
 ```
 
-- [ ] **Step 3: 原地更新 `obsidian` 自动化**
+- [x] **Step 3: 原地更新 `obsidian` 自动化**
 
 使用 Codex automation 更新工具读取现有 `id = "obsidian"` 并只修改原有任务，不创建第二个自动化。保持 schedule、model、reasoning effort、cwd 和状态不变；将任务候选规则第 16–18 条调整为六类口径，删除：
 
@@ -335,7 +335,7 @@ git commit -m "fix: align sync task candidate classification"
 
 增加：所有批次中通过质量门槛的候选都提交 ATL，不限数量；报告候选总数、新增数、已有数、失败数，不截断列表。保留逐条 ATL capture、去重、人工确认、失败不直写 Markdown 等边界。
 
-- [ ] **Step 4: 验证自动化没有重复且配置已持久化**
+- [x] **Step 4: 验证自动化没有重复且配置已持久化**
 
 读取 automation 列表和 `obsidian` 详情，断言：
 
@@ -346,7 +346,7 @@ prompt 不含“最多向 ATL 提交 3-5 条”或“超过 5 条”
 prompt 包含六类标识和“不设置候选数量上限”
 ```
 
-- [ ] **Step 5: 运行文档与源码检查并提交**
+- [x] **Step 5: 运行文档与源码检查并提交**
 
 Run:
 
