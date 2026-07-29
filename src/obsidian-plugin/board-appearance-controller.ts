@@ -179,7 +179,8 @@ function parseBoard(content: string): ParsedBoard {
     return {
       document: document as BaseDocument,
       managedViews: [...MANAGED_KANBAN_NAMES]
-        .flatMap((name) => managedByName.get(name) ?? []),
+        .map((name) => managedByName.get(name))
+        .filter((view): view is BaseView => view !== undefined),
       calendar,
     };
   } catch {
