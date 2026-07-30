@@ -14,17 +14,15 @@ import { dirname, isAbsolute, join, relative } from 'node:path';
 import { parse, stringify } from 'yaml';
 
 export const ATL_BOARD_PATH = '10_Tasks/Views/任务总看板.base';
-const MANUAL_COLUMN_ORDER = JSON.stringify({
-  status: ['inbox', 'ready', 'in_progress', 'done'],
-});
 const MANAGED_KANBAN_NAMES = new Set([
   '任务总看板',
   '工作任务',
   '个人实践',
   '待归类',
 ]);
-const COLLECTED_AT_FORMULA = String.raw`if(created_at.isType("date"), created_at, if(created_at.isType("string") && /^\d{4}-(0[1-9]|1[0-2])-([012]\d|3[01])T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(\.\d{1,3})?(Z|[+-]([01]\d|2[0-3]):[0-5]\d)$/.matches(created_at), date(created_at), file.ctime))`;
-const PLANNED_AT_FORMULA = 'if(scheduled == false, null, if(scheduled.isEmpty(), null, date(scheduled)))';
+const BASE_DATE_PATTERN = String.raw`^(?:(?:\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|02-(?:0[1-9]|1\d|2[0-8])))|(?:(?:\d{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)-02-29))(?:[ T](?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,3})?)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?)?$`;
+const COLLECTED_AT_FORMULA = `if(created_at.isType("date"), created_at, if(created_at.isType("string") && /${BASE_DATE_PATTERN}/.matches(created_at), date(created_at), file.ctime))`;
+const PLANNED_AT_FORMULA = `if(scheduled.isType("date"), scheduled, if(scheduled.isType("string") && /${BASE_DATE_PATTERN}/.matches(scheduled), date(scheduled), null))`;
 const MANUAL_CARD_FIELDS = [
   'project_id',
   'source_date',
@@ -198,28 +196,13 @@ function boardMetadataApplied(document: BaseDocument): boolean {
 }
 
 function viewPresetApplied(view: BaseView): boolean {
-  return view.groupBy !== null
-    && typeof view.groupBy === 'object'
-    && (view.groupBy as BaseView).property === 'status'
-    && (view.groupBy as BaseView).direction === 'ASC'
-    && view.pinnedColumns === 'inbox,ready,in_progress,done'
-    && view.columnOrder === MANUAL_COLUMN_ORDER
-    && view.hideEmptyColumns === true
-    && stringArrayEquals(view.order, MANUAL_CARD_FIELDS)
-    && sortEquals(view.sort)
-    && view.columnWidth === 320
-    && view.cardLayout === 'compact';
+  return stringArrayEquals(view.order, MANUAL_CARD_FIELDS)
+    && sortEquals(view.sort);
 }
 
 function applyViewPreset(view: BaseView): void {
-  view.groupBy = { property: 'status', direction: 'ASC' };
-  view.pinnedColumns = 'inbox,ready,in_progress,done';
-  view.columnOrder = MANUAL_COLUMN_ORDER;
-  view.hideEmptyColumns = true;
   view.order = [...MANUAL_CARD_FIELDS];
   view.sort = MANUAL_CARD_SORT.map((item) => ({ ...item }));
-  view.columnWidth = 320;
-  view.cardLayout = 'compact';
 }
 
 function applyBoardMetadata(document: BaseDocument): void {

@@ -103,6 +103,23 @@ async function fixture(content = original) {
   return { vaultRoot, basePath, backupPath: `${basePath}.atl-backup` };
 }
 
+function formulaDatePattern(formula: string): RegExp {
+  const match = /\/(\^.*\$)\/\.matches/.exec(formula);
+  expect(match).not.toBeNull();
+  return new RegExp(match?.[1] ?? '(?!)');
+}
+
+function unmanagedViewSettings(view: Record<string, unknown>) {
+  return {
+    groupBy: view.groupBy,
+    pinnedColumns: view.pinnedColumns,
+    columnOrder: view.columnOrder,
+    hideEmptyColumns: view.hideEmptyColumns,
+    columnWidth: view.columnWidth,
+    cardLayout: view.cardLayout,
+  };
+}
+
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, {
     recursive: true,
@@ -134,12 +151,6 @@ describe('BoardAppearanceController', () => {
           'formula.atlPlannedAt',
           'priority',
         ],
-        columnWidth: 320,
-        cardLayout: 'compact',
-        hideEmptyColumns: true,
-        groupBy: { property: 'status', direction: 'ASC' },
-        pinnedColumns: 'inbox,ready,in_progress,done',
-        columnOrder: '{"status":["inbox","ready","in_progress","done"]}',
         sort: [
           { column: 'tasknotes_manual_order', direction: 'DESC' },
           { column: 'formula.atlCollectedAt', direction: 'DESC' },
@@ -184,6 +195,42 @@ describe('BoardAppearanceController', () => {
     expect(await readFile(paths.backupPath, 'utf8')).toBe(
       'first original stays authoritative\n',
     );
+  });
+
+  it('preserves every managed view setting outside card fields and sorting', async () => {
+    const document = parse(original) as {
+      views: Array<Record<string, unknown>>;
+    };
+    const managedNames = ['任务总看板', '工作任务', '个人实践', '待归类'];
+    for (const [index, name] of managedNames.entries()) {
+      const view = document.views.find((candidate) => candidate.name === name);
+      if (view === undefined) throw new Error(`missing ${name} fixture`);
+      view.groupBy = { property: `custom-group-${index}`, direction: 'DESC' };
+      view.pinnedColumns = `custom-pinned-${index}`;
+      view.columnOrder = `custom-order-${index}`;
+      view.hideEmptyColumns = index % 2 === 0;
+      view.columnWidth = 401 + index;
+      view.cardLayout = `custom-layout-${index}`;
+    }
+    const beforeByName = new Map(managedNames.map((name) => {
+      const view = document.views.find((candidate) => candidate.name === name);
+      if (view === undefined) throw new Error(`missing ${name} fixture`);
+      return [name, unmanagedViewSettings(view)];
+    }));
+    const paths = await fixture(stringify(document, { lineWidth: 0 }));
+    const controller = new BoardAppearanceController();
+
+    await controller.applyRecommendedPreset(paths.vaultRoot);
+
+    const updated = parse(await readFile(paths.basePath, 'utf8')) as {
+      views: Array<Record<string, unknown>>;
+    };
+    for (const name of managedNames) {
+      const view = updated.views.find((candidate) => candidate.name === name);
+      expect(view).toBeDefined();
+      if (view === undefined) throw new Error(`missing ${name} after preset`);
+      expect(unmanagedViewSettings(view)).toEqual(beforeByName.get(name));
+    }
   });
 
   it('reports preset status and restores the original file byte-for-byte', async () => {
@@ -285,7 +332,13 @@ describe('BoardAppearanceController', () => {
     expect(parsed.views[0]).toMatchObject({
       type: 'tasknotesKanban',
       name: '任务总看板',
-      groupBy: { property: 'status', direction: 'ASC' },
+      order: [
+        'project_id',
+        'source_date',
+        'formula.atlCollectedAt',
+        'formula.atlPlannedAt',
+        'priority',
+      ],
     });
     await expect(controller.status(paths.vaultRoot)).resolves.toMatchObject({
       available: true,
@@ -376,7 +429,7 @@ describe('BoardAppearanceController', () => {
     });
   });
 
-  it('guards boolean false before checking whether scheduled is empty', async () => {
+  it('gates scheduled by type and a strict date pattern before parsing it', async () => {
     const paths = await fixture();
     const controller = new BoardAppearanceController();
 
@@ -386,7 +439,7 @@ describe('BoardAppearanceController', () => {
       formulas: Record<string, string>;
     };
     expect(parsed.formulas.atlPlannedAt).toBe(
-      'if(scheduled == false, null, if(scheduled.isEmpty(), null, date(scheduled)))',
+      `if(scheduled.isType("date"), scheduled, if(scheduled.isType("string") && /${formulaDatePattern(parsed.formulas.atlPlannedAt!).source}/.matches(scheduled), date(scheduled), null))`,
     );
   });
 
@@ -399,7 +452,49 @@ describe('BoardAppearanceController', () => {
     const parsed = parse(await readFile(paths.basePath, 'utf8')) as {
       formulas: Record<string, string>;
     };
-    expect(parsed.formulas.atlCollectedAt).toBe(String.raw`if(created_at.isType("date"), created_at, if(created_at.isType("string") && /^\d{4}-(0[1-9]|1[0-2])-([012]\d|3[01])T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(\.\d{1,3})?(Z|[+-]([01]\d|2[0-3]):[0-5]\d)$/.matches(created_at), date(created_at), file.ctime))`);
+    expect(parsed.formulas.atlCollectedAt).toBe(
+      `if(created_at.isType("date"), created_at, if(created_at.isType("string") && /${formulaDatePattern(parsed.formulas.atlCollectedAt!).source}/.matches(created_at), date(created_at), file.ctime))`,
+    );
+  });
+
+  it('only parses supported real calendar dates for collection and planning', async () => {
+    const paths = await fixture();
+    const controller = new BoardAppearanceController();
+
+    await controller.applyRecommendedPreset(paths.vaultRoot);
+
+    const parsed = parse(await readFile(paths.basePath, 'utf8')) as {
+      formulas: Record<string, string>;
+    };
+    expect(parsed.formulas.atlCollectedAt).toContain('created_at.isType("date")');
+    expect(parsed.formulas.atlPlannedAt).toContain('scheduled.isType("date")');
+    const collectedPattern = formulaDatePattern(parsed.formulas.atlCollectedAt!);
+    const plannedPattern = formulaDatePattern(parsed.formulas.atlPlannedAt!);
+    const valid = [
+      '2026-07-24',
+      '2026-07-24T17:30',
+      '2026-07-24 17:30:05',
+      '2026-07-24T17:30:05.123Z',
+      '2026-07-24T17:30:05+08:00',
+      '2024-02-29',
+    ];
+    const invalid = [
+      '',
+      'not-a-date',
+      '2026-02-29',
+      '2026-02-31',
+      '2026-04-31',
+      '2026-13-01',
+      '2026-07-24T24:00',
+    ];
+    for (const value of valid) {
+      expect(collectedPattern.test(value), value).toBe(true);
+      expect(plannedPattern.test(value), value).toBe(true);
+    }
+    for (const value of invalid) {
+      expect(collectedPattern.test(value), value).toBe(false);
+      expect(plannedPattern.test(value), value).toBe(false);
+    }
   });
 
   it('rejects a Base path that escapes the Vault through a symlink', async () => {
