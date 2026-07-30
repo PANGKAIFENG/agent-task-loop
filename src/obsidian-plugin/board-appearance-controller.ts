@@ -23,8 +23,8 @@ const MANAGED_KANBAN_NAMES = new Set([
   '个人实践',
   '待归类',
 ]);
-const COLLECTED_AT_FORMULA = 'if(created_at.isEmpty(), file.ctime, if(date(created_at).isEmpty(), file.ctime, date(created_at)))';
-const PLANNED_AT_FORMULA = 'if(scheduled.isEmpty(), null, date(scheduled))';
+const COLLECTED_AT_FORMULA = String.raw`if(created_at.isType("date"), created_at, if(created_at.isType("string") && /^\d{4}-(0[1-9]|1[0-2])-([012]\d|3[01])T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(\.\d{1,3})?(Z|[+-]([01]\d|2[0-3]):[0-5]\d)$/.matches(created_at), date(created_at), file.ctime))`;
+const PLANNED_AT_FORMULA = 'if(scheduled == false, null, if(scheduled.isEmpty(), null, date(scheduled)))';
 const MANUAL_CARD_FIELDS = [
   'project_id',
   'source_date',
@@ -38,7 +38,6 @@ const MANUAL_CARD_SORT = [
   { column: 'source_date', direction: 'DESC' },
   { column: 'formula.atlPriorityRank', direction: 'ASC' },
 ];
-const SUPPORTED_CALENDAR_NAMES = new Set(['日历', '日历视图']);
 
 function stringArrayEquals(value: unknown, expected: readonly string[]): boolean {
   return Array.isArray(value)
@@ -61,7 +60,6 @@ type BaseDocument = Record<string, unknown> & { views: BaseView[] };
 type ParsedBoard = {
   document: BaseDocument;
   managedViews: BaseView[];
-  calendar: BaseView | undefined;
 };
 
 export class BoardAppearanceError extends Error {
@@ -120,12 +118,6 @@ function isRecord(value: unknown): value is BaseView {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function calendarOptions(calendar: BaseView): BaseView | undefined {
-  if (calendar.options === undefined) return undefined;
-  if (!isRecord(calendar.options)) throw new Error('invalid calendar options');
-  return calendar.options;
-}
-
 function optionalRecordSection(
   document: BaseDocument,
   key: 'formulas' | 'properties',
@@ -167,21 +159,11 @@ function parseBoard(content: string): ParsedBoard {
       managedByName.set(view.name, view);
     }
     if (!managedByName.has('任务总看板')) throw new Error('missing');
-    const calendars = views.filter((view): view is BaseView => (
-      isRecord(view)
-      && view.type === 'tasknotesCalendar'
-      && typeof view.name === 'string'
-      && SUPPORTED_CALENDAR_NAMES.has(view.name)
-    ));
-    if (calendars.length > 1) throw new Error('ambiguous');
-    const calendar = calendars[0];
-    if (calendar !== undefined) calendarOptions(calendar);
     return {
       document: document as BaseDocument,
       managedViews: [...MANAGED_KANBAN_NAMES]
         .map((name) => managedByName.get(name))
         .filter((view): view is BaseView => view !== undefined),
-      calendar,
     };
   } catch {
     throw new BoardAppearanceError('任务总看板配置无效，未做任何修改。');
@@ -258,18 +240,6 @@ function applyBoardMetadata(document: BaseDocument): void {
       displayName,
     };
   }
-}
-
-function calendarPresetApplied(calendar: BaseView | undefined): boolean {
-  return calendar === undefined
-    || calendarOptions(calendar)?.slotEventOverlap === false;
-}
-
-function applyCalendarPreset(calendar: BaseView | undefined): void {
-  if (calendar === undefined) return;
-  const options = calendarOptions(calendar) ?? {};
-  options.slotEventOverlap = false;
-  calendar.options = options;
 }
 
 async function createBackup(path: string, content: string, root: string): Promise<void> {
@@ -349,10 +319,9 @@ export class BoardAppearanceController {
     }
     let applied = false;
     try {
-      const { document, managedViews, calendar } = parseBoard(content);
+      const { document, managedViews } = parseBoard(content);
       applied = boardMetadataApplied(document)
-        && managedViews.every(viewPresetApplied)
-        && calendarPresetApplied(calendar);
+        && managedViews.every(viewPresetApplied);
     } catch {
       applied = false;
     }
@@ -366,11 +335,10 @@ export class BoardAppearanceController {
     if (content === null) {
       throw new BoardAppearanceError('未找到 TaskNotes 任务总看板。');
     }
-    const { document, managedViews, calendar } = parseBoard(content);
+    const { document, managedViews } = parseBoard(content);
     await createBackup(`${basePath}.atl-backup`, content, root);
     applyBoardMetadata(document);
     managedViews.forEach(applyViewPreset);
-    applyCalendarPreset(calendar);
     await atomicWrite(basePath, stringify(document, { lineWidth: 0 }), root);
   }
 

@@ -173,15 +173,10 @@ describe('BoardAppearanceController', () => {
       sort: [{ property: 'file.name', direction: 'ASC' }],
       columnWidth: 444,
     });
-    expect(parsed.views[5]).toMatchObject({
-      type: 'tasknotesCalendar',
-      name: '日历',
-      calendarView: 'timeGridWeek',
-      options: {
-        showScheduled: true,
-        slotEventOverlap: false,
-      },
-    });
+    const originalCalendar = (parse(original) as {
+      views: Array<Record<string, unknown>>;
+    }).views[5];
+    expect(parsed.views[5]).toEqual(originalCalendar);
     expect(await readFile(paths.backupPath, 'utf8')).toBe(original);
 
     await writeFile(paths.backupPath, 'first original stays authoritative\n', 'utf8');
@@ -216,7 +211,7 @@ describe('BoardAppearanceController', () => {
     });
   });
 
-  it('treats a legacy overlapping calendar as not applied until the preset is reapplied', async () => {
+  it('ignores calendar options when reporting or reapplying the Kanban preset', async () => {
     const paths = await fixture();
     const controller = new BoardAppearanceController();
     await controller.applyRecommendedPreset(paths.vaultRoot);
@@ -227,23 +222,38 @@ describe('BoardAppearanceController', () => {
     const calendar = document.views.find((view) => view.name === '日历');
     expect(calendar).toBeDefined();
     if (calendar === undefined) throw new Error('missing calendar fixture');
-    calendar.options = { showScheduled: true };
+    calendar.options = {
+      showScheduled: false,
+      slotEventOverlap: true,
+      customCalendarOption: 'keep-me',
+    };
     await writeFile(paths.basePath, stringify(document, { lineWidth: 0 }), 'utf8');
 
     await expect(controller.status(paths.vaultRoot)).resolves.toMatchObject({
       available: true,
-      applied: false,
+      applied: true,
     });
 
     await controller.applyRecommendedPreset(paths.vaultRoot);
+    const reapplied = parse(await readFile(paths.basePath, 'utf8')) as {
+      views: Array<Record<string, unknown>>;
+    };
+    expect(reapplied.views.find((view) => view.name === '日历')).toMatchObject({
+      options: {
+        showScheduled: false,
+        slotEventOverlap: true,
+        customCalendarOption: 'keep-me',
+      },
+    });
     await expect(controller.status(paths.vaultRoot)).resolves.toMatchObject({
       available: true,
       applied: true,
     });
   });
 
-  it('updates the supported 日历视图 name and preserves its other fields', async () => {
-    const paths = await fixture(original.replace('name: 日历', 'name: 日历视图'));
+  it('preserves a 日历视图 byte-for-byte at the parsed-data level', async () => {
+    const content = original.replace('name: 日历', 'name: 日历视图');
+    const paths = await fixture(content);
     const controller = new BoardAppearanceController();
 
     await controller.applyRecommendedPreset(paths.vaultRoot);
@@ -251,15 +261,10 @@ describe('BoardAppearanceController', () => {
     const parsed = parse(await readFile(paths.basePath, 'utf8')) as {
       views: Array<Record<string, unknown>>;
     };
-    expect(parsed.views[5]).toMatchObject({
-      type: 'tasknotesCalendar',
-      name: '日历视图',
-      calendarView: 'timeGridWeek',
-      options: {
-        showScheduled: true,
-        slotEventOverlap: false,
-      },
-    });
+    const originalCalendar = (parse(content) as {
+      views: Array<Record<string, unknown>>;
+    }).views[5];
+    expect(parsed.views[5]).toEqual(originalCalendar);
   });
 
   it('keeps the Kanban preset behavior without adding a calendar view', async () => {
@@ -288,18 +293,21 @@ describe('BoardAppearanceController', () => {
     });
   });
 
-  it('rejects ambiguous supported calendar views without writing or creating a backup', async () => {
+  it('preserves multiple calendar views because calendars are outside the preset boundary', async () => {
     const ambiguous = `${original}  - type: tasknotesCalendar\n    name: 日历视图\n`;
     const paths = await fixture(ambiguous);
     const controller = new BoardAppearanceController();
 
-    await expect(controller.applyRecommendedPreset(paths.vaultRoot)).rejects.toThrow(
-      '任务总看板配置无效',
-    );
-    expect(await readFile(paths.basePath, 'utf8')).toBe(ambiguous);
-    await expect(readFile(paths.backupPath, 'utf8')).rejects.toMatchObject({
-      code: 'ENOENT',
-    });
+    await controller.applyRecommendedPreset(paths.vaultRoot);
+
+    const before = (parse(ambiguous) as {
+      views: Array<Record<string, unknown>>;
+    }).views.filter((view) => view.type === 'tasknotesCalendar');
+    const after = (parse(await readFile(paths.basePath, 'utf8')) as {
+      views: Array<Record<string, unknown>>;
+    }).views.filter((view) => view.type === 'tasknotesCalendar');
+    expect(after).toEqual(before);
+    expect(await readFile(paths.backupPath, 'utf8')).toBe(ambiguous);
   });
 
   it('rejects ambiguous TaskNotes views without creating a backup', async () => {
@@ -366,6 +374,32 @@ describe('BoardAppearanceController', () => {
       available: true,
       applied: false,
     });
+  });
+
+  it('guards boolean false before checking whether scheduled is empty', async () => {
+    const paths = await fixture();
+    const controller = new BoardAppearanceController();
+
+    await controller.applyRecommendedPreset(paths.vaultRoot);
+
+    const parsed = parse(await readFile(paths.basePath, 'utf8')) as {
+      formulas: Record<string, string>;
+    };
+    expect(parsed.formulas.atlPlannedAt).toBe(
+      'if(scheduled == false, null, if(scheduled.isEmpty(), null, date(scheduled)))',
+    );
+  });
+
+  it('falls back to file creation time before parsing a malformed created_at', async () => {
+    const paths = await fixture();
+    const controller = new BoardAppearanceController();
+
+    await controller.applyRecommendedPreset(paths.vaultRoot);
+
+    const parsed = parse(await readFile(paths.basePath, 'utf8')) as {
+      formulas: Record<string, string>;
+    };
+    expect(parsed.formulas.atlCollectedAt).toBe(String.raw`if(created_at.isType("date"), created_at, if(created_at.isType("string") && /^\d{4}-(0[1-9]|1[0-2])-([012]\d|3[01])T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(\.\d{1,3})?(Z|[+-]([01]\d|2[0-3]):[0-5]\d)$/.matches(created_at), date(created_at), file.ctime))`);
   });
 
   it('rejects a Base path that escapes the Vault through a symlink', async () => {
