@@ -126,7 +126,10 @@ export class CaptureController {
         recordedAt: source.recordedAt,
         sourceQuote: candidate.sourceQuote,
       };
-      const groupKey = normalizedCandidateText(candidate.topicKey);
+      const groupKey = JSON.stringify([
+        normalizedCandidateText(candidate.topicKey),
+        normalizedCandidateText(candidate.title),
+      ]);
       const existing = grouped.get(groupKey);
       if (existing !== undefined) {
         if (!existing.sourceRecordFingerprints.includes(source.fingerprint)) {

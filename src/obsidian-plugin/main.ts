@@ -1749,7 +1749,7 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
         .onClick(() => this.atlPlugin.openUnifiedCalendar()));
     new Setting(containerEl)
       .setName('ATL 紧凑卡片')
-      .setDesc('在 TaskNotes 看板中优先显示项目、计划时间、截止时间和优先级，并在日历中单行省略过长标题。')
+      .setDesc('在 TaskNotes 看板中优先显示项目、来源日期、入箱时间、有效计划时间和优先级，并在日历中单行省略过长标题。')
       .addToggle((toggle) => toggle
         .setValue(this.atlPlugin.settings.taskCardThemeEnabled)
         .onChange(async (value) => {
@@ -1784,7 +1784,7 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
       .setDesc(status === null
         ? '正在读取任务总看板…'
         : status.available
-          ? '按原始任务状态显示四列；首次应用会保留原始备份。'
+          ? '按任务状态显示四列，并保留人工拖动优先；首次应用会保留原始备份。'
           : '未找到 10_Tasks/Views/任务总看板.base');
     if (status?.available === true && !status.applied) {
       setting.addButton((button) => button

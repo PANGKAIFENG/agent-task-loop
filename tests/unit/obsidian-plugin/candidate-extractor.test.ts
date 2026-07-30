@@ -93,9 +93,34 @@ describe('extractTaskCandidates', () => {
     expect(input.prompt).toContain('处理一下');
     expect(input.prompt).toContain('无法识别具体对象');
     expect(input.prompt).toContain('不编造');
+    expect(input.prompt).toContain('explicit_task');
+    expect(input.prompt).toContain('inferred_task');
+    expect(input.prompt).toContain('supporting_action_candidate');
+    expect(input.prompt).toContain('thought_or_context');
+    expect(input.prompt).toContain('information');
+    expect(input.prompt).toContain('completed_action');
+    expect(input.prompt).toContain('周期性');
+    expect(input.prompt).toContain('关联调研');
+    expect(input.prompt).toContain('不设置候选数量上限');
     expect(input.prompt).toContain(source.fingerprint);
     expect(input.prompt).toContain(source.content);
     expect(JSON.stringify(candidateExtractionJsonSchema)).toContain('不编造对象');
+  });
+
+  it('returns every validated candidate when a batch contains more than five', async () => {
+    const sources = Array.from({ length: 8 }, (_, index) => record(index));
+    const candidates = sources.map((source, index) => ({
+      title: `调研工具 ${index}`,
+      summary: `比较工具 ${index} 的能力。`,
+      priority: 'normal' as const,
+      topicKey: `工具-${index}`,
+      sourceRecordFingerprint: source.fingerprint,
+      sourceQuote: `#待办 调研工具 ${index}`,
+    }));
+    const executor = fakeExecutor([{ candidates }]);
+
+    await expect(extractTaskCandidates({ records: sources, executor }))
+      .resolves.toEqual(candidates);
   });
 
   it('rejects model-generated titles longer than 60 characters', async () => {
