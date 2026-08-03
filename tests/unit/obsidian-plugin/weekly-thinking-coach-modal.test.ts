@@ -3,7 +3,16 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { WeeklyThinkingCoachModal } from '../../../src/obsidian-plugin/weekly-thinking-coach-modal.js';
-import type { WeeklyCoachResult } from '../../../src/obsidian-plugin/weekly-thinking-coach.js';
+import type {
+  WeeklyThinkingCoachRunControl,
+  WeeklyCoachResult,
+} from '../../../src/obsidian-plugin/weekly-thinking-coach.js';
+import {
+  createWeeklyCoachSessionDraft,
+  type WeeklyCoachDraftItem,
+  type WeeklyCoachSessionDraft,
+  type WeeklyThinkingCoachTurn,
+} from '../../../src/services/weekly-coach-draft.js';
 import type {
   WeeklyFocusDocument,
   WeeklyFocusInput,
@@ -38,6 +47,8 @@ beforeAll(() => {
   };
 });
 
+const NOW = new Date('2026-08-03T09:00:00.000Z');
+
 function emptyInput(overrides: Partial<WeeklyFocusInput> = {}): WeeklyFocusInput {
   return {
     conversationTopic: '',
@@ -58,105 +69,145 @@ function emptyInput(overrides: Partial<WeeklyFocusInput> = {}): WeeklyFocusInput
   };
 }
 
-function weeklyDocument(status: '草稿' | '已确认' = '草稿'): WeeklyFocusDocument {
+function weeklyDocument(status: '草稿' | '已确认' = '已确认'): WeeklyFocusDocument {
   const input = emptyInput({
     conversationTopic: '判断是否收敛产品边界',
     currentQuestion: '周五前希望出现什么变化？',
     coachSummary: '需要先定义可观察结果。',
     focuses: [{
-      focus: status === '已确认' ? '先验证两个真实流程' : '收敛产品边界',
-      outcome: '形成一页边界图',
-      whyThisWeek: '周五前完成',
-      evidence: '两个流程共同确认',
+      focus: '验证产品边界是否可复用',
+      outcome: '团队使用同一份边界说明',
+      whyThisWeek: '本周有两个真实流程可验证',
+      evidence: '两个流程负责人确认采用',
     }],
-    background: {
-      facts: ['边界问题反复出现'],
-      assumptions: ['边界图可能减少讨论'],
-      gaps: ['缺少验收人'],
-      sources: ['02_Projects/StyleWork.md'],
-    },
   });
   return {
-    path: '05_Reviews/Weekly/2026-W30 周度重点.md',
+    path: '05_Reviews/Weekly/2026-W32 周度重点.md',
     raw: 'synthetic weekly focus',
     record: {
       type: '周度重点',
-      week: '2026-W30',
+      week: '2026-W32',
       status,
       linkedGoals: [],
       linkedTasks: [],
       createdBy: 'ATL 思考教练',
-      confirmedAt: status === '已确认' ? '2026-07-26T08:00:00.000Z' : null,
+      confirmedAt: status === '已确认' ? NOW.toISOString() : null,
       reviewStatus: '待复盘',
-      updatedAt: '2026-07-26T08:00:00.000Z',
+      updatedAt: NOW.toISOString(),
       input,
     },
   };
 }
 
+function draftItem(id = 'focus-1', overrides: Partial<WeeklyCoachDraftItem> = {}): WeeklyCoachDraftItem {
+  return {
+    id,
+    focus: '验证产品边界是否可复用',
+    outcome: '团队使用同一份边界说明',
+    whyThisWeek: '本周有两个真实流程可验证',
+    evidence: '两个流程负责人确认采用',
+    fieldSources: {
+      focus: 'ai', outcome: 'ai', whyThisWeek: 'ai', evidence: 'ai',
+    },
+    suggestions: {},
+    readiness: '可确认',
+    ...overrides,
+  };
+}
+
+function sessionDraft(overrides: Partial<WeeklyCoachSessionDraft> = {}): WeeklyCoachSessionDraft {
+  return {
+    ...createWeeklyCoachSessionDraft('2026-W32', NOW.toISOString()),
+    topic: '判断本周是否应该收敛产品边界',
+    selectedSources: ['目标', '项目', '任务', '日历', '周复盘'],
+    sessionSummary: '已经形成一个候选方向，仍需确认完成证据。',
+    pendingQuestion: '什么变化最能证明这件事值得做？',
+    questionReason: '这个答案会补齐完成证据。',
+    items: [draftItem()],
+    ...overrides,
+  };
+}
+
 const coachResult: WeeklyCoachResult = {
+  assistantMessage: '先不要急着列任务。你真正要验证的是边界图是否会被使用。',
+  nextQuestion: '如果周五只看到一个变化，什么变化最能证明这件事值得做？',
+  questionReason: '这个答案会决定预期结果和完成证据。',
   background: {
     facts: ['边界问题一周内重复出现。'],
     assumptions: ['边界图可能减少重复讨论。'],
     gaps: ['尚未确认验收人。'],
     sources: ['02_Projects/StyleWork.md'],
   },
-  currentQuestion: '周五前，哪个可观察变化能证明这件事值得做？',
-  questionReason: '这个答案会改变本周是否值得投入。',
-  directions: [{
-    title: '先做低成本验证',
-    rationale: '用真实流程验证边界。',
-    tradeoff: '推迟新增 Agent 名称。',
-    validation: '两条流程使用同一说明。',
+  draftOperations: [{
+    action: 'create',
+    itemId: null,
+    fields: {
+      focus: '验证产品边界是否可复用',
+      outcome: '团队使用同一份边界说明',
+      whyThisWeek: '本周有两个真实流程可验证',
+    },
   }],
-  organizedDraft: {
-    problem: '收敛 StyleWork 产品边界。',
-    outcome: '减少团队重复讨论。',
-    evidence: '两条流程使用同一边界说明。',
-    commitment: '周五前完成一页边界图。',
-    notDoing: ['不新增 Agent 名称。'],
-  },
-  summary: '用户希望用可观察结果判断本周投入。',
+  sessionSummary: '用户希望用团队是否采用同一说明判断投入价值。',
+  readiness: '继续澄清',
 };
 
 function button(modal: WeeklyThinkingCoachModal, label: string): HTMLButtonElement {
   const match = [...modal.contentEl.querySelectorAll<HTMLButtonElement>('button')]
-    .find((item) => (
-      item.getAttribute('aria-label') === label
-      || item.textContent?.trim() === label
-    ));
+    .find((item) => item.getAttribute('aria-label') === label || item.textContent?.trim() === label);
   if (match === undefined) throw new Error(`Missing button: ${label}`);
   return match;
 }
 
+function sendMessage(modal: WeeklyThinkingCoachModal, value: string): void {
+  const input = modal.contentEl.querySelector<HTMLTextAreaElement>(
+    'textarea[aria-label="给本周思考教练发消息"]',
+  );
+  if (input === null) throw new Error('Missing weekly coach composer');
+  input.value = value;
+  input.dispatchEvent(new window.Event('input', { bubbles: true }));
+  button(modal, '发送').click();
+}
+
+function editField(modal: WeeklyThinkingCoachModal, label: string, value: string): void {
+  const input = modal.contentEl.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`);
+  if (input === null) throw new Error(`Missing field: ${label}`);
+  input.value = value;
+  input.dispatchEvent(new window.Event('input', { bubbles: true }));
+}
+
 function setup(options: {
-  initial?: WeeklyFocusDocument | null;
+  record?: WeeklyFocusDocument | null;
+  draft?: WeeklyCoachSessionDraft | null;
   coach?: WeeklyCoachResult | Error;
-  coachOperation?: (control?: {
-    signal: AbortSignal;
-    onProgress(progress: unknown): void;
-  }) => Promise<WeeklyCoachResult>;
+  coachOperation?: (
+    turn: WeeklyThinkingCoachTurn,
+    control: WeeklyThinkingCoachRunControl,
+  ) => Promise<WeeklyCoachResult>;
+  saveError?: Error;
+  clearError?: Error;
+  confirmOperation?: (
+    input: WeeklyFocusInput,
+    expectedContent: string | null,
+  ) => Promise<WeeklyFocusDocument>;
   allowed?: () => boolean;
-  confirmOperation?: (input: WeeklyFocusInput) => Promise<WeeklyFocusDocument>;
-  saveDraftError?: Error;
 } = {}) {
-  const runCoach = vi.fn(async (_turn: unknown, control?: {
-    signal: AbortSignal;
-    onProgress(progress: unknown): void;
-  }) => {
-    if (options.coachOperation !== undefined) return options.coachOperation(control);
+  let id = 0;
+  const runCoach = vi.fn(async (
+    turn: WeeklyThinkingCoachTurn,
+    control: WeeklyThinkingCoachRunControl,
+  ) => {
+    if (options.coachOperation !== undefined) return options.coachOperation(turn, control);
     if (options.coach instanceof Error) throw options.coach;
     return options.coach ?? coachResult;
   });
-  const saveDraft = vi.fn(async (input: WeeklyFocusInput): Promise<WeeklyFocusDocument> => {
-    if (options.saveDraftError !== undefined) throw options.saveDraftError;
-    return {
-      ...weeklyDocument('草稿'),
-      record: { ...weeklyDocument('草稿').record, input },
-    };
+  const saveSessionDraft = vi.fn(async () => {
+    if (options.saveError !== undefined) throw options.saveError;
   });
-  const confirm = vi.fn(async (input: WeeklyFocusInput): Promise<WeeklyFocusDocument> => (
-    options.confirmOperation?.(input) ?? {
+  const clearSessionDraft = vi.fn(async () => {
+    if (options.clearError !== undefined) throw options.clearError;
+  });
+  const confirm = vi.fn(async (input: WeeklyFocusInput, expectedContent: string | null) => (
+    options.confirmOperation?.(input, expectedContent) ?? {
       ...weeklyDocument('已确认'),
       record: { ...weeklyDocument('已确认').record, input },
     }
@@ -165,441 +216,389 @@ function setup(options: {
   const openRecord = vi.fn(async () => undefined);
   const notify = vi.fn();
   const modal = new WeeklyThinkingCoachModal({} as never, {
-    week: '2026-W30',
+    week: '2026-W32',
     modelLabel: '沿用 Claude Code / CC-Switch',
-    load: vi.fn(async () => options.initial ?? null),
+    loadRecord: vi.fn(async () => options.record ?? null),
+    loadSessionDraft: vi.fn(() => options.draft ?? null),
     runCoach,
-    saveDraft,
+    saveSessionDraft,
+    clearSessionDraft,
     confirm,
     canManageVault: options.allowed ?? (() => true),
     onChanged,
     openRecord,
     notify,
+    now: () => NOW,
+    createId: () => `generated-${++id}`,
   });
-  return { modal, runCoach, saveDraft, confirm, onChanged, openRecord, notify };
+  return {
+    modal,
+    runCoach,
+    saveSessionDraft,
+    clearSessionDraft,
+    confirm,
+    onChanged,
+    openRecord,
+    notify,
+  };
+}
+
+async function open(modal: WeeklyThinkingCoachModal): Promise<void> {
+  modal.open();
+  await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('本周思考教练'));
 }
 
 describe('WeeklyThinkingCoachModal', () => {
-  it('starts in a centered native modal with sensitive sources unchecked', async () => {
+  it('opens the confirmed two-column shell with sensitive sources unchecked', async () => {
     const { modal } = setup();
-    modal.open();
+    await open(modal);
 
-    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('从一个困惑开始'));
     expect(modal.modalEl.classList).toContain('atl-weekly-coach-modal');
-    expect(modal.contentEl.textContent).toContain('2026-W30');
+    expect(modal.contentEl.querySelector('.atl-weekly-coach-conversation')).not.toBeNull();
+    expect(modal.contentEl.querySelector('.atl-weekly-coach-draft-panel')).not.toBeNull();
+    expect(modal.contentEl.textContent).toContain('本周重点草稿');
+    expect(modal.contentEl.textContent).toContain('0 / 3');
+    expect(modal.contentEl.textContent).toContain('2026-W32');
     expect(modal.contentEl.textContent).toContain('沿用 Claude Code / CC-Switch');
+    expect(modal.contentEl.querySelector<HTMLInputElement>('input[aria-label="授权任务"]')?.checked)
+      .toBe(true);
     expect(modal.contentEl.querySelector<HTMLInputElement>(
       'input[aria-label="授权笔记同步助手"]',
     )?.checked).toBe(false);
-    expect(modal.contentEl.querySelector<HTMLInputElement>(
-      'input[aria-label="授权每日所思"]',
-    )?.checked).toBe(false);
-    expect(modal.contentEl.querySelector<HTMLInputElement>(
-      'input[aria-label="授权任务"]',
-    )?.checked).toBe(true);
+    expect(button(modal, '发送').title).toBe('发送');
+    expect(button(modal, '人工添加重点').title).toBe('人工添加重点');
   });
 
-  it('sends only selected sources, shows one coaching question, and organizes an editable draft', async () => {
+  it('updates the conversation and live draft atomically after one AI response', async () => {
     const { modal, runCoach } = setup();
-    modal.open();
-    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('从一个困惑开始'));
-    const topic = modal.contentEl.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="本周想讨论的问题"]',
-    )!;
-    topic.value = '这周是否应该收敛产品边界？';
-    topic.dispatchEvent(new window.Event('input', { bubbles: true }));
+    await open(modal);
 
-    button(modal, '确认并开始').click();
-    expect(modal.contentEl.textContent).toContain('正在准备本周教练建议');
-    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain(coachResult.currentQuestion));
-    expect(runCoach).toHaveBeenCalledWith(
-      expect.objectContaining({
-        topic: '这周是否应该收敛产品边界？',
-        selectedSources: ['目标', '项目', '任务', '日历', '周复盘'],
-      }),
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
-    );
-    expect(modal.contentEl.textContent).toContain('已确认事实');
-    expect(modal.contentEl.textContent).toContain('可考虑方向');
+    sendMessage(modal, '我希望减少团队重复讨论');
 
-    button(modal, '结束讨论，进入确认').click();
-    expect(modal.contentEl.textContent).toContain('这是对你表达的整理，不是 AI 替你决定');
-    expect(modal.contentEl.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="第1项重点事项"]',
-    )?.value).toBe('收敛 StyleWork 产品边界。');
-    expect(modal.contentEl.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="第1项预期结果"]',
-    )?.value).toBe('减少团队重复讨论。');
-  });
-
-  it('keeps input after a model failure and lets the user continue manually', async () => {
-    const { modal } = setup({ coach: new Error('private model detail') });
-    modal.open();
-    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('从一个困惑开始'));
-    const topic = modal.contentEl.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="本周想讨论的问题"]',
-    )!;
-    topic.value = '需要人工继续的问题';
-    topic.dispatchEvent(new window.Event('input', { bubbles: true }));
-    button(modal, '确认并开始').click();
-
-    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('AI 暂时不可用'));
-    expect(modal.contentEl.textContent).not.toContain('private model detail');
-    button(modal, '直接人工整理').click();
-    expect(modal.contentEl.textContent).toContain('这是对你表达的整理，不是 AI 替你决定');
-    expect(modal.contentEl.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="第1项重点事项"]',
-    )?.value).toBe('需要人工继续的问题');
-  });
-
-  it('distinguishes a three-minute timeout from a general model failure', async () => {
-    const timeout = Object.assign(new Error('timed out'), { code: 'claude_timeout' });
-    const { modal } = setup({ coach: timeout });
-    modal.open();
-    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('从一个困惑开始'));
-
-    button(modal, '确认并开始').click();
-
-    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('等待已超时'));
-    expect(modal.contentEl.textContent).toContain('达到 3 分钟');
-    expect(modal.contentEl.textContent).toContain('重新尝试');
-    expect(modal.contentEl.textContent).toContain('直接人工整理');
-  });
-
-  it('resumes a saved draft and saves it without requiring AI', async () => {
-    const draft = weeklyDocument('草稿');
-    const { modal, saveDraft } = setup({ initial: draft });
-    modal.open();
-
-    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('继续本周思考'));
-    expect(modal.contentEl.textContent).toContain(draft.record.input.currentQuestion);
-    button(modal, '结束讨论，进入确认').click();
-    const focus = modal.contentEl.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="第1项重点事项"]',
-    )!;
-    focus.value = '先完成两个真实流程验证。';
-    focus.dispatchEvent(new window.Event('input', { bubbles: true }));
-    button(modal, '保存草稿').click();
-
-    await vi.waitFor(() => expect(saveDraft).toHaveBeenCalledWith(
-      expect.objectContaining({
-        focuses: [expect.objectContaining({ focus: '先完成两个真实流程验证。' })],
-      }),
-      draft.raw,
+    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain(
+      '先不要急着列任务。你真正要验证的是边界图是否会被使用。',
     ));
-    expect(modal.contentEl.textContent).toContain('草稿已保存');
+    expect(modal.contentEl.querySelector<HTMLInputElement>('input[aria-label="重点事项"]')?.value)
+      .toBe('验证产品边界是否可复用');
+    expect(modal.contentEl.textContent).toContain('1 / 3');
+    expect(modal.contentEl.textContent).toContain(coachResult.nextQuestion);
+    expect(runCoach).toHaveBeenCalledWith(expect.objectContaining({
+      latestAnswer: '我希望减少团队重复讨论',
+      draftItems: [],
+      focusedItemId: null,
+    }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
   });
 
-  it('requires sensitive sources to be re-authorized when a saved draft starts a new session', async () => {
-    const draft = weeklyDocument('草稿');
-    draft.record.input.selectedSources = [
-      ...draft.record.input.selectedSources,
-      '笔记同步助手',
-      '每日所思',
-    ];
-    const { modal } = setup({ initial: draft });
-    modal.open();
+  it('renders partial cards and accessible add and delete icon actions', async () => {
+    const partial = sessionDraft({
+      items: [draftItem('focus-1', { outcome: '', evidence: '', readiness: '仍需确认' })],
+    });
+    const { modal } = setup({ draft: partial });
+    await open(modal);
 
-    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('继续本周思考'));
-    button(modal, '修改 AI 读取范围').click();
+    expect(modal.contentEl.textContent).toContain('待补充');
+    expect(button(modal, '删除重点').title).toBe('删除重点');
+    expect(button(modal, '人工添加重点').dataset.icon).toBe('plus');
+    expect(button(modal, '删除重点').dataset.icon).toBe('trash-2');
+  });
 
+  it('protects a direct edit and applies an AI replacement only after acceptance', async () => {
+    const replacement: WeeklyCoachResult = {
+      ...coachResult,
+      draftOperations: [{
+        action: 'update',
+        itemId: 'focus-1',
+        fields: { focus: '直接发布完整产品' },
+      }],
+    };
+    const { modal } = setup({ draft: sessionDraft(), coach: replacement });
+    await open(modal);
+
+    editField(modal, '重点事项', '先验证两个真实流程');
+    sendMessage(modal, '继续想一下');
+
+    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('采用建议'));
+    expect(modal.contentEl.querySelector<HTMLInputElement>('input[aria-label="重点事项"]')?.value)
+      .toBe('先验证两个真实流程');
+    expect(modal.contentEl.textContent).toContain('已由你修改');
+    button(modal, '采用建议').click();
+    expect(modal.contentEl.querySelector<HTMLInputElement>('input[aria-label="重点事项"]')?.value)
+      .toBe('直接发布完整产品');
+  });
+
+  it('isolates focused discussion to one item and allows ending focus mode', async () => {
+    const second = draftItem('focus-2', { focus: '整理安装文档' });
+    const focusedResult: WeeklyCoachResult = {
+      ...coachResult,
+      draftOperations: [{
+        action: 'update',
+        itemId: 'focus-2',
+        fields: { outcome: '不应被修改' },
+      }],
+    };
+    const { modal, runCoach } = setup({
+      draft: sessionDraft({ items: [draftItem(), second] }),
+      coach: focusedResult,
+    });
+    await open(modal);
+
+    button(modal, '聚焦讨论').click();
+    expect(modal.contentEl.textContent).toContain('接下来只讨论：验证产品边界是否可复用');
+    sendMessage(modal, '只讨论第一项');
+    await vi.waitFor(() => expect(runCoach).toHaveBeenCalled());
+    expect(runCoach.mock.calls[0]?.[0]).toMatchObject({ focusedItemId: 'focus-1' });
+    expect(modal.contentEl.querySelectorAll<HTMLInputElement>('input[aria-label="预期结果"]')[1]?.value)
+      .toBe('团队使用同一份边界说明');
+    button(modal, '结束聚焦').click();
+    expect(modal.contentEl.textContent).not.toContain('接下来只讨论：');
+  });
+
+  it('keeps a deleted direction removed when AI tries to recreate it', async () => {
+    const { modal } = setup({ draft: sessionDraft() });
+    await open(modal);
+
+    button(modal, '删除重点').click();
+    expect(modal.contentEl.textContent).toContain('0 / 3');
+    sendMessage(modal, '继续');
+    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain(coachResult.assistantMessage));
+    expect(modal.contentEl.textContent).toContain('0 / 3');
+    expect(modal.contentEl.querySelector('input[aria-label="重点事项"]')).toBeNull();
+  });
+
+  it('autosaves plugin draft state after an 800 ms debounce', async () => {
+    vi.useFakeTimers();
+    try {
+      const { modal, saveSessionDraft } = setup();
+      modal.open();
+      await Promise.resolve();
+      const input = modal.contentEl.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="给本周思考教练发消息"]',
+      )!;
+      input.value = '先保存输入';
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+
+      await vi.advanceTimersByTimeAsync(799);
+      expect(saveSessionDraft).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(saveSessionDraft).toHaveBeenCalledWith(expect.objectContaining({
+        pendingInput: '先保存输入',
+      }));
+      expect(modal.contentEl.textContent).toContain('刚刚暂存');
+      modal.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('save and leave cancels a running request, flushes the draft, and closes', async () => {
+    const pending = new Promise<WeeklyCoachResult>(() => undefined);
+    const { modal, runCoach, saveSessionDraft, onChanged } = setup({
+      coachOperation: async () => pending,
+    });
+    await open(modal);
+    sendMessage(modal, '还在等待的输入');
+    const control = runCoach.mock.calls[0]?.[1];
+
+    button(modal, '保存并离开').click();
+
+    await vi.waitFor(() => expect(saveSessionDraft).toHaveBeenCalledWith(expect.objectContaining({
+      keyAnswers: ['还在等待的输入'],
+    })));
+    expect(control?.signal.aborted).toBe(true);
+    await vi.waitFor(() => {
+      expect(onChanged).toHaveBeenCalledOnce();
+      expect(modal.contentEl.childElementCount).toBe(0);
+    });
+  });
+
+  it('flushes a pending plugin draft save when the modal closes', async () => {
+    const { modal, saveSessionDraft } = setup();
+    await open(modal);
+    const input = modal.contentEl.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="给本周思考教练发消息"]',
+    )!;
+    input.value = '关闭后继续';
+    input.dispatchEvent(new window.Event('input', { bubbles: true }));
+
+    modal.close();
+
+    await vi.waitFor(() => expect(saveSessionDraft).toHaveBeenCalledWith(expect.objectContaining({
+      pendingInput: '关闭后继续',
+    })));
+  });
+
+  it('restores only structured progress and requires sensitive source authorization again', async () => {
+    const restored = sessionDraft({
+      selectedSources: ['目标', '任务', '笔记同步助手', '每日所思'],
+      keyAnswers: ['这是结构化关键回答'],
+    });
+    const { modal, runCoach } = setup({ draft: restored });
+    await open(modal);
+
+    expect(modal.contentEl.textContent).toContain('上次进展');
+    expect(modal.contentEl.textContent).toContain(restored.sessionSummary);
     expect(modal.contentEl.querySelector<HTMLInputElement>(
       'input[aria-label="授权笔记同步助手"]',
     )?.checked).toBe(false);
-    expect(modal.contentEl.querySelector<HTMLInputElement>(
-      'input[aria-label="授权每日所思"]',
-    )?.checked).toBe(false);
+    sendMessage(modal, '继续讨论');
+    await vi.waitFor(() => expect(runCoach).toHaveBeenCalled());
+    expect(runCoach.mock.calls[0]?.[0]).toMatchObject({
+      selectedSources: ['目标', '任务'],
+      previousSummary: null,
+    });
   });
 
-  it('does not resend an AI summary derived from sensitive sources before re-authorization', async () => {
-    const draft = weeklyDocument('草稿');
-    draft.record.input.selectedSources = [
-      ...draft.record.input.selectedSources,
-      '笔记同步助手',
-      '每日所思',
-    ];
-    const { modal, runCoach } = setup({ initial: draft });
-    modal.open();
-    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('继续本周思考'));
+  it('shows inline validation and supports explicit zero-item confirmation', async () => {
+    const { modal, confirm, clearSessionDraft } = setup();
+    await open(modal);
 
-    button(modal, '提交回答，继续讨论').click();
-
-    await vi.waitFor(() => expect(runCoach).toHaveBeenCalledWith(
-      expect.objectContaining({
-        selectedSources: ['目标', '项目', '任务', '日历', '周复盘'],
-        previousSummary: null,
-      }),
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
-    ));
-  });
-
-  it('confirms an explicit no-new-focus decision and closes after refreshing the home', async () => {
-    const { modal, confirm, onChanged } = setup();
-    modal.open();
-    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('从一个困惑开始'));
-    button(modal, '直接人工整理').click();
+    button(modal, '确认并写入 Obsidian').click();
+    expect(modal.contentEl.textContent).toContain('请至少保留一项重点');
     const noFocus = modal.contentEl.querySelector<HTMLInputElement>(
-      'input[aria-label="本周暂不新增重点"]',
+      'input[aria-label="本周暂不新增重点，先完成既有承诺"]',
     )!;
     noFocus.checked = true;
     noFocus.dispatchEvent(new window.Event('change', { bubbles: true }));
-    button(modal, '确认本周判断').click();
+    button(modal, '确认并写入 Obsidian').click();
 
     await vi.waitFor(() => expect(confirm).toHaveBeenCalledWith(
       expect.objectContaining({ focuses: [], noNewFocus: true }),
       null,
     ));
-    expect(onChanged).toHaveBeenCalledWith(expect.objectContaining({
-      record: expect.objectContaining({ status: '已确认' }),
-    }));
-    expect(modal.contentEl.childElementCount).toBe(0);
+    await vi.waitFor(() => {
+      expect(clearSessionDraft).toHaveBeenCalledOnce();
+      expect(modal.contentEl.textContent).toContain('这是你确认的本周判断');
+    });
   });
 
-  it('blocks persistence when Vault management permission is disabled', async () => {
-    const { modal, saveDraft, confirm } = setup({ allowed: () => false });
-    modal.open();
-    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('从一个困惑开始'));
-    button(modal, '直接人工整理').click();
-    button(modal, '保存草稿').click();
+  it('places missing-field validation beside the affected card', async () => {
+    const { modal, confirm } = setup({
+      draft: sessionDraft({ items: [draftItem('focus-1', { evidence: '', readiness: '仍需确认' })] }),
+    });
+    await open(modal);
 
-    expect(saveDraft).not.toHaveBeenCalled();
+    button(modal, '确认并写入 Obsidian').click();
+
     expect(confirm).not.toHaveBeenCalled();
-    expect(modal.contentEl.textContent).toContain('Vault 管理权限已关闭');
+    expect(modal.contentEl.textContent).toContain('请补充完成证据');
+    expect(modal.contentEl.querySelector('.atl-weekly-coach-field-error')?.textContent)
+      .toContain('请补充完成证据');
   });
 
-  it('auto-saves a dirty unconfirmed session and refreshes the home when closed', async () => {
-    const { modal, saveDraft, onChanged } = setup();
-    modal.open();
-    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('从一个困惑开始'));
-    const topic = modal.contentEl.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="本周想讨论的问题"]',
-    )!;
-    topic.value = '关闭后仍要保留';
-    topic.dispatchEvent(new window.Event('input', { bubbles: true }));
+  it('retains the plugin draft when the formal write conflicts', async () => {
+    const { modal, clearSessionDraft } = setup({
+      draft: sessionDraft(),
+      record: weeklyDocument('草稿'),
+      confirmOperation: async () => { throw new Error('本周记录已被其他编辑修改，请重新读取后再保存'); },
+    });
+    await open(modal);
 
-    modal.close();
+    button(modal, '确认并写入 Obsidian').click();
 
-    await vi.waitFor(() => expect(saveDraft).toHaveBeenCalledWith(
-      expect.objectContaining({ conversationTopic: '关闭后仍要保留' }),
-      null,
-    ));
-    await vi.waitFor(() => expect(onChanged).toHaveBeenCalledWith(
-      expect.objectContaining({ record: expect.objectContaining({ status: '草稿' }) }),
-    ));
+    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('其他编辑修改'));
+    expect(clearSessionDraft).not.toHaveBeenCalled();
+    expect(modal.contentEl.textContent).toContain('本周重点草稿');
   });
 
-  it('does not start a draft save when closed during confirmation', async () => {
-    let finishConfirmation: ((document: WeeklyFocusDocument) => void) | undefined;
-    const pendingConfirmation = new Promise<WeeklyFocusDocument>((resolve) => {
-      finishConfirmation = resolve;
+  it('keeps the confirmed result when temporary-draft cleanup fails', async () => {
+    const { modal, notify, onChanged } = setup({
+      draft: sessionDraft(),
+      clearError: new Error('settings unavailable'),
     });
-    const { modal, confirm, saveDraft } = setup({
-      confirmOperation: async () => pendingConfirmation,
-    });
-    modal.open();
-    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('从一个困惑开始'));
-    button(modal, '直接人工整理').click();
-    const noFocus = modal.contentEl.querySelector<HTMLInputElement>(
-      'input[aria-label="本周暂不新增重点"]',
-    )!;
-    noFocus.checked = true;
-    noFocus.dispatchEvent(new window.Event('change', { bubbles: true }));
+    await open(modal);
 
-    button(modal, '确认本周判断').click();
-    expect(confirm).toHaveBeenCalledTimes(1);
-    modal.close();
+    button(modal, '确认并写入 Obsidian').click();
 
-    expect(saveDraft).not.toHaveBeenCalled();
-    finishConfirmation?.(weeklyDocument('已确认'));
+    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('这是你确认的本周判断'));
+    expect(onChanged).toHaveBeenCalledOnce();
+    expect(notify).toHaveBeenCalledWith('正式记录已确认，临时草稿清理失败');
   });
 
-  it('auto-saves user input when closed while the coach is still responding', async () => {
-    let finishCoach: ((result: WeeklyCoachResult) => void) | undefined;
-    const pendingCoach = new Promise<WeeklyCoachResult>((resolve) => {
-      finishCoach = resolve;
-    });
-    const { modal, saveDraft } = setup({
-      coachOperation: async () => pendingCoach,
-    });
-    modal.open();
-    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('从一个困惑开始'));
-    const topic = modal.contentEl.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="本周想讨论的问题"]',
-    )!;
-    topic.value = '等待教练时关闭也要保留';
-    topic.dispatchEvent(new window.Event('input', { bubbles: true }));
+  it('keeps user input after model failure and still allows manual confirmation', async () => {
+    const { modal, confirm } = setup({ coach: new Error('private model detail') });
+    await open(modal);
+    sendMessage(modal, '需要人工继续的问题');
 
-    button(modal, '确认并开始').click();
-    modal.close();
-
-    await vi.waitFor(() => expect(saveDraft).toHaveBeenCalledWith(
-      expect.objectContaining({ conversationTopic: '等待教练时关闭也要保留' }),
-      null,
-    ));
-    finishCoach?.(coachResult);
+    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('AI 暂时不可用'));
+    expect(modal.contentEl.textContent).not.toContain('private model detail');
+    button(modal, '人工添加重点').click();
+    editField(modal, '重点事项', '人工判断');
+    editField(modal, '预期结果', '形成一页判断');
+    editField(modal, '为什么是本周', '本周有验证窗口');
+    editField(modal, '完成证据', '负责人确认采用');
+    button(modal, '确认并写入 Obsidian').click();
+    await vi.waitFor(() => expect(confirm).toHaveBeenCalledOnce());
   });
 
-  it('shows real coach stages, source statistics, elapsed time, and slow-response guidance', async () => {
+  it('shows real progress, a 45-second slow notice, and a 180-second timeout', async () => {
     vi.useFakeTimers();
     try {
-      const pendingCoach = new Promise<WeeklyCoachResult>(() => undefined);
-      const { modal } = setup({
-        coachOperation: async (control) => {
-          control?.onProgress({
+      const pending = new Promise<WeeklyCoachResult>(() => undefined);
+      const { modal, runCoach } = setup({
+        coachOperation: async (_turn, control) => {
+          control.onProgress({
             stage: 'context_ready',
             sourceCount: 5,
             documentCount: 23,
             totalCharacters: 31_824,
           });
-          control?.onProgress({ stage: 'model_started' });
-          return pendingCoach;
+          control.onProgress({ stage: 'model_started' });
+          return pending;
         },
       });
       modal.open();
       await Promise.resolve();
+      sendMessage(modal, '等待模型');
+      const control = runCoach.mock.calls[0]?.[1];
 
-      button(modal, '确认并开始').click();
-
-      expect(modal.contentEl.textContent).toContain('已读取授权资料');
       expect(modal.contentEl.textContent).toContain('5 类 · 23 篇 · 31,824 字');
-      expect(modal.contentEl.textContent).toContain('Claude Code 已启动');
-      expect(modal.contentEl.textContent).toContain('正在等待教练整理');
       expect(modal.contentEl.textContent).toContain('00:00 / 最长 03:00');
-
       await vi.advanceTimersByTimeAsync(45_000);
-
-      expect(modal.contentEl.textContent).toContain('00:45 / 最长 03:00');
       expect(modal.contentEl.textContent).toContain('响应比平时慢');
-      modal.close();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('enforces the displayed three-minute limit across the whole coach operation', async () => {
-    vi.useFakeTimers();
-    try {
-      const pendingCoach = new Promise<WeeklyCoachResult>(() => undefined);
-      const { modal, runCoach } = setup({ coachOperation: async () => pendingCoach });
-      modal.open();
-      await Promise.resolve();
-
-      button(modal, '确认并开始').click();
-      const control = runCoach.mock.calls[0]?.[1] as { signal: AbortSignal };
-
-      await vi.advanceTimersByTimeAsync(180_000);
-
-      expect(control.signal.aborted).toBe(true);
+      await vi.advanceTimersByTimeAsync(135_000);
+      expect(control?.signal.aborted).toBe(true);
       expect(modal.contentEl.textContent).toContain('等待已超时');
-      expect(modal.contentEl.textContent).toContain('达到 3 分钟');
       expect(modal.contentEl.textContent).toContain('重新尝试');
-      expect(modal.contentEl.textContent).not.toContain('停止等待');
       modal.close();
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('stops the active coach request and keeps the session input', async () => {
-    const pendingCoach = new Promise<WeeklyCoachResult>(() => undefined);
-    const { modal, runCoach } = setup({
-      coachOperation: async () => pendingCoach,
-    });
-    modal.open();
-    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('从一个困惑开始'));
-    const topic = modal.contentEl.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="本周想讨论的问题"]',
-    )!;
-    topic.value = '停止后仍要保留的判断';
-    topic.dispatchEvent(new window.Event('input', { bubbles: true }));
+  it('cancels an active request without losing the sent message', async () => {
+    const pending = new Promise<WeeklyCoachResult>(() => undefined);
+    const { modal, runCoach } = setup({ coachOperation: async () => pending });
+    await open(modal);
+    sendMessage(modal, '停止后仍要保留');
+    const control = runCoach.mock.calls[0]?.[1];
 
-    button(modal, '确认并开始').click();
-    const control = runCoach.mock.calls[0]?.[1] as { signal: AbortSignal };
     button(modal, '停止等待').click();
 
-    expect(control.signal.aborted).toBe(true);
+    expect(control?.signal.aborted).toBe(true);
     expect(modal.contentEl.textContent).toContain('已停止 AI 整理');
-    expect(modal.contentEl.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="本周想讨论的问题"]',
-    )?.value).toBe('停止后仍要保留的判断');
+    expect(modal.contentEl.textContent).toContain('停止后仍要保留');
   });
 
-  it('aborts the coach and opens manual organization without losing input', async () => {
-    const pendingCoach = new Promise<WeeklyCoachResult>(() => undefined);
-    const { modal, runCoach } = setup({ coachOperation: async () => pendingCoach });
-    modal.open();
-    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('从一个困惑开始'));
-    const topic = modal.contentEl.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="本周想讨论的问题"]',
-    )!;
-    topic.value = '人工继续整理的判断';
-    topic.dispatchEvent(new window.Event('input', { bubbles: true }));
+  it('blocks only formal confirmation when Vault management is disabled', async () => {
+    const { modal, saveSessionDraft, confirm } = setup({ allowed: () => false });
+    await open(modal);
+    button(modal, '人工添加重点').click();
+    await new Promise((resolve) => setTimeout(resolve, 850));
+    expect(saveSessionDraft).toHaveBeenCalled();
 
-    button(modal, '确认并开始').click();
-    const control = runCoach.mock.calls[0]?.[1] as { signal: AbortSignal };
-    button(modal, '转为人工整理').click();
-
-    expect(control.signal.aborted).toBe(true);
-    expect(modal.contentEl.textContent).toContain('这是对你表达的整理');
-    expect(modal.contentEl.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="第1项重点事项"]',
-    )?.value).toBe('人工继续整理的判断');
+    button(modal, '确认并写入 Obsidian').click();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(modal.contentEl.textContent).toContain('Vault 管理权限已关闭');
   });
 
-  it('aborts the coach process when the modal closes', async () => {
-    const pendingCoach = new Promise<WeeklyCoachResult>(() => undefined);
-    const { modal, runCoach } = setup({ coachOperation: async () => pendingCoach });
-    modal.open();
-    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('从一个困惑开始'));
-
-    button(modal, '确认并开始').click();
-    const control = runCoach.mock.calls[0]?.[1] as { signal: AbortSignal };
-    modal.close();
-
-    expect(control.signal.aborted).toBe(true);
-  });
-
-  it('explains the result actions and distinguishes analysis from Obsidian persistence', async () => {
-    const { modal } = setup({ initial: weeklyDocument('草稿') });
-    modal.open();
-
-    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('继续本周思考'));
-    const actionPanel = modal.contentEl.querySelector('.atl-weekly-coach-result-actions');
-    const choices = actionPanel?.querySelectorAll('.atl-weekly-coach-choice');
-
-    expect(actionPanel?.textContent).toContain('想调整资料来源？');
-    expect(actionPanel?.textContent).toContain('修改 AI 读取范围');
-    expect(choices).toHaveLength(2);
-    expect(choices?.[0]?.textContent).toContain('提交回答，继续讨论');
-    expect(choices?.[0]?.textContent).toContain('AI 会结合当前回答再分析一轮，不会写入 Obsidian');
-    expect(choices?.[1]?.textContent).toContain('结束讨论，进入确认');
-    expect(choices?.[1]?.textContent).toContain('把当前建议整理成可编辑清单，下一步确认后才写入 Obsidian');
-  });
-
-  it('notifies the user when close-triggered draft saving fails', async () => {
-    const { modal, notify } = setup({ saveDraftError: new Error('disk full') });
-    modal.open();
-    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('从一个困惑开始'));
-    const topic = modal.contentEl.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="本周想讨论的问题"]',
-    )!;
-    topic.value = '关闭时需要保存';
-    topic.dispatchEvent(new window.Event('input', { bubbles: true }));
-
-    modal.close();
-
-    await vi.waitFor(() => expect(notify).toHaveBeenCalledWith(
-      '草稿自动保存失败，请重新打开本周思考后手动保存。',
-    ));
-  });
-
-  it('shows a confirmed record and opens its Markdown without re-running the coach', async () => {
+  it('renders a confirmed formal record read-only and opens its Markdown', async () => {
     const confirmed = weeklyDocument('已确认');
-    const { modal, runCoach, openRecord } = setup({ initial: confirmed });
-    modal.open();
+    const { modal, runCoach, openRecord } = setup({ record: confirmed });
+    await open(modal);
 
-    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('这是你确认的本周判断'));
-    expect(modal.contentEl.textContent).toContain('先验证两个真实流程');
+    expect(modal.contentEl.textContent).toContain('这是你确认的本周判断');
+    expect(modal.contentEl.textContent).toContain('验证产品边界是否可复用');
+    expect(modal.contentEl.querySelector('input[aria-label="重点事项"]')).toBeNull();
     button(modal, '打开 Markdown').click();
     expect(openRecord).toHaveBeenCalledWith(confirmed.path);
     expect(runCoach).not.toHaveBeenCalled();

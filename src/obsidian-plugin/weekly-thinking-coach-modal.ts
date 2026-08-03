@@ -1,11 +1,26 @@
-import { App, Modal } from 'obsidian';
+import { App, Modal, setIcon } from 'obsidian';
 
 import type { WeeklyCoachSource } from '../services/weekly-coach-context.js';
 import { WEEKLY_COACH_SOURCES } from '../services/weekly-coach-context.js';
+import {
+  WEEKLY_COACH_DRAFT_FIELDS,
+  acceptWeeklyCoachSuggestion,
+  createManualWeeklyCoachDraftItem,
+  createWeeklyCoachSessionDraft,
+  editWeeklyCoachDraftField,
+  mergeWeeklyCoachDraftOperations,
+  protectRestoredWeeklyCoachDraft,
+  removeWeeklyCoachDraftItem,
+  validateWeeklyCoachSessionDraft,
+  weeklyCoachDraftToFocusInput,
+  type WeeklyCoachDraftField,
+  type WeeklyCoachDraftValidationIssue,
+  type WeeklyCoachSessionDraft,
+  type WeeklyThinkingCoachTurn,
+} from '../services/weekly-coach-draft.js';
 import type {
   WeeklyFocusDocument,
   WeeklyFocusInput,
-  WeeklyFocusItem,
 } from '../services/weekly-focus.js';
 import type {
   WeeklyCoachResult,
@@ -15,128 +30,157 @@ import type {
 
 const DEFAULT_SOURCES: WeeklyCoachSource[] = ['目标', '项目', '任务', '日历', '周复盘'];
 const SENSITIVE_SOURCES = new Set<WeeklyCoachSource>(['笔记同步助手', '每日所思']);
+const AUTOSAVE_DELAY_MS = 800;
 const COACH_TIMEOUT_SECONDS = 180;
 const SLOW_RESPONSE_SECONDS = 45;
 
-type CoachView = 'loading' | 'start' | 'coaching' | 'organize' | 'confirmed';
+const FIELD_LABELS: Record<WeeklyCoachDraftField, string> = {
+  focus: '重点事项',
+  outcome: '预期结果',
+  whyThisWeek: '为什么是本周',
+  evidence: '完成证据',
+};
 
-export interface WeeklyThinkingCoachTurn {
-  topic: string;
-  selectedSources: WeeklyCoachSource[];
-  latestAnswer: string;
-  keyAnswers: string[];
-  previousSummary: string | null;
-}
+type CoachMessage = {
+  id: string;
+  role: 'assistant' | 'user' | 'system';
+  text: string;
+  question?: string;
+  questionReason?: string;
+};
 
-export type WeeklyThinkingCoachResult = WeeklyFocusDocument;
+type SaveStatus = '未保存' | '正在暂存' | '刚刚暂存' | '暂存失败' | '正式记录已确认';
+type CoachFailure = 'timeout' | 'unavailable' | 'invalid' | 'cancelled' | null;
+type CoachProgress = { stage: 'collecting' } | WeeklyThinkingCoachProgress;
 
 export interface WeeklyThinkingCoachModalDependencies {
   week: string;
   modelLabel: string;
-  load(): Promise<WeeklyFocusDocument | null>;
+  loadRecord(): Promise<WeeklyFocusDocument | null>;
+  loadSessionDraft(): WeeklyCoachSessionDraft | null;
   runCoach(
     input: WeeklyThinkingCoachTurn,
     control: WeeklyThinkingCoachRunControl,
   ): Promise<WeeklyCoachResult>;
-  saveDraft(
-    input: WeeklyFocusInput,
-    expectedContent: string | null,
-  ): Promise<WeeklyThinkingCoachResult>;
-  confirm(
-    input: WeeklyFocusInput,
-    expectedContent: string | null,
-  ): Promise<WeeklyThinkingCoachResult>;
+  saveSessionDraft(draft: WeeklyCoachSessionDraft): Promise<void>;
+  clearSessionDraft(): Promise<void>;
+  confirm(input: WeeklyFocusInput, expectedContent: string | null): Promise<WeeklyFocusDocument>;
   canManageVault(): boolean;
-  onChanged(result: WeeklyThinkingCoachResult): void;
+  onChanged(): void;
   openRecord(path: string): Promise<void>;
   notify(message: string): void;
+  now(): Date;
+  createId(): string;
 }
 
-type CoachProgress =
-  | { stage: 'collecting' }
-  | WeeklyThinkingCoachProgress;
-
-type CoachFailure = 'timeout' | 'unavailable' | null;
-
-function emptyInput(): WeeklyFocusInput {
+function cloneSession(draft: WeeklyCoachSessionDraft): WeeklyCoachSessionDraft {
   return {
-    conversationTopic: '',
-    selectedSources: [...DEFAULT_SOURCES],
-    currentQuestion: '',
-    coachSummary: '',
-    focuses: [],
-    noNewFocus: false,
-    notDoing: [],
-    background: { facts: [], assumptions: [], gaps: [], sources: [] },
-    coachInsights: [],
-    consideredDirections: [],
-    keyAnswers: [],
-    linkedGoals: [],
-    linkedTasks: [],
-    adjustmentNote: '',
+    ...draft,
+    selectedSources: [...draft.selectedSources],
+    keyAnswers: [...draft.keyAnswers],
+    background: {
+      facts: [...draft.background.facts],
+      assumptions: [...draft.background.assumptions],
+      gaps: [...draft.background.gaps],
+      sources: [...draft.background.sources],
+    },
+    items: draft.items.map((item) => ({
+      ...item,
+      fieldSources: { ...item.fieldSources },
+      suggestions: { ...item.suggestions },
+    })),
+    deletedItems: draft.deletedItems.map((item) => ({ ...item })),
   };
 }
 
-function cloneInput(input: WeeklyFocusInput): WeeklyFocusInput {
-  return {
-    ...input,
+function sessionFromRecord(
+  record: WeeklyFocusDocument,
+  createId: () => string,
+): WeeklyCoachSessionDraft {
+  const input = record.record.input;
+  return protectRestoredWeeklyCoachDraft({
+    ...createWeeklyCoachSessionDraft(record.record.week, record.record.updatedAt),
+    topic: input.conversationTopic,
     selectedSources: [...input.selectedSources],
-    focuses: input.focuses.map((focus) => ({ ...focus })),
-    notDoing: [...input.notDoing],
+    keyAnswers: [...input.keyAnswers].slice(-8),
+    sessionSummary: input.coachSummary,
+    pendingQuestion: input.currentQuestion,
     background: {
       facts: [...input.background.facts],
       assumptions: [...input.background.assumptions],
       gaps: [...input.background.gaps],
       sources: [...input.background.sources],
     },
-    coachInsights: [...input.coachInsights],
-    consideredDirections: [...input.consideredDirections],
-    keyAnswers: [...input.keyAnswers],
-    linkedGoals: [...input.linkedGoals],
-    linkedTasks: [...input.linkedTasks],
-  };
+    items: input.focuses.map((focus) => ({
+      ...createManualWeeklyCoachDraftItem(createId()),
+      ...focus,
+      readiness: '可确认' as const,
+    })),
+    noNewFocus: input.noNewFocus,
+  });
 }
 
-function emptyFocus(focus = ''): WeeklyFocusItem {
-  return { focus, outcome: '', whyThisWeek: '', evidence: '' };
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && (
+    error.name === 'AbortError'
+    || error.message === 'weekly_coach_cancelled'
+  );
 }
 
-function lines(value: string): string[] {
-  return value.split('\n').map((item) => item.trim()).filter(Boolean);
+function isTimeoutError(error: unknown): boolean {
+  return error instanceof Error
+    && 'code' in error
+    && (error as Error & { code?: unknown }).code === 'claude_timeout';
+}
+
+function isInvalidResultError(error: unknown): boolean {
+  return error instanceof Error && (
+    error.name === 'ZodError'
+    || error.message.toLowerCase().includes('schema')
+    || error.message.toLowerCase().includes('json')
+  );
 }
 
 export class WeeklyThinkingCoachModal extends Modal {
-  private view: CoachView = 'loading';
-  private input = emptyInput();
-  private currentDocument: WeeklyFocusDocument | null = null;
-  private coachResult: WeeklyCoachResult | null = null;
-  private latestAnswer = '';
-  private message = '';
-  private error = '';
+  private loading = true;
+  private closed = false;
+  private skipCloseSave = false;
+  private currentRecord: WeeklyFocusDocument | null = null;
+  private session: WeeklyCoachSessionDraft;
+  private messages: CoachMessage[] = [];
+  private validationIssues: WeeklyCoachDraftValidationIssue[] = [];
+  private priorSensitiveSources = new Set<WeeklyCoachSource>();
   private busy = false;
   private persisting = false;
+  private saveStatus: SaveStatus = '未保存';
   private dirty = false;
-  private finalized = false;
-  private closed = false;
-  private priorSensitiveSources = new Set<WeeklyCoachSource>();
+  private mutationVersion = 0;
+  private autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+  private coachAbortController: AbortController | null = null;
+  private coachFailure: CoachFailure = null;
   private coachProgress: CoachProgress = { stage: 'collecting' };
   private lastContextStatistics: string | null = null;
-  private coachFailure: CoachFailure = null;
-  private coachAbortController: AbortController | null = null;
+  private lastAnswer = '';
   private elapsedSeconds = 0;
   private elapsedTimer: ReturnType<typeof setInterval> | null = null;
   private deadlineTimer: ReturnType<typeof setTimeout> | null = null;
+  private error = '';
 
   constructor(
     app: App,
     private readonly dependencies: WeeklyThinkingCoachModalDependencies,
   ) {
     super(app);
+    this.session = createWeeklyCoachSessionDraft(
+      dependencies.week,
+      dependencies.now().toISOString(),
+    );
+    this.session.selectedSources = [...DEFAULT_SOURCES];
   }
 
   override onOpen(): void {
     this.closed = false;
-    this.finalized = false;
+    this.skipCloseSave = false;
     this.modalEl.classList.add('atl-weekly-coach-modal');
     this.contentEl.classList.add('atl-weekly-coach-content');
     this.render();
@@ -146,19 +190,9 @@ export class WeeklyThinkingCoachModal extends Modal {
   override onClose(): void {
     this.closed = true;
     this.abortActiveCoach();
-    if (
-      !this.finalized
-      && !this.persisting
-      && this.dirty
-      && this.currentDocument?.record.status !== '已确认'
-      && this.dependencies.canManageVault()
-    ) {
-      void this.dependencies.saveDraft(
-        cloneInput(this.input),
-        this.currentDocument?.raw ?? null,
-      ).then((result) => {
-        this.dependencies.onChanged(result);
-      }).catch(() => {
+    this.clearAutosaveTimer();
+    if (!this.skipCloseSave && !this.isConfirmed() && this.dirty) {
+      void this.persistSessionDraft().catch(() => {
         this.dependencies.notify('草稿自动保存失败，请重新打开本周思考后手动保存。');
       });
     }
@@ -167,458 +201,514 @@ export class WeeklyThinkingCoachModal extends Modal {
 
   private async load(): Promise<void> {
     try {
-      const loaded = await this.dependencies.load();
+      const record = await this.dependencies.loadRecord();
       if (this.closed) return;
-      this.currentDocument = loaded;
-      if (loaded === null) {
-        this.input = emptyInput();
-        this.priorSensitiveSources.clear();
-        this.view = 'start';
+      this.currentRecord = record;
+      if (record?.record.status === '已确认') {
+        this.saveStatus = '正式记录已确认';
+        if (this.dependencies.loadSessionDraft() !== null) {
+          void this.dependencies.clearSessionDraft().catch(() => {
+            this.dependencies.notify('正式记录已确认，临时草稿清理失败');
+          });
+        }
       } else {
-        this.input = cloneInput(loaded.record.input);
-        this.priorSensitiveSources = new Set(
-          this.input.selectedSources.filter((source) => SENSITIVE_SOURCES.has(source)),
-        );
-        this.input.selectedSources = this.input.selectedSources.filter((source) => (
-          !SENSITIVE_SOURCES.has(source)
-        ));
-        this.view = loaded.record.status === '已确认' ? 'confirmed' : 'coaching';
+        const stored = this.dependencies.loadSessionDraft();
+        const restored = stored ?? (record?.record.status === '草稿'
+          ? sessionFromRecord(record, this.dependencies.createId)
+          : null);
+        if (restored === null) {
+          this.session = createWeeklyCoachSessionDraft(
+            this.dependencies.week,
+            this.dependencies.now().toISOString(),
+          );
+          this.session.selectedSources = [...DEFAULT_SOURCES];
+          this.messages = [{
+            id: this.dependencies.createId(),
+            role: 'assistant',
+            text: '先说说你本周正在犹豫、最想推进，或最需要取舍的一件事。',
+          }];
+        } else {
+          this.priorSensitiveSources = new Set(
+            restored.selectedSources.filter((source) => SENSITIVE_SOURCES.has(source)),
+          );
+          this.session = protectRestoredWeeklyCoachDraft({
+            ...restored,
+            selectedSources: restored.selectedSources.filter((source) => (
+              !SENSITIVE_SOURCES.has(source)
+            )),
+          });
+          this.messages = [{
+            id: this.dependencies.createId(),
+            role: 'assistant',
+            text: this.restoredProgressMessage(),
+          }];
+        }
       }
     } catch {
       if (this.closed) return;
-      this.input = emptyInput();
-      this.view = 'start';
-      this.error = '本周记录暂时无法读取，你仍可先开始思考。';
+      this.error = '本周记录暂时无法读取，你仍可先继续思考。';
+      this.messages = [{
+        id: this.dependencies.createId(),
+        role: 'assistant',
+        text: '先说说你本周最需要想清楚的一件事。',
+      }];
+    } finally {
+      if (!this.closed) {
+        this.loading = false;
+        this.render();
+      }
     }
-    this.render();
+  }
+
+  private restoredProgressMessage(): string {
+    const parts = [
+      '上次进展',
+      this.session.sessionSummary,
+      `当前已有 ${this.session.items.length} 项重点草稿。`,
+      this.session.pendingQuestion === '' ? '' : `尚待回答：${this.session.pendingQuestion}`,
+    ].filter(Boolean);
+    return parts.join('\n');
   }
 
   private render(): void {
     this.contentEl.empty();
-    this.modalEl.classList.toggle('atl-weekly-coach-modal--busy', this.busy);
-    if (this.view === 'loading') {
-      this.contentEl.createDiv({ cls: 'atl-weekly-coach-loading', text: '正在读取本周判断...' });
+    this.modalEl.classList.toggle('atl-weekly-coach-modal--busy', this.busy || this.persisting);
+    if (this.loading) {
+      this.contentEl.createDiv({
+        cls: 'atl-weekly-coach-loading',
+        text: '正在读取本周思考...',
+      });
       return;
     }
+
     this.renderHeader();
-    const body = this.contentEl.createDiv({ cls: 'atl-weekly-coach-body' });
-    if (this.error !== '') {
-      body.createDiv({ cls: 'atl-form-error atl-form-error-summary', text: this.error });
-    }
-    if (this.message !== '') {
-      body.createDiv({ cls: 'atl-weekly-coach-message', text: this.message });
-    }
-    if (this.view === 'start') this.renderStart(body);
-    if (this.view === 'coaching') this.renderCoaching(body);
-    if (this.view === 'organize') this.renderOrganize(body);
-    if (this.view === 'confirmed') this.renderConfirmed(body);
+    const main = this.contentEl.createDiv({ cls: 'atl-weekly-coach-main' });
+    this.renderConversation(main.createDiv({ cls: 'atl-weekly-coach-conversation' }));
+    this.renderDraftPanel(main.createDiv({ cls: 'atl-weekly-coach-draft-panel' }));
+    this.renderFooter();
   }
 
   private renderHeader(): void {
     const header = this.contentEl.createDiv({ cls: 'atl-weekly-coach-header' });
     const title = header.createDiv({ cls: 'atl-weekly-coach-title' });
-    title.createEl('h2', {
-      text: this.view === 'confirmed'
-        ? '查看本周判断'
-        : this.currentDocument === null ? '梳理本周重点' : '继续本周思考',
-    });
+    title.createEl('h2', { text: '本周思考教练' });
     title.createEl('p', {
-      text: 'AI 负责启发与整理，最终判断始终由你确认。',
+      text: `${this.dependencies.week} · 和 AI 一起想清楚本周真正值得投入的事情`,
     });
     const meta = header.createDiv({ cls: 'atl-weekly-coach-meta' });
-    meta.createEl('span', { text: this.dependencies.week });
+    meta.createEl('span', { cls: 'atl-weekly-coach-model-status', text: '已连接' });
     meta.createEl('span', { text: this.dependencies.modelLabel });
   }
 
-  private renderStart(container: HTMLElement): void {
-    const intro = container.createDiv({ cls: 'atl-weekly-coach-intro' });
-    intro.createEl('h3', { text: '从一个困惑开始' });
-    intro.createEl('p', {
-      text: '可以写一个正在犹豫的方向，也可以留空，让教练从你授权的资料开始。',
-    });
-    this.appendTextArea(
-      intro,
-      '本周想讨论的问题',
-      this.input.conversationTopic,
-      '例如：这周是否值得收敛产品边界？',
-      (value) => { this.input.conversationTopic = value; },
-      4,
-    );
-
-    const sourceSection = container.createDiv({ cls: 'atl-weekly-coach-sources' });
-    sourceSection.createEl('h3', { text: '选择本次允许读取的资料' });
-    sourceSection.createEl('p', {
-      text: '只读取本次勾选的范围；笔记同步助手和每日所思默认不授权。',
-    });
-    const sourceGrid = sourceSection.createDiv({ cls: 'atl-weekly-coach-source-grid' });
-    for (const source of WEEKLY_COACH_SOURCES) {
-      const label = sourceGrid.createEl('label', { cls: 'atl-weekly-coach-source' });
-      const checkbox = label.createEl('input', { type: 'checkbox' });
-      checkbox.setAttribute('aria-label', `授权${source}`);
-      checkbox.checked = this.input.selectedSources.includes(source);
-      checkbox.addEventListener('change', () => {
-        this.input.selectedSources = checkbox.checked
-          ? [...new Set([...this.input.selectedSources, source])]
-          : this.input.selectedSources.filter((item) => item !== source);
-        this.markDirty();
-      });
-      const copy = label.createDiv();
-      copy.createEl('strong', { text: source });
-      if (SENSITIVE_SOURCES.has(source)) copy.createEl('small', { text: '每次单独授权' });
-    }
-
-    const actions = container.createDiv({ cls: 'atl-weekly-coach-actions' });
-    this.appendButton(actions, '直接人工整理', () => this.openOrganizer());
-    this.appendButton(actions, '确认并开始', () => { void this.runCoach(); }, true);
-  }
-
-  private renderCoaching(container: HTMLElement): void {
-    if (this.busy) {
-      this.renderCoachProgress(container);
+  private renderConversation(container: HTMLElement): void {
+    if (this.isConfirmed()) {
+      const confirmed = container.createDiv({ cls: 'atl-weekly-coach-confirmed-message' });
+      confirmed.createEl('strong', { text: '这是你确认的本周判断' });
+      confirmed.createEl('p', { text: '正式记录已写入 Obsidian，可用于本周执行与后续复盘。' });
       return;
     }
 
+    this.renderSources(container);
+    const messages = container.createDiv({ cls: 'atl-weekly-coach-messages' });
+    for (const message of this.messages) this.renderMessage(messages, message);
+    if (this.busy) this.renderProgress(messages);
     if (this.error !== '') {
-      const failure = container.createDiv({ cls: 'atl-weekly-coach-failure' });
-      failure.createEl('h3', {
-        text: this.coachFailure === 'timeout' ? '等待已超时' : 'AI 暂时不可用',
-      });
-      failure.createEl('p', {
-        text: this.coachFailure === 'timeout'
-          ? '本次等待已达到 3 分钟。你的输入仍保留，可以重试或转为人工整理。'
-          : '你的输入仍保留，可以重试，也可以直接人工整理。',
-      });
-      const actions = failure.createDiv({ cls: 'atl-weekly-coach-actions' });
-      this.appendButton(actions, '重新尝试', () => { void this.runCoach(); });
-      this.appendButton(actions, '直接人工整理', () => this.openOrganizer(), true);
-      return;
-    }
-
-    if (this.input.currentQuestion === '') {
-      const resume = container.createDiv({ cls: 'atl-weekly-coach-question' });
-      resume.createEl('h3', { text: '继续本周思考' });
-      resume.createEl('p', { text: '可以继续让教练整理背景，也可以直接编辑本周判断。' });
-    } else {
-      const question = container.createDiv({ cls: 'atl-weekly-coach-question' });
-      question.createEl('span', { cls: 'atl-weekly-coach-eyebrow', text: '当前最值得想清楚的问题' });
-      question.createEl('h3', { text: this.input.currentQuestion });
-      if (this.coachResult?.questionReason !== undefined) {
-        question.createEl('p', { text: this.coachResult.questionReason });
-      }
-      this.appendTextArea(
-        question,
-        '回答当前问题',
-        this.latestAnswer,
-        '写下你的判断、约束或还不确定的地方',
-        (value) => { this.latestAnswer = value; },
-        4,
-      );
-    }
-
-    this.renderBackground(container);
-    this.renderDirections(container);
-    const resultActions = container.createDiv({ cls: 'atl-weekly-coach-result-actions' });
-    const scopeAction = resultActions.createDiv({ cls: 'atl-weekly-coach-scope-action' });
-    scopeAction.createEl('span', { text: '想调整资料来源？' });
-    this.appendButton(scopeAction, '修改 AI 读取范围', () => {
-      this.view = 'start';
-      this.message = '';
-      this.render();
-    });
-    const choices = resultActions.createDiv({ cls: 'atl-weekly-coach-choice-grid' });
-    if (this.input.currentQuestion !== '') {
-      this.appendCoachChoice(
-        choices,
-        '提交回答，继续讨论',
-        'AI 会结合当前回答再分析一轮，不会写入 Obsidian',
-        () => { void this.runCoach(); },
-      );
-    } else {
-      this.appendCoachChoice(
-        choices,
-        '让 AI 再分析一轮',
-        '重新整理当前背景与方向，不会写入 Obsidian',
-        () => { void this.runCoach(); },
-      );
-    }
-    this.appendCoachChoice(
-      choices,
-      '结束讨论，进入确认',
-      '把当前建议整理成可编辑清单，下一步确认后才写入 Obsidian',
-      () => this.openOrganizer(),
-      true,
-    );
-  }
-
-  private renderCoachProgress(container: HTMLElement): void {
-    const progress = container.createDiv({ cls: 'atl-weekly-coach-progress' });
-    const heading = progress.createDiv({ cls: 'atl-weekly-coach-progress-heading' });
-    heading.createEl('strong', { text: '正在准备本周教练建议' });
-    heading.createEl('span', {
-      text: `${this.formatElapsed(this.elapsedSeconds)} / 最长 03:00`,
-    });
-
-    const stage = this.progressStageNumber();
-    const steps = progress.createDiv({ cls: 'atl-weekly-coach-progress-steps' });
-    this.appendProgressStep(
-      steps,
-      1,
-      stage,
-      stage > 1 ? '已读取授权资料' : '正在读取授权资料',
-      this.coachProgress.stage === 'collecting'
-        ? '从本次允许读取的范围中准备背景'
-        : this.contextStatistics(),
-    );
-    this.appendProgressStep(
-      steps,
-      2,
-      stage,
-      stage > 2 ? 'Claude Code 已启动' : '正在启动 Claude Code',
-      this.dependencies.modelLabel,
-    );
-    this.appendProgressStep(
-      steps,
-      3,
-      stage,
-      stage > 3 ? '教练整理已完成' : '正在等待教练整理',
-      '正在区分事实、推测、信息缺口与可考虑方向',
-    );
-    this.appendProgressStep(
-      steps,
-      4,
-      stage,
-      '解析并展示结果',
-      '把结构化结果转换为可继续讨论的界面',
-    );
-
-    if (this.elapsedSeconds >= SLOW_RESPONSE_SECONDS) {
-      progress.createDiv({
-        cls: 'atl-weekly-coach-slow-notice',
-        text: '响应比平时慢，但仍在 3 分钟等待范围内。你可以继续等待，或转为人工整理。',
-      });
-    }
-
-    const actions = progress.createDiv({ cls: 'atl-weekly-coach-actions' });
-    this.appendButton(actions, '停止等待', () => this.stopCoach(false), false, true);
-    this.appendButton(actions, '转为人工整理', () => this.stopCoach(true), false, true);
-  }
-
-  private appendProgressStep(
-    container: HTMLElement,
-    step: number,
-    activeStep: number,
-    label: string,
-    detail: string,
-  ): void {
-    const status = step < activeStep ? 'complete' : step === activeStep ? 'active' : 'pending';
-    const row = container.createDiv({
-      cls: `atl-weekly-coach-progress-step is-${status}`,
-    });
-    row.createEl('span', {
-      cls: 'atl-weekly-coach-progress-marker',
-      text: status === 'complete' ? '✓' : status === 'active' ? '●' : '○',
-    });
-    const copy = row.createDiv();
-    copy.createEl('strong', { text: label });
-    copy.createEl('small', { text: detail });
-  }
-
-  private renderBackground(container: HTMLElement): void {
-    const background = this.input.background;
-    if (
-      background.facts.length === 0
-      && background.assumptions.length === 0
-      && background.gaps.length === 0
-      && background.sources.length === 0
-    ) return;
-    const details = container.createEl('details', { cls: 'atl-weekly-coach-background' });
-    details.open = true;
-    details.createEl('summary', { text: '背景与判断依据' });
-    const grid = details.createDiv({ cls: 'atl-weekly-coach-background-grid' });
-    this.appendList(grid, '已确认事实', background.facts);
-    this.appendList(grid, '仍是推测', background.assumptions);
-    this.appendList(grid, '关键信息缺口', background.gaps);
-    this.appendList(grid, '资料来源', background.sources);
-  }
-
-  private renderDirections(container: HTMLElement): void {
-    if (this.coachResult?.directions.length === 0 || this.coachResult === null) return;
-    const section = container.createDiv({ cls: 'atl-weekly-coach-directions' });
-    section.createEl('h3', { text: '可考虑方向' });
-    for (const direction of this.coachResult.directions) {
-      const item = section.createDiv({ cls: 'atl-weekly-coach-direction' });
-      item.createEl('strong', { text: direction.title });
-      item.createEl('p', { text: direction.rationale });
-      item.createEl('small', { text: `代价：${direction.tradeoff} · 验证：${direction.validation}` });
-    }
-  }
-
-  private renderOrganize(container: HTMLElement): void {
-    const notice = container.createDiv({ cls: 'atl-weekly-coach-organize-notice' });
-    notice.createEl('strong', { text: '这是对你表达的整理，不是 AI 替你决定' });
-    notice.createEl('p', { text: '可确认 0 至 3 项。确认前所有字段都可以修改。' });
-
-    const noFocusLabel = container.createEl('label', { cls: 'atl-weekly-coach-no-focus' });
-    const noFocus = noFocusLabel.createEl('input', { type: 'checkbox' });
-    noFocus.setAttribute('aria-label', '本周暂不新增重点');
-    noFocus.checked = this.input.noNewFocus;
-    noFocus.addEventListener('change', () => {
-      this.input.noNewFocus = noFocus.checked;
-      if (noFocus.checked) this.input.focuses = [];
-      this.markDirty();
-      this.render();
-    });
-    noFocusLabel.createEl('span', { text: '本周暂不新增重点，先完成既有承诺' });
-
-    if (!this.input.noNewFocus) {
-      const focusList = container.createDiv({ cls: 'atl-weekly-coach-focus-list' });
-      for (const [index, focus] of this.input.focuses.entries()) {
-        this.renderFocusEditor(focusList, focus, index);
-      }
-      if (this.input.focuses.length < 3) {
-        this.appendButton(focusList, '添加一项判断', () => {
-          this.input.focuses.push(emptyFocus());
-          this.markDirty();
+      const error = messages.createDiv({ cls: 'atl-weekly-coach-error' });
+      error.createEl('strong', { text: this.error });
+      if (this.coachFailure === 'timeout' || this.coachFailure === 'unavailable' || this.coachFailure === 'invalid') {
+        const actions = error.createDiv({ cls: 'atl-weekly-coach-error-actions' });
+        this.appendTextButton(actions, '重新尝试', () => { void this.retryCoach(); });
+        this.appendTextButton(actions, '继续人工整理', () => {
+          this.coachFailure = null;
+          this.error = '';
           this.render();
         });
       }
     }
-
-    this.appendTextArea(
-      container,
-      '本周不做',
-      this.input.notDoing.join('\n'),
-      '每行一项，明确本周主动不投入什么',
-      (value) => { this.input.notDoing = lines(value); },
-      3,
-    );
-
-    const actions = container.createDiv({ cls: 'atl-weekly-coach-actions' });
-    this.appendButton(actions, '继续讨论', () => {
-      this.view = 'coaching';
-      this.message = '';
-      this.render();
-    });
-    this.appendButton(actions, '保存草稿', () => { void this.persist(false); });
-    this.appendButton(actions, '确认本周判断', () => { void this.persist(true); }, true);
+    this.renderComposer(container);
   }
 
-  private renderFocusEditor(
+  private renderSources(container: HTMLElement): void {
+    const section = container.createDiv({ cls: 'atl-weekly-coach-sources' });
+    const heading = section.createDiv({ cls: 'atl-weekly-coach-section-heading' });
+    heading.createEl('strong', { text: '本次授权资料' });
+    heading.createEl('small', { text: '敏感资料每次单独授权' });
+    const list = section.createDiv({ cls: 'atl-weekly-coach-source-list' });
+    for (const source of WEEKLY_COACH_SOURCES) {
+      const label = list.createEl('label', { cls: 'atl-weekly-coach-source' });
+      const checkbox = label.createEl('input', { type: 'checkbox' });
+      checkbox.checked = this.session.selectedSources.includes(source);
+      checkbox.disabled = this.busy;
+      checkbox.setAttribute('aria-label', `授权${source}`);
+      checkbox.addEventListener('change', () => {
+        this.session = {
+          ...this.session,
+          selectedSources: checkbox.checked
+            ? [...new Set([...this.session.selectedSources, source])]
+            : this.session.selectedSources.filter((candidate) => candidate !== source),
+        };
+        this.changed();
+      });
+      label.createEl('span', { text: source });
+    }
+  }
+
+  private renderMessage(container: HTMLElement, message: CoachMessage): void {
+    const item = container.createDiv({
+      cls: `atl-weekly-coach-message atl-weekly-coach-message--${message.role}`,
+    });
+    item.createEl('small', {
+      text: message.role === 'user' ? '你' : message.role === 'assistant' ? 'AI 教练' : '当前范围',
+    });
+    const body = item.createEl('p');
+    for (const [index, line] of message.text.split('\n').entries()) {
+      if (index > 0) body.createEl('br');
+      body.append(line);
+    }
+    if (message.question !== undefined && message.question !== '') {
+      const question = item.createDiv({ cls: 'atl-weekly-coach-question' });
+      question.createEl('strong', { text: message.question });
+      if (message.questionReason !== undefined && message.questionReason !== '') {
+        question.createEl('small', { text: message.questionReason });
+      }
+    }
+  }
+
+  private renderComposer(container: HTMLElement): void {
+    const composer = container.createDiv({ cls: 'atl-weekly-coach-composer' });
+    const textarea = composer.createEl('textarea', {
+      attr: {
+        'aria-label': '给本周思考教练发消息',
+        placeholder: this.session.pendingQuestion || '写下你的判断、顾虑或想进一步讨论的方向',
+      },
+    });
+    textarea.rows = 3;
+    textarea.value = this.session.pendingInput;
+    textarea.addEventListener('input', () => {
+      this.session = { ...this.session, pendingInput: textarea.value };
+      send.disabled = this.busy || this.persisting || textarea.value.trim() === '';
+      this.changed();
+    });
+    const send = this.appendIconButton(composer, '发送', 'send', () => { void this.send(); });
+    send.disabled = this.busy || this.persisting || this.session.pendingInput.trim() === '';
+    composer.createEl('small', {
+      text: 'AI 会继续追问，或把已经足够清楚的内容整理到右侧草稿。',
+    });
+  }
+
+  private renderProgress(container: HTMLElement): void {
+    const progress = container.createDiv({ cls: 'atl-weekly-coach-progress' });
+    progress.createEl('strong', { text: this.progressLabel() });
+    const statistics = this.contextStatistics();
+    if (statistics !== '') progress.createEl('span', { text: statistics });
+    progress.createEl('span', {
+      text: `${this.formatElapsed(this.elapsedSeconds)} / 最长 03:00`,
+    });
+    if (this.elapsedSeconds >= SLOW_RESPONSE_SECONDS) {
+      progress.createEl('small', {
+        cls: 'atl-weekly-coach-slow-notice',
+        text: '响应比平时慢，你可以继续等待，也可以停止后人工整理。',
+      });
+    }
+    this.appendTextButton(progress, '停止等待', () => this.stopCoach());
+  }
+
+  private renderDraftPanel(container: HTMLElement): void {
+    if (this.isConfirmed()) {
+      this.renderConfirmedDraft(container);
+      return;
+    }
+    const heading = container.createDiv({ cls: 'atl-weekly-coach-draft-heading' });
+    const title = heading.createDiv();
+    title.createEl('h3', { text: '本周重点草稿' });
+    title.createEl('span', { text: `${this.session.items.length} / 3` });
+    if (this.session.items.length < 3) {
+      this.appendIconButton(heading, '人工添加重点', 'plus', () => this.addManualItem());
+    }
+
+    const list = container.createDiv({ cls: 'atl-weekly-coach-draft-list' });
+    for (const [index, item] of this.session.items.entries()) {
+      const card = list.createDiv({
+        cls: [
+          'atl-weekly-coach-draft-card',
+          item.id === this.session.focusedItemId ? 'is-focused' : '',
+        ].filter(Boolean).join(' '),
+      });
+      const cardHeading = card.createDiv({ cls: 'atl-weekly-coach-card-heading' });
+      cardHeading.createEl('strong', { text: `重点 ${index + 1}` });
+      cardHeading.createEl('span', {
+        cls: item.readiness === '可确认' ? 'is-ready' : 'is-pending',
+        text: item.readiness,
+      });
+      this.appendIconButton(cardHeading, '删除重点', 'trash-2', () => {
+        this.session = removeWeeklyCoachDraftItem(this.session, item.id);
+        this.validationIssues = [];
+        this.changed();
+        this.render();
+      });
+
+      for (const field of WEEKLY_COACH_DRAFT_FIELDS) {
+        this.renderDraftField(card, item.id, field);
+      }
+
+      const actions = card.createDiv({ cls: 'atl-weekly-coach-card-actions' });
+      if (this.session.focusedItemId === item.id) {
+        this.appendTextButton(actions, '结束聚焦', () => {
+          this.session = { ...this.session, focusedItemId: null };
+          this.messages = this.messages.filter((message) => (
+            !(message.role === 'system' && message.text.startsWith('接下来只讨论：'))
+          ));
+          this.changed();
+          this.render();
+        });
+      } else {
+        this.appendTextButton(actions, '聚焦讨论', () => {
+          this.session = { ...this.session, focusedItemId: item.id };
+          this.messages.push({
+            id: this.dependencies.createId(),
+            role: 'system',
+            text: `接下来只讨论：${item.focus || `重点 ${index + 1}`}`,
+          });
+          this.changed();
+          this.render();
+        });
+      }
+      this.appendTextButton(actions, '直接编辑', () => {
+        card.querySelector<HTMLInputElement>('input')?.focus();
+      });
+    }
+
+    if (this.session.items.length < 3) {
+      const empty = container.createDiv({ cls: 'atl-weekly-coach-empty-slot' });
+      empty.createEl('strong', { text: '保留空位' });
+      empty.createEl('p', { text: 'AI 只会在信息充分时形成下一项，不会为了凑满三项生成内容。' });
+    }
+    if (this.session.items.length === 0) this.renderNoFocusChoice(container);
+    container.createEl('small', {
+      cls: 'atl-weekly-coach-boundary-note',
+      text: '草稿不会自动创建任务、修改任务状态或触发 Agent 执行。',
+    });
+  }
+
+  private renderDraftField(
     container: HTMLElement,
-    focus: WeeklyFocusItem,
-    index: number,
+    itemId: string,
+    field: WeeklyCoachDraftField,
   ): void {
-    const card = container.createDiv({ cls: 'atl-weekly-coach-focus-editor' });
-    const heading = card.createDiv({ cls: 'atl-weekly-coach-focus-heading' });
-    heading.createEl('strong', { text: `本周判断 ${index + 1}` });
-    if (this.input.focuses.length > 1) {
-      this.appendButton(heading, '移除', () => {
-        this.input.focuses.splice(index, 1);
-        this.markDirty();
+    const item = this.session.items.find((candidate) => candidate.id === itemId);
+    if (item === undefined) return;
+    const wrapper = container.createEl('label', { cls: 'atl-weekly-coach-draft-field' });
+    const label = wrapper.createDiv({ cls: 'atl-weekly-coach-field-label' });
+    label.createEl('span', { text: FIELD_LABELS[field] });
+    if (item.fieldSources[field] === 'user') label.createEl('small', { text: '已由你修改' });
+    const input = wrapper.createEl('input', {
+      type: 'text',
+      attr: {
+        'aria-label': FIELD_LABELS[field],
+        placeholder: '待补充',
+      },
+    });
+    input.value = item[field];
+    input.addEventListener('input', () => {
+      this.session = editWeeklyCoachDraftField(this.session, itemId, field, input.value);
+      this.validationIssues = this.validationIssues.filter((issue) => (
+        issue.itemId !== itemId || issue.field !== field
+      ));
+      this.changed();
+    });
+    if (item[field].trim() === '') wrapper.createEl('small', { text: '待补充' });
+    const issue = this.validationIssues.find((candidate) => (
+      candidate.itemId === itemId && candidate.field === field
+    ));
+    if (issue !== undefined) {
+      wrapper.createEl('small', { cls: 'atl-weekly-coach-field-error', text: issue.message });
+    }
+    const suggestion = item.suggestions[field];
+    if (suggestion !== undefined) {
+      const suggestionEl = wrapper.createDiv({ cls: 'atl-weekly-coach-suggestion' });
+      suggestionEl.createEl('span', { text: `AI 建议：${suggestion}` });
+      this.appendTextButton(suggestionEl, '采用建议', () => {
+        this.session = acceptWeeklyCoachSuggestion(this.session, itemId, field);
+        this.changed();
         this.render();
       });
     }
-    this.appendTextArea(card, `第${index + 1}项重点事项`, focus.focus, '', (value) => {
-      focus.focus = value;
-    }, 2);
-    this.appendTextArea(card, `第${index + 1}项预期结果`, focus.outcome, '', (value) => {
-      focus.outcome = value;
-    }, 2);
-    this.appendTextArea(card, `第${index + 1}项为什么是本周`, focus.whyThisWeek, '', (value) => {
-      focus.whyThisWeek = value;
-    }, 2);
-    this.appendTextArea(card, `第${index + 1}项完成证据`, focus.evidence, '', (value) => {
-      focus.evidence = value;
-    }, 2);
   }
 
-  private renderConfirmed(container: HTMLElement): void {
-    const document = this.currentDocument;
+  private renderNoFocusChoice(container: HTMLElement): void {
+    const choice = container.createEl('label', { cls: 'atl-weekly-coach-no-focus' });
+    const checkbox = choice.createEl('input', { type: 'checkbox' });
+    checkbox.checked = this.session.noNewFocus;
+    checkbox.setAttribute('aria-label', '本周暂不新增重点，先完成既有承诺');
+    checkbox.addEventListener('change', () => {
+      this.session = { ...this.session, noNewFocus: checkbox.checked };
+      this.validationIssues = this.validationIssues.filter((issue) => issue.field !== 'noNewFocus');
+      this.changed();
+    });
+    choice.createEl('span', { text: '本周暂不新增重点，先完成既有承诺' });
+    const issue = this.validationIssues.find((candidate) => candidate.field === 'noNewFocus');
+    if (issue !== undefined) {
+      container.createEl('small', { cls: 'atl-weekly-coach-field-error', text: issue.message });
+    }
+  }
+
+  private renderConfirmedDraft(container: HTMLElement): void {
+    const document = this.currentRecord;
     if (document === null) return;
-    const intro = container.createDiv({ cls: 'atl-weekly-coach-confirmed' });
-    intro.createEl('h3', { text: '这是你确认的本周判断' });
-    intro.createEl('p', { text: '你可以在周末复盘时用这份记录对照实际结果。' });
-    if (this.input.noNewFocus && this.input.focuses.length === 0) {
-      intro.createDiv({ cls: 'atl-weekly-coach-empty-decision', text: '本周暂不新增重点，先完成既有承诺。' });
+    const heading = container.createDiv({ cls: 'atl-weekly-coach-draft-heading' });
+    heading.createEl('h3', { text: '本周重点' });
+    heading.createEl('span', { text: `${document.record.input.focuses.length} / 3` });
+    if (document.record.input.focuses.length === 0) {
+      container.createEl('p', { text: '本周暂不新增重点，先完成既有承诺。' });
     }
-    for (const [index, focus] of this.input.focuses.entries()) {
-      const card = intro.createDiv({ cls: 'atl-weekly-coach-confirmed-focus' });
-      card.createEl('span', { text: `判断 ${index + 1}` });
+    for (const [index, focus] of document.record.input.focuses.entries()) {
+      const card = container.createDiv({ cls: 'atl-weekly-coach-confirmed-focus' });
+      card.createEl('small', { text: `重点 ${index + 1}` });
       card.createEl('strong', { text: focus.focus });
-      card.createEl('p', { text: `${focus.outcome} · ${focus.whyThisWeek}` });
+      card.createEl('span', { text: `预期结果：${focus.outcome}` });
+      card.createEl('span', { text: `为什么是本周：${focus.whyThisWeek}` });
+      card.createEl('span', { text: `完成证据：${focus.evidence}` });
     }
-    const actions = container.createDiv({ cls: 'atl-weekly-coach-actions' });
-    this.appendButton(actions, '打开 Markdown', () => {
-      void this.dependencies.openRecord(document.path);
-    }, true);
   }
 
-  private async runCoach(): Promise<void> {
-    if (this.busy) return;
+  private renderFooter(): void {
+    const footer = this.contentEl.createDiv({ cls: 'atl-weekly-coach-footer' });
+    footer.createEl('span', { cls: 'atl-weekly-coach-save-status', text: this.saveStatus });
+    const actions = footer.createDiv({ cls: 'atl-weekly-coach-footer-actions' });
+    if (this.isConfirmed()) {
+      this.appendTextButton(actions, '打开 Markdown', () => {
+        if (this.currentRecord !== null) void this.dependencies.openRecord(this.currentRecord.path);
+      });
+      this.appendTextButton(actions, '关闭', () => {
+        this.skipCloseSave = true;
+        this.close();
+      });
+      return;
+    }
+    this.appendTextButton(actions, '保存并离开', () => { void this.saveAndLeave(); });
+    const confirm = this.appendTextButton(
+      actions,
+      '确认并写入 Obsidian',
+      () => { void this.confirm(); },
+      true,
+    );
+    confirm.disabled = this.busy || this.persisting;
+  }
+
+  private addManualItem(): void {
+    if (this.session.items.length >= 3) return;
+    this.session = {
+      ...this.session,
+      items: [...this.session.items, createManualWeeklyCoachDraftItem(this.dependencies.createId())],
+      noNewFocus: false,
+    };
+    this.validationIssues = [];
+    this.changed();
+    this.render();
+  }
+
+  private async send(): Promise<void> {
+    if (this.busy || this.persisting) return;
+    const answer = this.session.pendingInput.trim();
+    if (answer === '') return;
+    this.lastAnswer = answer;
+    this.messages.push({ id: this.dependencies.createId(), role: 'user', text: answer });
+    this.session = {
+      ...this.session,
+      topic: this.session.topic || answer,
+      pendingInput: '',
+      keyAnswers: [...this.session.keyAnswers, answer].slice(-8),
+    };
+    this.changed();
+    await this.runCoach(answer);
+  }
+
+  private async retryCoach(): Promise<void> {
+    if (this.busy || this.lastAnswer === '') return;
+    this.error = '';
+    this.coachFailure = null;
+    await this.runCoach(this.lastAnswer);
+  }
+
+  private async runCoach(answer: string): Promise<void> {
     const controller = new AbortController();
     this.coachAbortController = controller;
+    this.coachFailure = null;
+    this.error = '';
+    this.busy = true;
+    this.elapsedSeconds = 0;
     this.coachProgress = { stage: 'collecting' };
     this.lastContextStatistics = null;
-    this.coachFailure = null;
-    this.elapsedSeconds = 0;
-    this.busy = true;
-    this.error = '';
-    this.message = '';
-    this.view = 'coaching';
-    this.markDirty();
-    const answer = this.latestAnswer.trim();
-    if (answer !== '') this.input.keyAnswers.push(answer);
-    this.latestAnswer = '';
     this.startElapsedTimer(controller);
     this.render();
+
+    const turn: WeeklyThinkingCoachTurn = {
+      topic: this.session.topic,
+      selectedSources: [...this.session.selectedSources],
+      latestAnswer: answer,
+      keyAnswers: [...this.session.keyAnswers],
+      previousSummary: this.canReusePreviousSummary() && this.session.sessionSummary !== ''
+        ? this.session.sessionSummary
+        : null,
+      draftItems: this.session.items.map((item) => ({
+        ...item,
+        fieldSources: { ...item.fieldSources },
+        suggestions: { ...item.suggestions },
+      })),
+      deletedFocuses: this.session.deletedItems.map((item) => item.focusKey),
+      focusedItemId: this.session.focusedItemId,
+    };
+
     try {
-      const result = await this.dependencies.runCoach({
-        topic: this.input.conversationTopic,
-        selectedSources: [...this.input.selectedSources],
-        latestAnswer: answer,
-        keyAnswers: [...this.input.keyAnswers],
-        previousSummary: this.canReusePreviousSummary()
-          ? this.input.coachSummary || null
-          : null,
-      }, {
+      const result = await this.dependencies.runCoach(turn, {
         signal: controller.signal,
         onProgress: (progress) => {
-          if (
-            this.closed
-            || controller.signal.aborted
-            || this.coachAbortController !== controller
-          ) return;
+          if (this.coachAbortController !== controller || this.closed) return;
           this.coachProgress = progress;
           this.render();
         },
       });
-      if (this.closed || controller.signal.aborted) return;
-      this.coachResult = result;
-      this.input.background = {
-        facts: [...result.background.facts],
-        assumptions: [...result.background.assumptions],
-        gaps: [...result.background.gaps],
-        sources: [...result.background.sources],
+      if (this.coachAbortController !== controller || controller.signal.aborted || this.closed) return;
+      const merged = mergeWeeklyCoachDraftOperations(this.session, result.draftOperations, {
+        nextId: this.dependencies.createId,
+        focusedItemId: this.session.focusedItemId,
+      });
+      this.session = {
+        ...merged.draft,
+        sessionSummary: result.sessionSummary,
+        pendingQuestion: result.nextQuestion ?? '',
+        questionReason: result.questionReason ?? '',
+        background: {
+          facts: [...result.background.facts],
+          assumptions: [...result.background.assumptions],
+          gaps: [...result.background.gaps],
+          sources: [...result.background.sources],
+        },
       };
-      this.input.currentQuestion = result.currentQuestion;
-      this.input.coachSummary = result.summary;
-      this.input.coachInsights = [
-        ...this.input.coachInsights,
-        `${result.currentQuestion}（${result.questionReason}）`,
-      ];
-      this.input.consideredDirections = result.directions.map((direction) => (
-        `${direction.title}：${direction.rationale}；代价：${direction.tradeoff}；验证：${direction.validation}`
-      ));
-      this.priorSensitiveSources = new Set(
-        this.input.selectedSources.filter((source) => SENSITIVE_SOURCES.has(source)),
-      );
+      this.messages.push({
+        id: this.dependencies.createId(),
+        role: 'assistant',
+        text: result.assistantMessage,
+        ...(result.nextQuestion === null ? {} : { question: result.nextQuestion }),
+        ...(result.questionReason === null ? {} : { questionReason: result.questionReason }),
+      });
+      this.validationIssues = [];
+      this.changed();
     } catch (error) {
-      if (this.closed || controller.signal.aborted) return;
-      this.coachResult = null;
-      this.coachFailure = this.isTimeoutError(error) ? 'timeout' : 'unavailable';
-      this.error = this.coachFailure === 'timeout'
-        ? '等待已超过 3 分钟。你的输入没有丢失。'
-        : 'AI 暂时不可用。你的输入没有丢失。';
+      if (this.coachAbortController !== controller || this.closed) return;
+      if (controller.signal.aborted || isAbortError(error)) {
+        this.coachFailure = 'cancelled';
+        this.error = '已停止 AI 整理，你的输入和上一版草稿仍然保留。';
+      } else if (isTimeoutError(error)) {
+        this.coachFailure = 'timeout';
+        this.error = '等待已超时，已达到 3 分钟。你的输入和上一版草稿仍然保留。';
+      } else if (isInvalidResultError(error)) {
+        this.coachFailure = 'invalid';
+        this.error = 'AI 返回内容无法使用，上一版草稿没有变化。';
+      } else {
+        this.coachFailure = 'unavailable';
+        this.error = 'AI 暂时不可用。你可以重试，也可以继续人工整理。';
+      }
     } finally {
       if (this.coachAbortController === controller) {
         this.coachAbortController = null;
@@ -629,37 +719,131 @@ export class WeeklyThinkingCoachModal extends Modal {
     }
   }
 
-  private stopCoach(openManualOrganizer: boolean): void {
+  private stopCoach(): void {
     if (this.coachAbortController === null) return;
     this.abortActiveCoach();
     this.busy = false;
-    this.coachFailure = null;
-    if (openManualOrganizer) {
-      this.openOrganizer();
-      return;
-    }
-    this.view = 'start';
-    this.message = '已停止 AI 整理，你的输入仍保留。';
+    this.coachFailure = 'cancelled';
+    this.error = '已停止 AI 整理，你的输入和上一版草稿仍然保留。';
     this.render();
   }
 
-  private abortActiveCoach(): void {
-    const controller = this.coachAbortController;
-    this.coachAbortController = null;
-    this.stopElapsedTimer();
-    controller?.abort();
+  private async saveAndLeave(): Promise<void> {
+    if (this.persisting || this.isConfirmed()) return;
+    this.abortActiveCoach();
+    this.busy = false;
+    try {
+      await this.persistSessionDraft();
+      this.dependencies.onChanged();
+      this.skipCloseSave = true;
+      this.close();
+    } catch {
+      this.error = '草稿暂存失败，请稍后重试。';
+      this.render();
+    }
+  }
+
+  private async confirm(): Promise<void> {
+    if (this.busy || this.persisting || this.isConfirmed()) return;
+    if (!this.dependencies.canManageVault()) {
+      this.error = 'Vault 管理权限已关闭，请在 ATL 设置中开启后再确认。';
+      this.render();
+      return;
+    }
+    const issues = validateWeeklyCoachSessionDraft(this.session);
+    if (issues.length > 0) {
+      this.validationIssues = issues;
+      this.error = issues[0]?.message ?? '请补齐本周重点后再确认。';
+      this.render();
+      return;
+    }
+
+    this.persisting = true;
+    this.error = '';
+    this.render();
+    try {
+      const result = await this.dependencies.confirm(
+        weeklyCoachDraftToFocusInput(this.session),
+        this.currentRecord?.raw ?? null,
+      );
+      this.currentRecord = result;
+      this.saveStatus = '正式记录已确认';
+      this.dirty = false;
+      this.clearAutosaveTimer();
+      this.dependencies.onChanged();
+      try {
+        await this.dependencies.clearSessionDraft();
+      } catch {
+        this.dependencies.notify('正式记录已确认，临时草稿清理失败');
+      }
+    } catch (error) {
+      this.error = error instanceof Error && error.message.includes('其他编辑')
+        ? error.message
+        : '本周判断未能写入，请稍后重试。插件草稿仍然保留。';
+    } finally {
+      this.persisting = false;
+      if (!this.closed) this.render();
+    }
+  }
+
+  private changed(): void {
+    this.session = { ...this.session, updatedAt: this.dependencies.now().toISOString() };
+    this.dirty = true;
+    this.mutationVersion += 1;
+    this.saveStatus = '未保存';
+    this.updateSaveStatus();
+    this.scheduleAutosave();
+  }
+
+  private scheduleAutosave(): void {
+    this.clearAutosaveTimer();
+    this.autosaveTimer = setTimeout(() => {
+      this.autosaveTimer = null;
+      void this.persistSessionDraft().catch(() => undefined);
+    }, AUTOSAVE_DELAY_MS);
+  }
+
+  private clearAutosaveTimer(): void {
+    if (this.autosaveTimer !== null) {
+      clearTimeout(this.autosaveTimer);
+      this.autosaveTimer = null;
+    }
+  }
+
+  private async persistSessionDraft(): Promise<void> {
+    this.clearAutosaveTimer();
+    const version = this.mutationVersion;
+    this.saveStatus = '正在暂存';
+    this.updateSaveStatus();
+    try {
+      await this.dependencies.saveSessionDraft(cloneSession(this.session));
+      if (this.mutationVersion === version) {
+        this.dirty = false;
+        this.saveStatus = '刚刚暂存';
+      } else {
+        this.scheduleAutosave();
+      }
+    } catch (error) {
+      this.saveStatus = '暂存失败';
+      throw error;
+    } finally {
+      this.updateSaveStatus();
+    }
+  }
+
+  private updateSaveStatus(): void {
+    const element = this.contentEl.querySelector<HTMLElement>('.atl-weekly-coach-save-status');
+    if (element !== null) element.textContent = this.saveStatus;
   }
 
   private startElapsedTimer(controller: AbortController): void {
     this.stopElapsedTimer();
     this.elapsedTimer = setInterval(() => {
-      if (!this.busy || this.closed) return;
+      if (this.coachAbortController !== controller || this.closed) return;
       this.elapsedSeconds = Math.min(this.elapsedSeconds + 1, COACH_TIMEOUT_SECONDS);
       this.render();
     }, 1_000);
-    this.deadlineTimer = setTimeout(() => {
-      this.timeoutCoach(controller);
-    }, COACH_TIMEOUT_SECONDS * 1_000);
+    this.deadlineTimer = setTimeout(() => this.timeoutCoach(controller), COACH_TIMEOUT_SECONDS * 1_000);
   }
 
   private stopElapsedTimer(): void {
@@ -678,17 +862,24 @@ export class WeeklyThinkingCoachModal extends Modal {
     this.coachAbortController = null;
     this.stopElapsedTimer();
     controller.abort();
-    this.coachFailure = 'timeout';
-    this.error = '等待已超过 3 分钟。你的输入没有丢失。';
     this.busy = false;
+    this.coachFailure = 'timeout';
+    this.error = '等待已超时，已达到 3 分钟。你的输入和上一版草稿仍然保留。';
     this.render();
   }
 
-  private progressStageNumber(): number {
-    if (this.coachProgress.stage === 'collecting') return 1;
-    if (this.coachProgress.stage === 'context_ready') return 2;
-    if (this.coachProgress.stage === 'model_started') return 3;
-    return 4;
+  private abortActiveCoach(): void {
+    const controller = this.coachAbortController;
+    this.coachAbortController = null;
+    this.stopElapsedTimer();
+    controller?.abort();
+  }
+
+  private progressLabel(): string {
+    if (this.coachProgress.stage === 'collecting') return '正在读取授权资料';
+    if (this.coachProgress.stage === 'context_ready') return '授权资料已准备完成';
+    if (this.coachProgress.stage === 'model_started') return '模型已启动，正在思考';
+    return '正在整理回复与草稿';
   }
 
   private contextStatistics(): string {
@@ -707,145 +898,45 @@ export class WeeklyThinkingCoachModal extends Modal {
     return `${minutes}:${remaining}`;
   }
 
-  private isTimeoutError(error: unknown): boolean {
-    return error instanceof Error
-      && 'code' in error
-      && (error as Error & { code?: unknown }).code === 'claude_timeout';
+  private canReusePreviousSummary(): boolean {
+    return [...this.priorSensitiveSources].every((source) => (
+      this.session.selectedSources.includes(source)
+    ));
   }
 
-  private openOrganizer(): void {
-    if (this.input.focuses.length === 0 && !this.input.noNewFocus) {
-      const draft = this.coachResult?.organizedDraft;
-      this.input.focuses = [draft === null || draft === undefined
-        ? emptyFocus(this.input.conversationTopic)
-        : {
-          focus: draft.problem,
-          outcome: draft.outcome,
-          whyThisWeek: draft.commitment,
-          evidence: draft.evidence,
-        }];
-      if (draft !== null && draft !== undefined) this.input.notDoing = [...draft.notDoing];
-    }
-    this.view = 'organize';
-    this.error = '';
-    this.message = '';
-    this.markDirty();
-    this.render();
+  private isConfirmed(): boolean {
+    return this.currentRecord?.record.status === '已确认';
   }
 
-  private async persist(confirmed: boolean): Promise<void> {
-    if (this.busy) return;
-    if (!this.dependencies.canManageVault()) {
-      this.error = 'Vault 管理权限已关闭，请在 ATL 设置中开启后再保存。';
-      this.render();
-      return;
-    }
-    this.busy = true;
-    this.persisting = true;
-    this.error = '';
-    const expected = this.currentDocument?.raw ?? null;
-    try {
-      const result = confirmed
-        ? await this.dependencies.confirm(cloneInput(this.input), expected)
-        : await this.dependencies.saveDraft(cloneInput(this.input), expected);
-      this.currentDocument = result;
-      this.input = cloneInput(result.record.input);
-      this.dirty = false;
-      this.dependencies.onChanged(result);
-      if (confirmed) {
-        this.finalized = true;
-        this.close();
-        return;
-      }
-      this.message = '草稿已保存';
-    } catch (error) {
-      this.error = error instanceof Error && error.message.includes('其他编辑')
-        ? error.message
-        : confirmed
-          ? '本周判断未能确认，请检查必填内容后重试。'
-          : '草稿保存失败，请稍后重试。';
-    } finally {
-      this.persisting = false;
-      this.busy = false;
-      if (!this.closed) this.render();
-    }
-  }
-
-  private appendTextArea(
+  private appendTextButton(
     container: HTMLElement,
     label: string,
-    value: string,
-    placeholder: string,
-    onChange: (value: string) => void,
-    rows: number,
-  ): HTMLTextAreaElement {
-    const field = container.createEl('label', { cls: 'atl-weekly-coach-field' });
-    field.createEl('span', { text: label });
-    const textarea = field.createEl('textarea');
-    textarea.rows = rows;
-    textarea.value = value;
-    textarea.placeholder = placeholder;
-    textarea.setAttribute('aria-label', label);
-    textarea.addEventListener('input', () => {
-      onChange(textarea.value);
-      this.markDirty();
-    });
-    return textarea;
-  }
-
-  private appendList(container: HTMLElement, title: string, values: readonly string[]): void {
-    const section = container.createDiv({ cls: 'atl-weekly-coach-background-section' });
-    section.createEl('strong', { text: title });
-    if (values.length === 0) {
-      section.createEl('p', { text: '暂无' });
-      return;
-    }
-    const list = section.createEl('ul');
-    for (const value of values) list.createEl('li', { text: value });
-  }
-
-  private appendButton(
-    container: HTMLElement,
-    label: string,
-    onClick: () => void,
-    primary = false,
-    allowWhileBusy = false,
-  ): HTMLButtonElement {
-    const button = container.createEl('button', primary
-      ? { cls: 'mod-cta', text: label, type: 'button' }
-      : { text: label, type: 'button' });
-    button.disabled = this.busy && !allowWhileBusy;
-    button.addEventListener('click', onClick);
-    return button;
-  }
-
-  private appendCoachChoice(
-    container: HTMLElement,
-    label: string,
-    description: string,
     onClick: () => void,
     primary = false,
   ): HTMLButtonElement {
     const button = container.createEl('button', {
-      cls: primary ? 'atl-weekly-coach-choice mod-cta' : 'atl-weekly-coach-choice',
+      cls: primary ? 'mod-cta' : '',
+      text: label,
       type: 'button',
+      attr: { 'aria-label': label },
     });
-    button.createEl('strong', { text: label });
-    button.createEl('small', { text: description });
-    button.setAttribute('aria-label', label);
-    button.disabled = this.busy;
     button.addEventListener('click', onClick);
     return button;
   }
 
-  private markDirty(): void {
-    this.dirty = true;
-    this.message = '';
-  }
-
-  private canReusePreviousSummary(): boolean {
-    return [...this.priorSensitiveSources].every((source) => (
-      this.input.selectedSources.includes(source)
-    ));
+  private appendIconButton(
+    container: HTMLElement,
+    label: string,
+    icon: string,
+    onClick: () => void,
+  ): HTMLButtonElement {
+    const button = container.createEl('button', {
+      cls: 'clickable-icon',
+      type: 'button',
+      attr: { 'aria-label': label, title: label },
+    });
+    setIcon(button, icon);
+    button.addEventListener('click', onClick);
+    return button;
   }
 }

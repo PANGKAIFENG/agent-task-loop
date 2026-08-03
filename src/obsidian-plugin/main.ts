@@ -1,4 +1,5 @@
 import { homedir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { readFile as readExternalFile, stat as statExternalFile } from 'node:fs/promises';
 import { basename, extname, join, relative, sep } from 'node:path';
 
@@ -37,8 +38,6 @@ import {
   confirmWeeklyFocus,
   currentIsoWeek,
   loadCurrentWeeklyFocus,
-  saveWeeklyFocusDraft,
-  type WeeklyFocusDocument,
   type WeeklyFocusGateway,
 } from '../services/weekly-focus.js';
 import { createVaultWriteAuthorization } from '../storage/task-paths.js';
@@ -457,7 +456,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
       openCompletionDateBackfill: (tasks) => this.openCompletionDateBackfill(tasks),
       openSettings: () => this.openPluginSettings(),
       loadWeeklyFocus: () => this.loadWeeklyFocus(),
-      loadWeeklyCoachDraft: () => this.loadWeeklyCoachSessionDraft(
+      loadWeeklyCoachDraft: async () => this.loadWeeklyCoachSessionDraft(
         currentIsoWeek(new Date(), resolveSystemTimeZone()),
       ),
       openWeeklyCoach: (onChanged) => this.openWeeklyCoach(onChanged),
@@ -567,7 +566,10 @@ export default class AgentTaskLoopPlugin extends Plugin {
     new WeeklyThinkingCoachModal(this.app, {
       week: currentIsoWeek(clock(), timeZone),
       modelLabel: this.weeklyCoachModelLabel(),
-      load: () => loadCurrentWeeklyFocus(gateway, clock, timeZone),
+      loadRecord: () => loadCurrentWeeklyFocus(gateway, clock, timeZone),
+      loadSessionDraft: () => this.loadWeeklyCoachSessionDraft(
+        currentIsoWeek(clock(), timeZone),
+      ),
       runCoach: async (turn, control) => {
         const context = await collectWeeklyCoachContext(
           this.createWeeklyCoachContextGateway(),
@@ -594,12 +596,9 @@ export default class AgentTaskLoopPlugin extends Plugin {
           context,
         }, control);
       },
-      saveDraft: (input, expectedContent) => saveWeeklyFocusDraft(
-        gateway,
-        clock,
-        input,
-        expectedContent,
-        timeZone,
+      saveSessionDraft: (draft) => this.saveWeeklyCoachSessionDraft(draft),
+      clearSessionDraft: () => this.clearWeeklyCoachSessionDraft(
+        currentIsoWeek(clock(), timeZone),
       ),
       confirm: (input, expectedContent) => confirmWeeklyFocus(
         gateway,
@@ -612,6 +611,8 @@ export default class AgentTaskLoopPlugin extends Plugin {
       onChanged,
       openRecord: (path) => this.openWeeklyFocus(path),
       notify: (message) => { new Notice(message); },
+      now: clock,
+      createId: randomUUID,
     }).open();
   }
 
@@ -749,7 +750,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
         if (view instanceof WorkContributionView) {
           void Promise.all([
             view.refreshContribution(),
-            view.refreshWeeklyFocus(),
+            view.refreshWeeklyCoachState(),
           ]);
         }
       }
