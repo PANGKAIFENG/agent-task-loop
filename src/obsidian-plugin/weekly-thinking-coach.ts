@@ -11,6 +11,7 @@ import {
   type WeeklyCoachDraftOperation,
 } from '../services/weekly-coach-draft.js';
 import type { WeeklyFocusBackground } from '../services/weekly-focus.js';
+import { redactSecrets } from '../security/redact-secrets.js';
 
 const text = z.string().trim().min(1).max(4_000);
 const textList = z.array(text).max(20);
@@ -257,7 +258,7 @@ function promptFor(input: WeeklyCoachTurnInput): string {
     : input.context.truncatedDocuments.length === 0
       ? '授权范围内资料已完整纳入当前容量。'
       : '未遗漏整篇资料，但存在只发送部分内容的资料。';
-  return [
+  return redactSecrets([
     '你是 ATL 本周思考教练。你的职责是通过对话启发用户形成自己的判断，不是替用户安排任务。',
     '不能替用户决定 Top 3，不能创建或修改任务，不能触发 Agent、执行工具、读取文件或访问网络。',
     '每轮最多提出一个当前最有价值的问题；信息充分时 nextQuestion 可以为 null。',
@@ -283,7 +284,7 @@ function promptFor(input: WeeklyCoachTurnInput): string {
     documentsForPrompt(input.context),
     '',
     '请返回严格符合 JSON Schema 的中文结果。',
-  ].join('\n');
+  ].join('\n'));
 }
 
 export async function runWeeklyThinkingCoach(
@@ -302,6 +303,6 @@ export async function runWeeklyThinkingCoach(
   const parsed = weeklyCoachResultSchema.parse(raw);
   return normalize(
     parsed,
-    new Set(input.context.documents.map(({ path }) => path)),
+    new Set(input.context.documents.map(({ path }) => redactSecrets(path))),
   );
 }

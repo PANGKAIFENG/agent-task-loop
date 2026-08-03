@@ -229,36 +229,51 @@ export class WeeklyThinkingCoachModal extends Modal {
             text: '先说说你本周正在犹豫、最想推进，或最需要取舍的一件事。',
           }];
         } else {
-          this.priorSensitiveSources = new Set(
-            restored.selectedSources.filter((source) => SENSITIVE_SOURCES.has(source)),
-          );
-          this.session = protectRestoredWeeklyCoachDraft({
-            ...restored,
-            selectedSources: restored.selectedSources.filter((source) => (
-              !SENSITIVE_SOURCES.has(source)
-            )),
-          });
-          this.messages = [{
-            id: this.dependencies.createId(),
-            role: 'assistant',
-            text: this.restoredProgressMessage(),
-          }];
+          this.restoreSessionDraft(restored);
         }
       }
     } catch {
       if (this.closed) return;
-      this.error = '本周记录暂时无法读取，你仍可先继续思考。';
-      this.messages = [{
-        id: this.dependencies.createId(),
-        role: 'assistant',
-        text: '先说说你本周最需要想清楚的一件事。',
-      }];
+      let stored: WeeklyCoachSessionDraft | null = null;
+      try {
+        stored = this.dependencies.loadSessionDraft();
+      } catch {
+        // The formal read warning below also covers an unavailable plugin draft store.
+      }
+      if (stored === null) {
+        this.error = '本周记录暂时无法读取，你仍可先继续思考。';
+        this.messages = [{
+          id: this.dependencies.createId(),
+          role: 'assistant',
+          text: '先说说你本周最需要想清楚的一件事。',
+        }];
+      } else {
+        this.restoreSessionDraft(stored);
+        this.error = '本周记录暂时无法读取，已恢复插件草稿。确认写入前请先重试读取。';
+      }
     } finally {
       if (!this.closed) {
         this.loading = false;
         this.render();
       }
     }
+  }
+
+  private restoreSessionDraft(restored: WeeklyCoachSessionDraft): void {
+    this.priorSensitiveSources = new Set(
+      restored.selectedSources.filter((source) => SENSITIVE_SOURCES.has(source)),
+    );
+    this.session = protectRestoredWeeklyCoachDraft({
+      ...restored,
+      selectedSources: restored.selectedSources.filter((source) => (
+        !SENSITIVE_SOURCES.has(source)
+      )),
+    });
+    this.messages = [{
+      id: this.dependencies.createId(),
+      role: 'assistant',
+      text: this.restoredProgressMessage(),
+    }];
   }
 
   private restoredProgressMessage(): string {
@@ -787,7 +802,9 @@ export class WeeklyThinkingCoachModal extends Modal {
         this.dependencies.notify('正式记录已确认，临时草稿清理失败');
       }
     } catch (error) {
-      this.error = error instanceof Error && error.message.includes('其他编辑')
+      this.error = error instanceof Error && (
+        error.message.includes('其他编辑') || error.message.includes('新的自然周')
+      )
         ? error.message
         : '本周判断未能写入，请稍后重试。插件草稿仍然保留。';
     } finally {

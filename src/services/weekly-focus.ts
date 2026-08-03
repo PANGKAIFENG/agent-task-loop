@@ -449,11 +449,15 @@ async function persist(
   expectedContent: string | null,
   status: '草稿' | '已确认',
   timeZone: string,
+  expectedWeek: string | null,
 ): Promise<WeeklyFocusDocument> {
   const now = clock();
   if (!Number.isFinite(now.getTime())) throw new Error('无效的保存时间');
-  const normalized = normalizeInput(input, status === '已确认');
   const week = currentIsoWeek(now, timeZone);
+  if (expectedWeek !== null && week !== expectedWeek) {
+    throw new Error('已进入新的自然周，请重新打开本周思考教练。');
+  }
+  const normalized = normalizeInput(input, status === '已确认');
   const path = weeklyFocusPath(week);
   const record: WeeklyFocusRecord = {
     type: '周度重点',
@@ -481,7 +485,7 @@ export function saveWeeklyFocusDraft(
   expectedContent: string | null,
   timeZone = 'Asia/Shanghai',
 ): Promise<WeeklyFocusDocument> {
-  return persist(gateway, clock, input, expectedContent, '草稿', timeZone);
+  return persist(gateway, clock, input, expectedContent, '草稿', timeZone, null);
 }
 
 export function confirmWeeklyFocus(
@@ -489,7 +493,8 @@ export function confirmWeeklyFocus(
   clock: () => Date,
   input: WeeklyFocusInput,
   expectedContent: string | null,
+  expectedWeek: string,
   timeZone = 'Asia/Shanghai',
 ): Promise<WeeklyFocusDocument> {
-  return persist(gateway, clock, input, expectedContent, '已确认', timeZone);
+  return persist(gateway, clock, input, expectedContent, '已确认', timeZone, expectedWeek);
 }

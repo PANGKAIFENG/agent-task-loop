@@ -132,6 +132,37 @@ describe('runWeeklyThinkingCoach', () => {
     expect(result.readiness).toBe('可确认');
   });
 
+  it('redacts credentials from authorized documents and conversation before model submission', async () => {
+    const secrets = {
+      apiKey: 'sk-abcdefghijklmnop',
+      bearer: 'Bearer abc.def.ghi-jkl',
+      github: 'github_pat_abcdefghijklmnopqrstuvwxyz',
+      credential: 'client_secret=weekly-coach-private-value',
+    };
+    const fake = executor(validOutput());
+
+    await runWeeklyThinkingCoach(fake, {
+      ...input,
+      topic: `讨论 ${secrets.github}`,
+      latestAnswer: `回答 ${secrets.bearer}`,
+      previousSummary: `摘要 ${secrets.credential}`,
+      draftItems: [{ ...draftItem, outcome: secrets.apiKey }],
+      context: {
+        ...context,
+        documents: [{
+          ...context.documents[0]!,
+          content: Object.values(secrets).join('\n'),
+        }],
+      },
+    });
+
+    const execution = fake.execute.mock.calls[0]?.[0] as ClaudeStructuredInput<unknown>;
+    for (const secret of Object.values(secrets)) {
+      expect(execution.prompt).not.toContain(secret);
+    }
+    expect(execution.prompt).toContain('[REDACTED]');
+  });
+
   it('rejects a second question, a fourth operation, and unknown fields atomically', async () => {
     await expect(runWeeklyThinkingCoach(executor(validOutput({
       nextQuestion: ['问题一', '问题二'],

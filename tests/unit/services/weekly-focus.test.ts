@@ -192,6 +192,7 @@ describe('weekly focus service', () => {
       () => NOW,
       noFocus,
       null,
+      '2026-W30',
       'Asia/Shanghai',
     );
 
@@ -203,8 +204,23 @@ describe('weekly focus service', () => {
       () => NOW,
       input({ focuses: [], noNewFocus: false }),
       null,
+      '2026-W30',
       'Asia/Shanghai',
     )).rejects.toThrow('至少确认一项本周判断');
+  });
+
+  it('rejects a stale session week immediately before formal confirmation writes', async () => {
+    const gateway = new MemoryGateway();
+
+    await expect(confirmWeeklyFocus(
+      gateway,
+      () => NOW,
+      input(),
+      null,
+      '2026-W29',
+      'Asia/Shanghai',
+    )).rejects.toThrow('已进入新的自然周');
+    expect(gateway.files.size).toBe(0);
   });
 
   it('rejects more than three focus items', async () => {

@@ -9,6 +9,8 @@ import type {
 } from '../../../src/obsidian-plugin/weekly-thinking-coach.js';
 import {
   createWeeklyCoachSessionDraft,
+  emptyWeeklyCoachDraftCollection,
+  putWeeklyCoachSessionDraft,
   type WeeklyCoachDraftItem,
   type WeeklyCoachSessionDraft,
   type WeeklyThinkingCoachTurn,
@@ -177,6 +179,7 @@ function editField(modal: WeeklyThinkingCoachModal, label: string, value: string
 
 function setup(options: {
   record?: WeeklyFocusDocument | null;
+  loadRecordError?: Error;
   draft?: WeeklyCoachSessionDraft | null;
   coach?: WeeklyCoachResult | Error;
   coachOperation?: (
@@ -184,6 +187,7 @@ function setup(options: {
     control: WeeklyThinkingCoachRunControl,
   ) => Promise<WeeklyCoachResult>;
   saveError?: Error;
+  saveOperation?: (draft: WeeklyCoachSessionDraft) => Promise<void>;
   clearError?: Error;
   confirmOperation?: (
     input: WeeklyFocusInput,
@@ -202,7 +206,8 @@ function setup(options: {
     if (options.coach instanceof Error) throw options.coach;
     return options.coach ?? coachResult;
   });
-  const saveSessionDraft = vi.fn(async () => {
+  const saveSessionDraft = vi.fn(async (draft: WeeklyCoachSessionDraft) => {
+    if (options.saveOperation !== undefined) return options.saveOperation(draft);
     if (options.saveError !== undefined) throw options.saveError;
   });
   const clearSessionDraft = vi.fn(async () => {
@@ -220,7 +225,10 @@ function setup(options: {
   const modal = new WeeklyThinkingCoachModal({} as never, {
     week: '2026-W32',
     modelLabel: options.modelLabel ?? '沿用 Claude Code / CC-Switch',
-    loadRecord: vi.fn(async () => options.record ?? null),
+    loadRecord: vi.fn(async () => {
+      if (options.loadRecordError !== undefined) throw options.loadRecordError;
+      return options.record ?? null;
+    }),
     loadSessionDraft: vi.fn(() => options.draft ?? null),
     runCoach,
     saveSessionDraft,
@@ -403,6 +411,37 @@ describe('WeeklyThinkingCoachModal', () => {
     }
   });
 
+  it('shows a failed autosave when 4,001 characters exceed the draft limit', async () => {
+    vi.useFakeTimers();
+    try {
+      let collection = putWeeklyCoachSessionDraft(
+        emptyWeeklyCoachDraftCollection(),
+        sessionDraft({ pendingInput: '之前已保存的内容' }),
+      );
+      const { modal } = setup({
+        draft: collection.byWeek['2026-W32'] ?? null,
+        saveOperation: async (draft) => {
+          collection = putWeeklyCoachSessionDraft(collection, draft);
+        },
+      });
+      modal.open();
+      await Promise.resolve();
+      const input = modal.contentEl.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="给本周思考教练发消息"]',
+      )!;
+      input.value = 'x'.repeat(4_001);
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+
+      await vi.advanceTimersByTimeAsync(800);
+
+      expect(modal.contentEl.textContent).toContain('暂存失败');
+      expect(collection.byWeek['2026-W32']?.pendingInput).toBe('之前已保存的内容');
+      modal.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('save and leave cancels a running request, flushes the draft, and closes', async () => {
     const pending = new Promise<WeeklyCoachResult>(() => undefined);
     const { modal, runCoach, saveSessionDraft, onChanged } = setup({
@@ -461,6 +500,24 @@ describe('WeeklyThinkingCoachModal', () => {
     });
   });
 
+  it('restores the plugin draft with a warning when the formal weekly record cannot be read', async () => {
+    const restored = sessionDraft({ pendingInput: '继续补充完成证据' });
+    const { modal } = setup({
+      draft: restored,
+      loadRecordError: new Error('vault read failed'),
+    });
+
+    await open(modal);
+
+    expect(modal.contentEl.textContent).toContain('上次进展');
+    expect(modal.contentEl.textContent).toContain(restored.sessionSummary);
+    expect(modal.contentEl.textContent).toContain('本周记录暂时无法读取，已恢复插件草稿');
+    expect(modal.contentEl.textContent).not.toContain('vault read failed');
+    expect(modal.contentEl.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="给本周思考教练发消息"]',
+    )?.value).toBe('继续补充完成证据');
+  });
+
   it('shows inline validation and supports explicit zero-item confirmation', async () => {
     const { modal, confirm, clearSessionDraft } = setup();
     await open(modal);
@@ -499,6 +556,22 @@ describe('WeeklyThinkingCoachModal', () => {
 
     expect(modal.contentEl.textContent).toContain('已进入新的自然周');
     expect(confirm).not.toHaveBeenCalled();
+    expect(clearSessionDraft).not.toHaveBeenCalled();
+  });
+
+  it('keeps the draft when the service detects a week rollover after the UI check', async () => {
+    const { modal, clearSessionDraft } = setup({
+      currentWeek: () => '2026-W32',
+      draft: sessionDraft(),
+      confirmOperation: async () => {
+        throw new Error('已进入新的自然周，请重新打开本周思考教练。');
+      },
+    });
+    await open(modal);
+
+    button(modal, '确认并写入 Obsidian').click();
+
+    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('已进入新的自然周'));
     expect(clearSessionDraft).not.toHaveBeenCalled();
   });
 

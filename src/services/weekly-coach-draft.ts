@@ -6,6 +6,7 @@ import type {
   WeeklyFocusBackground,
   WeeklyFocusInput,
 } from './weekly-focus.js';
+import { redactSecrets } from '../security/redact-secrets.js';
 
 export const WEEKLY_COACH_DRAFT_FIELDS = [
   'focus',
@@ -288,6 +289,43 @@ function cloneDraft(draft: WeeklyCoachSessionDraft): WeeklyCoachSessionDraft {
   };
 }
 
+function redactStringList(values: string[]): string[] {
+  return values.map(redactSecrets);
+}
+
+function redactSessionDraft(draft: WeeklyCoachSessionDraft): WeeklyCoachSessionDraft {
+  const next = cloneDraft(draft);
+  next.topic = redactSecrets(next.topic);
+  next.pendingInput = redactSecrets(next.pendingInput);
+  next.keyAnswers = redactStringList(next.keyAnswers);
+  next.sessionSummary = redactSecrets(next.sessionSummary);
+  next.pendingQuestion = redactSecrets(next.pendingQuestion);
+  next.questionReason = redactSecrets(next.questionReason);
+  next.background = {
+    facts: redactStringList(next.background.facts),
+    assumptions: redactStringList(next.background.assumptions),
+    gaps: redactStringList(next.background.gaps),
+    sources: redactStringList(next.background.sources),
+  };
+  next.items = next.items.map((item) => {
+    const redacted = cloneItem(item);
+    for (const field of WEEKLY_COACH_DRAFT_FIELDS) {
+      redacted[field] = redactSecrets(redacted[field]);
+      const suggestion = redacted.suggestions[field];
+      if (suggestion !== undefined) redacted.suggestions[field] = redactSecrets(suggestion);
+    }
+    return setReadiness(redacted);
+  });
+  next.deletedItems = next.deletedItems.map((item) => ({
+    id: redactSecrets(item.id),
+    focusKey: redactSecrets(item.focusKey),
+  }));
+  next.focusedItemId = next.focusedItemId === null
+    ? null
+    : redactSecrets(next.focusedItemId);
+  return next;
+}
+
 function focusKey(value: string): string {
   return value.trim().toLocaleLowerCase('zh-CN').replace(/[\s\p{P}\p{S}]+/gu, '');
 }
@@ -461,7 +499,7 @@ export function mergeWeeklyCoachDraftOperations(
       const value = operation.fields[field]?.trim();
       if (value === undefined || value === '' || value === item[field]) continue;
       const mustSuggest = operation.action === 'suggest_replace'
-        || (item.fieldSources[field] === 'user' && item[field].trim() !== '');
+        || item.fieldSources[field] === 'user';
       if (mustSuggest) {
         item.suggestions[field] = value;
         conflicts.push({ itemId: item.id, field, suggestion: value });
@@ -514,28 +552,29 @@ export function validateWeeklyCoachSessionDraft(
 export function weeklyCoachDraftToFocusInput(
   draft: WeeklyCoachSessionDraft,
 ): WeeklyFocusInput {
+  const safeDraft = redactSessionDraft(draft);
   return {
-    conversationTopic: draft.topic,
-    selectedSources: [...draft.selectedSources],
-    currentQuestion: draft.pendingQuestion,
-    coachSummary: draft.sessionSummary,
-    focuses: draft.items.map((item) => ({
+    conversationTopic: safeDraft.topic,
+    selectedSources: [...safeDraft.selectedSources],
+    currentQuestion: safeDraft.pendingQuestion,
+    coachSummary: safeDraft.sessionSummary,
+    focuses: safeDraft.items.map((item) => ({
       focus: item.focus,
       outcome: item.outcome,
       whyThisWeek: item.whyThisWeek,
       evidence: item.evidence,
     })),
-    noNewFocus: draft.noNewFocus,
+    noNewFocus: safeDraft.noNewFocus,
     notDoing: [],
     background: {
-      facts: [...draft.background.facts],
-      assumptions: [...draft.background.assumptions],
-      gaps: [...draft.background.gaps],
-      sources: [...draft.background.sources],
+      facts: [...safeDraft.background.facts],
+      assumptions: [...safeDraft.background.assumptions],
+      gaps: [...safeDraft.background.gaps],
+      sources: [...safeDraft.background.sources],
     },
     coachInsights: [],
     consideredDirections: [],
-    keyAnswers: [...draft.keyAnswers],
+    keyAnswers: [...safeDraft.keyAnswers],
     linkedGoals: [],
     linkedTasks: [],
     adjustmentNote: '',
@@ -576,9 +615,14 @@ export function putWeeklyCoachSessionDraft(
   collection: WeeklyCoachDraftCollection,
   draft: WeeklyCoachSessionDraft,
 ): WeeklyCoachDraftCollection {
+  const normalizedDraft = normalizePersistedDraft(draft, draft.week);
+  if (normalizedDraft === null) {
+    throw new Error('草稿包含超出保存限制的内容');
+  }
+  const safeDraft = redactSessionDraft(normalizedDraft);
   return normalizeWeeklyCoachDraftCollection({
     collectionVersion: 1,
-    byWeek: { ...collection.byWeek, [draft.week]: draft },
+    byWeek: { ...collection.byWeek, [draft.week]: safeDraft },
   });
 }
 

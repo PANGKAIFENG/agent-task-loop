@@ -136,6 +136,32 @@ describe('weekly coach session draft', () => {
     expect(original.items[0]?.outcome).toBe('');
   });
 
+  it('keeps a user-cleared field locked when AI proposes a replacement', () => {
+    const cleared = editWeeklyCoachDraftField(
+      draftWith(completeItem('focus-1')),
+      'focus-1',
+      'outcome',
+      '',
+    );
+
+    const result = mergeWeeklyCoachDraftOperations(cleared, [{
+      action: 'update',
+      itemId: 'focus-1',
+      fields: { outcome: 'AI 重新补充的结果' },
+    }], { nextId: () => 'focus-2', focusedItemId: null });
+
+    expect(result.draft.items[0]).toMatchObject({
+      outcome: '',
+      suggestions: { outcome: 'AI 重新补充的结果' },
+      fieldSources: { outcome: 'user' },
+    });
+    expect(result.conflicts).toEqual([{
+      itemId: 'focus-1',
+      field: 'outcome',
+      suggestion: 'AI 重新补充的结果',
+    }]);
+  });
+
   it('locks direct edits and only adopts an AI replacement after explicit acceptance', () => {
     let draft = draftWith(completeItem('focus-1'));
     draft = editWeeklyCoachDraftField(draft, 'focus-1', 'outcome', '我定义的结果');
@@ -276,6 +302,39 @@ describe('weekly coach session draft', () => {
     });
   });
 
+  it('redacts credentials before formal Markdown conversion', () => {
+    const secrets = [
+      'sk-abcdefghijklmnop',
+      'Bearer abc.def.ghi-jkl',
+      'github_pat_abcdefghijklmnopqrstuvwxyz',
+      'password=weekly-coach-private-value',
+    ];
+    const sensitive = {
+      ...persistedDraft(),
+      topic: secrets[0]!,
+      pendingQuestion: secrets[1]!,
+      sessionSummary: secrets[2]!,
+      keyAnswers: [secrets[3]!],
+      items: [{
+        ...completeItem('focus-1'),
+        focus: secrets[0]!,
+        outcome: secrets[1]!,
+        whyThisWeek: secrets[2]!,
+        evidence: secrets[3]!,
+      }],
+      background: {
+        facts: [secrets[0]!],
+        assumptions: [secrets[1]!],
+        gaps: [secrets[2]!],
+        sources: [secrets[3]!],
+      },
+    };
+
+    const serialized = JSON.stringify(weeklyCoachDraftToFocusInput(sensitive));
+    for (const secret of secrets) expect(serialized).not.toContain(secret);
+    expect(serialized).toContain('[REDACTED]');
+  });
+
   it('stores, reads, and removes session drafts without mutating prior collections', () => {
     const empty = emptyWeeklyCoachDraftCollection();
     const draft = persistedDraft();
@@ -288,6 +347,47 @@ describe('weekly coach session draft', () => {
     const removed = removeWeeklyCoachSessionDraft(stored, '2026-W32');
     expect(removed.byWeek).toEqual({});
     expect(stored.byWeek['2026-W32']).toEqual(draft);
+  });
+
+  it('rejects an oversized draft without dropping the previously saved week', () => {
+    const previous = persistedDraft();
+    const collection = putWeeklyCoachSessionDraft(emptyWeeklyCoachDraftCollection(), previous);
+    const oversized = { ...previous, topic: 'x'.repeat(4_001) };
+
+    expect(() => putWeeklyCoachSessionDraft(collection, oversized)).toThrow(
+      '草稿包含超出保存限制的内容',
+    );
+    expect(collection.byWeek['2026-W32']).toEqual(previous);
+  });
+
+  it('redacts credentials before persisting the plugin session draft', () => {
+    const secrets = [
+      'sk-abcdefghijklmnop',
+      'Bearer abc.def.ghi-jkl',
+      'github_pat_abcdefghijklmnopqrstuvwxyz',
+      'api_key=weekly-coach-private-value',
+    ];
+    const sensitive = {
+      ...persistedDraft(),
+      topic: secrets[0]!,
+      pendingInput: secrets[1]!,
+      keyAnswers: [secrets[2]!],
+      sessionSummary: secrets[3]!,
+      items: [{
+        ...completeItem('focus-1'),
+        focus: secrets[0]!,
+        outcome: secrets[1]!,
+        suggestions: { evidence: secrets[2]! },
+      }],
+    };
+
+    const collection = putWeeklyCoachSessionDraft(
+      emptyWeeklyCoachDraftCollection(),
+      sensitive,
+    );
+    const serialized = JSON.stringify(collection);
+    for (const secret of secrets) expect(serialized).not.toContain(secret);
+    expect(serialized).toContain('[REDACTED]');
   });
 
   it('normalizes only the latest twelve bounded session drafts', () => {

@@ -602,6 +602,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
         clock,
         input,
         expectedContent,
+        week,
         timeZone,
       ),
       canManageVault: () => this.settings.allowVaultManagement,
