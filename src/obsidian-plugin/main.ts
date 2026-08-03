@@ -457,6 +457,9 @@ export default class AgentTaskLoopPlugin extends Plugin {
       openCompletionDateBackfill: (tasks) => this.openCompletionDateBackfill(tasks),
       openSettings: () => this.openPluginSettings(),
       loadWeeklyFocus: () => this.loadWeeklyFocus(),
+      loadWeeklyCoachDraft: () => this.loadWeeklyCoachSessionDraft(
+        currentIsoWeek(new Date(), resolveSystemTimeZone()),
+      ),
       openWeeklyCoach: (onChanged) => this.openWeeklyCoach(onChanged),
       openWeeklyFocus: (path) => this.openWeeklyFocus(path),
     });
@@ -556,7 +559,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
   }
 
   private openWeeklyCoach(
-    onChanged: (document: WeeklyFocusDocument) => void,
+    onChanged: () => void,
   ): void {
     const timeZone = resolveSystemTimeZone();
     const clock = () => new Date();
