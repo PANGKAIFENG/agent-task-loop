@@ -322,6 +322,68 @@ describe('createClaudeStructuredExecutor', () => {
       .toBe('https://api.example.com/anthropic');
   });
 
+  it('reports actual model start and parsing stages', async () => {
+    const onProgress = vi.fn();
+    const executor = fakeExecutor(async (execution) => {
+      if (execution.args[0] === '--help') {
+        return processResult({ stdout: REQUIRED_HELP });
+      }
+      execution.onStarted?.();
+      return processResult({
+        stdout: JSON.stringify({ structured_output: { candidates: ['one'] } }),
+      });
+    });
+    const structured = await createClaudeStructuredExecutor({
+      executor,
+      fileSystem: fakeFileSystem(),
+      environment: { ATL_CLAUDE_BIN: CLAUDE_BIN },
+    });
+
+    await structured.execute({
+      prompt: 'Convert these local records to candidates.',
+      jsonSchema,
+      schema,
+      timeoutMs: 30_000,
+      onProgress,
+    });
+
+    expect(onProgress.mock.calls).toEqual([
+      [{ stage: 'model_started' }],
+      [{ stage: 'parsing' }],
+    ]);
+  });
+
+  it('aborts the Claude process group when a structured request is cancelled', async () => {
+    const fixture = await createTestExecutable(inheritedPipeExecutableSource('timeout'));
+    const pidPath = join(dirname(fixture.executable), 'grandchild.pid');
+    try {
+      const structured = await createClaudeStructuredExecutor({
+        environment: { ATL_CLAUDE_BIN: fixture.executable },
+      });
+      const controller = new AbortController();
+      const operation = structured.execute({
+        prompt: 'Wait until cancelled.',
+        jsonSchema,
+        schema,
+        timeoutMs: 30_000,
+        signal: controller.signal,
+      });
+      await vi.waitFor(async () => {
+        expect(Number(await readFile(pidPath, 'utf8'))).toBeGreaterThan(0);
+      });
+
+      controller.abort();
+
+      await expect(operation).rejects.toMatchObject({
+        name: 'ClaudeDriverError',
+        code: 'claude_cancelled',
+      });
+      await expectProcessGone(pidPath);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
   it('rejects non-JSON and schema-invalid output', async () => {
     for (const stdout of [
       'not json',

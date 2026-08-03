@@ -159,5 +159,15 @@ describe('personal home heatmap styles', () => {
       .toMatch(/grid-template-rows\s*:/);
     expect(declarationsFor(css, '.atl-weekly-coach-content'))
       .toMatch(/overflow\s*:\s*hidden/);
+    expect(declarationsFor(css, '.atl-weekly-coach-modal.atl-weekly-coach-modal--busy'))
+      .toMatch(/height\s*:\s*min\(480px,\s*calc\(100vh\s*-\s*48px\)\)/);
+    expect(declarationsFor(css, '.atl-weekly-coach-progress-step'))
+      .toMatch(/grid-template-columns\s*:/);
+    expect(declarationsFor(css, '.atl-weekly-coach-choice-grid'))
+      .toMatch(/grid-template-columns\s*:\s*repeat\(2/);
+    expect(declarationsFor(css, '.atl-weekly-coach-choice'))
+      .toMatch(/text-align\s*:\s*left/);
+    expect(declarationsFor(css, '.atl-weekly-coach-choice small'))
+      .toMatch(/font-size\s*:\s*11px/);
   });
 });

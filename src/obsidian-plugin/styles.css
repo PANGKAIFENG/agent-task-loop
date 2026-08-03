@@ -2437,6 +2437,10 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
   width: calc(100vw - 48px);
 }
 
+.atl-weekly-coach-modal.atl-weekly-coach-modal--busy {
+  height: min(480px, calc(100vh - 48px));
+}
+
 .atl-weekly-coach-modal .modal-content,
 .atl-weekly-coach-content {
   height: 100%;
@@ -2581,6 +2585,61 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
   min-height: 34px;
 }
 
+.atl-weekly-coach-result-actions {
+  border-top: 1px solid var(--background-modifier-border);
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+  padding-top: 14px;
+}
+
+.atl-weekly-coach-scope-action {
+  align-items: center;
+  color: var(--text-muted);
+  display: flex;
+  font-size: 10px;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.atl-weekly-coach-scope-action button {
+  min-height: 30px;
+}
+
+.atl-weekly-coach-choice-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.atl-weekly-coach-choice {
+  align-content: center;
+  display: grid;
+  gap: 3px;
+  height: auto;
+  min-height: 68px;
+  padding: 10px 12px;
+  text-align: left;
+  white-space: normal;
+}
+
+.atl-weekly-coach-choice strong {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.atl-weekly-coach-choice small {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+.atl-weekly-coach-choice.mod-cta small {
+  color: var(--text-on-accent);
+  opacity: .8;
+}
+
 .atl-weekly-coach-loading {
   align-content: center;
   color: var(--text-muted);
@@ -2590,6 +2649,91 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
   justify-items: center;
   min-height: 220px;
   text-align: center;
+}
+
+.atl-weekly-coach-progress {
+  display: grid;
+  gap: 16px;
+  margin: 0 auto;
+  max-width: 620px;
+}
+
+.atl-weekly-coach-progress-heading {
+  align-items: baseline;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.atl-weekly-coach-progress-heading strong {
+  color: var(--text-normal);
+  font-size: 14px;
+}
+
+.atl-weekly-coach-progress-heading span {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.atl-weekly-coach-progress-steps {
+  display: grid;
+  gap: 3px;
+}
+
+.atl-weekly-coach-progress-step {
+  align-items: start;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 16px minmax(0, 1fr);
+  padding: 6px 0;
+}
+
+.atl-weekly-coach-progress-step > div {
+  display: grid;
+  gap: 2px;
+}
+
+.atl-weekly-coach-progress-step strong {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.atl-weekly-coach-progress-step small {
+  color: var(--text-faint);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.atl-weekly-coach-progress-step.is-active strong,
+.atl-weekly-coach-progress-step.is-complete strong {
+  color: var(--text-normal);
+}
+
+.atl-weekly-coach-progress-marker {
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.atl-weekly-coach-progress-step.is-active .atl-weekly-coach-progress-marker {
+  color: var(--interactive-accent);
+}
+
+.atl-weekly-coach-progress-step.is-complete .atl-weekly-coach-progress-marker {
+  color: var(--color-green);
+}
+
+.atl-weekly-coach-slow-notice {
+  background: var(--background-secondary);
+  border-left: 3px solid var(--color-yellow);
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.5;
+  padding: 8px 10px;
 }
 
 .atl-weekly-coach-message {
@@ -2732,7 +2876,8 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
   }
 
   .atl-weekly-coach-source-grid,
-  .atl-weekly-coach-background-grid {
+  .atl-weekly-coach-background-grid,
+  .atl-weekly-coach-choice-grid {
     grid-template-columns: 1fr;
   }
 }

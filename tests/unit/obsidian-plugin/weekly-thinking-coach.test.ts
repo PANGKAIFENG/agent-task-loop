@@ -130,4 +130,26 @@ describe('runWeeklyThinkingCoach', () => {
     await expect(runWeeklyThinkingCoach(failure, input)).rejects.toThrow('model unavailable');
     expect(input).toEqual(before);
   });
+
+  it('forwards cancellation and observable model stages to the structured executor', async () => {
+    const fake = executor({
+      background: { facts: ['事实'], assumptions: [], gaps: [], sources: [] },
+      currentQuestion: '下一步需要想清楚什么？',
+      questionReason: '确认投入依据。',
+      directions: [],
+      organizedDraft: null,
+      summary: '继续澄清。',
+    });
+    const controller = new AbortController();
+    const onProgress = vi.fn();
+
+    await runWeeklyThinkingCoach(fake, input, {
+      signal: controller.signal,
+      onProgress,
+    });
+
+    const execution = fake.execute.mock.calls[0]?.[0] as ClaudeStructuredInput<unknown>;
+    expect(execution.signal).toBe(controller.signal);
+    expect(execution.onProgress).toBe(onProgress);
+  });
 });
