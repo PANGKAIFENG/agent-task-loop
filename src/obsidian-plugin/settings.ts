@@ -11,6 +11,11 @@ import type {
   DingTalkRemoteSnapshot,
   DingTalkSyncResult,
 } from './dingtalk-calendar-types.js';
+import {
+  emptyWeeklyCoachDraftCollection,
+  normalizeWeeklyCoachDraftCollection,
+  type WeeklyCoachDraftCollection,
+} from '../services/weekly-coach-draft.js';
 
 export interface AtlPluginSettings {
   allowVaultManagement: boolean;
@@ -20,6 +25,7 @@ export interface AtlPluginSettings {
   background: BackgroundSettings;
   dashboard: DashboardTokenCache;
   dingtalkCalendar: DingTalkCalendarSettings;
+  weeklyCoachDrafts: WeeklyCoachDraftCollection;
 }
 
 export interface CaptureState {
@@ -88,6 +94,7 @@ export const DEFAULT_SETTINGS: AtlPluginSettings = {
     lastError: null,
     events: {},
   },
+  weeklyCoachDrafts: emptyWeeklyCoachDraftCollection(),
 };
 
 function stringValue(value: unknown): string {
@@ -540,6 +547,7 @@ export function normalizeSettings(value: unknown): AtlPluginSettings {
     },
     dashboard,
     dingtalkCalendar,
+    weeklyCoachDrafts: normalizeWeeklyCoachDraftCollection(root.weeklyCoachDrafts),
   };
 }
 

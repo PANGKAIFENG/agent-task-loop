@@ -28,6 +28,12 @@ import {
   type WeeklyCoachContextGateway,
 } from '../services/weekly-coach-context.js';
 import {
+  getWeeklyCoachSessionDraft,
+  putWeeklyCoachSessionDraft,
+  removeWeeklyCoachSessionDraft,
+  type WeeklyCoachSessionDraft,
+} from '../services/weekly-coach-draft.js';
+import {
   confirmWeeklyFocus,
   currentIsoWeek,
   loadCurrentWeeklyFocus,
@@ -521,6 +527,26 @@ export default class AgentTaskLoopPlugin extends Plugin {
     );
   }
 
+  private loadWeeklyCoachSessionDraft(week: string): WeeklyCoachSessionDraft | null {
+    return getWeeklyCoachSessionDraft(this.settings.weeklyCoachDrafts, week);
+  }
+
+  private async saveWeeklyCoachSessionDraft(draft: WeeklyCoachSessionDraft): Promise<void> {
+    this.settings.weeklyCoachDrafts = putWeeklyCoachSessionDraft(
+      this.settings.weeklyCoachDrafts,
+      draft,
+    );
+    await this.saveSettings();
+  }
+
+  private async clearWeeklyCoachSessionDraft(week: string): Promise<void> {
+    this.settings.weeklyCoachDrafts = removeWeeklyCoachSessionDraft(
+      this.settings.weeklyCoachDrafts,
+      week,
+    );
+    await this.saveSettings();
+  }
+
   private weeklyCoachModelLabel(): string {
     const modelService = modelServiceConfiguration(this.settings.background);
     if (!modelService.valid) return '模型配置需检查（可人工整理）';
@@ -559,6 +585,9 @@ export default class AgentTaskLoopPlugin extends Plugin {
           latestAnswer: turn.latestAnswer,
           keyAnswers: turn.keyAnswers,
           previousSummary: turn.previousSummary,
+          draftItems: turn.draftItems,
+          deletedFocuses: turn.deletedFocuses,
+          focusedItemId: turn.focusedItemId,
           context,
         }, control);
       },

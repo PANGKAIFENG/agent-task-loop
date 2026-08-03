@@ -1,4 +1,7 @@
-import type { WeeklyCoachSource } from './weekly-coach-context.js';
+import {
+  WEEKLY_COACH_SOURCES,
+  type WeeklyCoachSource,
+} from './weekly-coach-context.js';
 import type {
   WeeklyFocusBackground,
   WeeklyFocusInput,
@@ -44,6 +47,11 @@ export interface WeeklyCoachSessionDraft {
   updatedAt: string;
 }
 
+export interface WeeklyCoachDraftCollection {
+  collectionVersion: 1;
+  byWeek: Record<string, WeeklyCoachSessionDraft>;
+}
+
 export interface WeeklyCoachDraftValidationIssue {
   itemId: string | null;
   field: WeeklyCoachDraftField | 'noNewFocus';
@@ -79,6 +87,176 @@ const EMPTY_BACKGROUND: WeeklyFocusBackground = {
   gaps: [],
   sources: [],
 };
+
+const MAX_PERSISTED_WEEKS = 12;
+const MAX_FIELD_LENGTH = 4_000;
+const MAX_LIST_ITEMS = 30;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function boundedPersistedString(value: unknown): string | null {
+  return typeof value === 'string' && value.length <= MAX_FIELD_LENGTH
+    ? value
+    : null;
+}
+
+function boundedPersistedList(value: unknown, maximum = MAX_LIST_ITEMS): string[] | null {
+  if (!Array.isArray(value) || value.length > maximum) return null;
+  const normalized = value.map(boundedPersistedString);
+  return normalized.every((item): item is string => item !== null) ? normalized : null;
+}
+
+function isLeapYear(year: number): boolean {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+}
+
+function isoWeeksInYear(year: number): number {
+  const januaryFirst = new Date(Date.UTC(year, 0, 1)).getUTCDay();
+  return januaryFirst === 4 || (januaryFirst === 3 && isLeapYear(year)) ? 53 : 52;
+}
+
+function isIsoWeek(value: string): boolean {
+  const match = /^(\d{4})-W(\d{2})$/u.exec(value);
+  if (match === null) return false;
+  const year = Number(match[1]);
+  const week = Number(match[2]);
+  return year >= 1 && week >= 1 && week <= isoWeeksInYear(year);
+}
+
+function normalizedTimestamp(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+}
+
+function normalizePersistedBackground(value: unknown): WeeklyFocusBackground | null {
+  if (!isRecord(value)) return null;
+  const facts = boundedPersistedList(value.facts);
+  const assumptions = boundedPersistedList(value.assumptions);
+  const gaps = boundedPersistedList(value.gaps);
+  const sources = boundedPersistedList(value.sources);
+  return facts !== null && assumptions !== null && gaps !== null && sources !== null
+    ? { facts, assumptions, gaps, sources }
+    : null;
+}
+
+function normalizePersistedItem(value: unknown): WeeklyCoachDraftItem | null {
+  if (!isRecord(value) || !isRecord(value.fieldSources) || !isRecord(value.suggestions)) {
+    return null;
+  }
+  const rawFieldSources = value.fieldSources;
+  const rawSuggestions = value.suggestions;
+  const id = boundedPersistedString(value.id);
+  const fields = Object.fromEntries(WEEKLY_COACH_DRAFT_FIELDS.map((field) => [
+    field,
+    boundedPersistedString(value[field]),
+  ])) as Record<WeeklyCoachDraftField, string | null>;
+  const fieldSources = Object.fromEntries(WEEKLY_COACH_DRAFT_FIELDS.map((field) => [
+    field,
+    rawFieldSources[field],
+  ])) as Record<WeeklyCoachDraftField, unknown>;
+  if (
+    id === null
+    || id.trim() === ''
+    || WEEKLY_COACH_DRAFT_FIELDS.some((field) => fields[field] === null)
+    || WEEKLY_COACH_DRAFT_FIELDS.some((field) => (
+      fieldSources[field] !== 'ai' && fieldSources[field] !== 'user'
+    ))
+  ) return null;
+
+  const suggestions: Partial<Record<WeeklyCoachDraftField, string>> = {};
+  for (const field of WEEKLY_COACH_DRAFT_FIELDS) {
+    if (!Object.hasOwn(rawSuggestions, field)) continue;
+    const suggestion = boundedPersistedString(rawSuggestions[field]);
+    if (suggestion === null) return null;
+    suggestions[field] = suggestion;
+  }
+  const item: WeeklyCoachDraftItem = {
+    id,
+    focus: fields.focus as string,
+    outcome: fields.outcome as string,
+    whyThisWeek: fields.whyThisWeek as string,
+    evidence: fields.evidence as string,
+    fieldSources: fieldSources as Record<WeeklyCoachDraftField, WeeklyCoachDraftFieldSource>,
+    suggestions,
+    readiness: '仍需确认',
+  };
+  return setReadiness(item);
+}
+
+function normalizePersistedDraft(value: unknown, weekKey: string): WeeklyCoachSessionDraft | null {
+  if (!isRecord(value) || value.draftVersion !== 1 || value.week !== weekKey || !isIsoWeek(weekKey)) {
+    return null;
+  }
+  const topic = boundedPersistedString(value.topic);
+  const pendingInput = boundedPersistedString(value.pendingInput);
+  const sessionSummary = boundedPersistedString(value.sessionSummary);
+  const pendingQuestion = boundedPersistedString(value.pendingQuestion);
+  const questionReason = boundedPersistedString(value.questionReason);
+  const keyAnswers = Array.isArray(value.keyAnswers)
+    ? boundedPersistedList(value.keyAnswers.slice(-8), 8)
+    : null;
+  const background = normalizePersistedBackground(value.background);
+  const updatedAt = normalizedTimestamp(value.updatedAt);
+  if (
+    topic === null
+    || pendingInput === null
+    || sessionSummary === null
+    || pendingQuestion === null
+    || questionReason === null
+    || keyAnswers === null
+    || background === null
+    || updatedAt === null
+    || !Array.isArray(value.selectedSources)
+    || !Array.isArray(value.items)
+    || !Array.isArray(value.deletedItems)
+  ) return null;
+
+  const selectedSources = [...new Set(value.selectedSources.filter(
+    (source): source is WeeklyCoachSource => WEEKLY_COACH_SOURCES.includes(
+      source as WeeklyCoachSource,
+    ),
+  ))];
+  const items = value.items.slice(0, 3).map(normalizePersistedItem);
+  if (items.some((item) => item === null)) return null;
+  const normalizedItems = items as WeeklyCoachDraftItem[];
+  if (new Set(normalizedItems.map((item) => item.id)).size !== normalizedItems.length) return null;
+
+  const deletedItems: Array<{ id: string; focusKey: string }> = [];
+  for (const candidate of value.deletedItems.slice(0, MAX_LIST_ITEMS)) {
+    if (!isRecord(candidate)) return null;
+    const id = boundedPersistedString(candidate.id);
+    const deletedFocusKey = boundedPersistedString(candidate.focusKey);
+    if (id === null || id.trim() === '' || deletedFocusKey === null || deletedFocusKey === '') {
+      return null;
+    }
+    deletedItems.push({ id, focusKey: deletedFocusKey });
+  }
+
+  const focusedItemId = typeof value.focusedItemId === 'string'
+    && normalizedItems.some((item) => item.id === value.focusedItemId)
+    ? value.focusedItemId
+    : null;
+  return {
+    draftVersion: 1,
+    week: weekKey,
+    topic,
+    selectedSources,
+    pendingInput,
+    keyAnswers,
+    sessionSummary,
+    pendingQuestion,
+    questionReason,
+    background,
+    items: normalizedItems,
+    deletedItems,
+    focusedItemId,
+    noNewFocus: value.noNewFocus === true,
+    updatedAt,
+  };
+}
 
 function itemReadiness(item: WeeklyCoachDraftItem): WeeklyCoachDraftReadiness {
   return WEEKLY_COACH_DRAFT_FIELDS.every((field) => item[field].trim() !== '')
@@ -362,4 +540,53 @@ export function weeklyCoachDraftToFocusInput(
     linkedTasks: [],
     adjustmentNote: '',
   };
+}
+
+export function emptyWeeklyCoachDraftCollection(): WeeklyCoachDraftCollection {
+  return { collectionVersion: 1, byWeek: {} };
+}
+
+export function normalizeWeeklyCoachDraftCollection(
+  value: unknown,
+): WeeklyCoachDraftCollection {
+  if (!isRecord(value) || value.collectionVersion !== 1 || !isRecord(value.byWeek)) {
+    return emptyWeeklyCoachDraftCollection();
+  }
+  const entries = Object.entries(value.byWeek)
+    .filter(([week]) => isIsoWeek(week))
+    .sort(([left], [right]) => right.localeCompare(left))
+    .map(([week, draft]) => [week, normalizePersistedDraft(draft, week)] as const)
+    .filter((entry): entry is readonly [string, WeeklyCoachSessionDraft] => entry[1] !== null)
+    .slice(0, MAX_PERSISTED_WEEKS);
+  return {
+    collectionVersion: 1,
+    byWeek: Object.fromEntries(entries),
+  };
+}
+
+export function getWeeklyCoachSessionDraft(
+  collection: WeeklyCoachDraftCollection,
+  week: string,
+): WeeklyCoachSessionDraft | null {
+  const draft = collection.byWeek[week];
+  return draft === undefined ? null : cloneDraft(draft);
+}
+
+export function putWeeklyCoachSessionDraft(
+  collection: WeeklyCoachDraftCollection,
+  draft: WeeklyCoachSessionDraft,
+): WeeklyCoachDraftCollection {
+  return normalizeWeeklyCoachDraftCollection({
+    collectionVersion: 1,
+    byWeek: { ...collection.byWeek, [draft.week]: draft },
+  });
+}
+
+export function removeWeeklyCoachSessionDraft(
+  collection: WeeklyCoachDraftCollection,
+  week: string,
+): WeeklyCoachDraftCollection {
+  const byWeek = { ...collection.byWeek };
+  delete byWeek[week];
+  return normalizeWeeklyCoachDraftCollection({ collectionVersion: 1, byWeek });
 }

@@ -5,9 +5,14 @@ import {
   createManualWeeklyCoachDraftItem,
   createWeeklyCoachSessionDraft,
   editWeeklyCoachDraftField,
+  emptyWeeklyCoachDraftCollection,
+  getWeeklyCoachSessionDraft,
   mergeWeeklyCoachDraftOperations,
+  normalizeWeeklyCoachDraftCollection,
   protectRestoredWeeklyCoachDraft,
+  putWeeklyCoachSessionDraft,
   removeWeeklyCoachDraftItem,
+  removeWeeklyCoachSessionDraft,
   validateWeeklyCoachSessionDraft,
   weeklyCoachDraftToFocusInput,
   type WeeklyCoachDraftItem,
@@ -42,6 +47,23 @@ function draftWith(...items: WeeklyCoachDraftItem[]): WeeklyCoachSessionDraft {
   return {
     ...createWeeklyCoachSessionDraft('2026-W32', UPDATED_AT),
     items,
+  };
+}
+
+function persistedDraft(
+  week = '2026-W32',
+  updatedAt = UPDATED_AT,
+): WeeklyCoachSessionDraft {
+  return {
+    ...draftWith(completeItem('focus-1')),
+    week,
+    topic: '判断本周是否应该发布插件',
+    selectedSources: ['目标', '项目', '任务'],
+    keyAnswers: ['希望用户不使用终端也能完成安装。'],
+    sessionSummary: '已确认一个候选方向。',
+    pendingQuestion: '什么证据能证明安装体验已经成立？',
+    questionReason: '需要补齐完成证据。',
+    updatedAt,
   };
 }
 
@@ -252,5 +274,95 @@ describe('weekly coach session draft', () => {
       keyAnswers: ['希望用户不打开终端。'],
       noNewFocus: false,
     });
+  });
+
+  it('stores, reads, and removes session drafts without mutating prior collections', () => {
+    const empty = emptyWeeklyCoachDraftCollection();
+    const draft = persistedDraft();
+    const stored = putWeeklyCoachSessionDraft(empty, draft);
+
+    expect(empty.byWeek).toEqual({});
+    expect(getWeeklyCoachSessionDraft(stored, '2026-W32')).toEqual(draft);
+    expect(getWeeklyCoachSessionDraft(stored, '2026-W31')).toBeNull();
+
+    const removed = removeWeeklyCoachSessionDraft(stored, '2026-W32');
+    expect(removed.byWeek).toEqual({});
+    expect(stored.byWeek['2026-W32']).toEqual(draft);
+  });
+
+  it('normalizes only the latest twelve bounded session drafts', () => {
+    const oversized = 'x'.repeat(4_001);
+    const byWeek: Record<string, unknown> = Object.fromEntries(Array.from(
+      { length: 14 }, (_, index) => {
+      const week = `2026-W${String(index + 1).padStart(2, '0')}`;
+      const draft = persistedDraft(
+        week,
+        `2026-01-${String(index + 1).padStart(2, '0')}T09:00:00.000Z`,
+      );
+      return [week, {
+        ...draft,
+        keyAnswers: [...draft.keyAnswers, ...Array.from({ length: 10 }, () => '保留回答')],
+        items: [
+          ...draft.items,
+          completeItem('focus-2', '整理复盘'),
+          completeItem('focus-3', '梳理目标'),
+          completeItem('focus-4', '不应保留'),
+        ],
+        messages: [{ role: 'user', text: '不得持久化' }],
+        sourceDocuments: [{ path: 'private.md', content: '不得持久化' }],
+        unknown: '不得持久化',
+      }];
+      },
+    ));
+    byWeek['not-a-week'] = persistedDraft('not-a-week');
+    byWeek['2026-W53'] = { ...persistedDraft('2026-W53'), topic: oversized };
+
+    const normalized = normalizeWeeklyCoachDraftCollection({
+      collectionVersion: 1,
+      byWeek,
+      messages: ['不得持久化'],
+    });
+
+    expect(Object.keys(normalized.byWeek)).toHaveLength(12);
+    expect(Object.keys(normalized.byWeek)).not.toContain('2026-W01');
+    expect(Object.keys(normalized.byWeek)).not.toContain('2026-W02');
+    expect(Object.keys(normalized.byWeek)).not.toContain('not-a-week');
+    expect(Object.keys(normalized.byWeek)).not.toContain('2026-W53');
+    const saved = normalized.byWeek['2026-W14'] as unknown as Record<string, unknown>;
+    expect((saved.items as unknown[])).toHaveLength(3);
+    expect((saved.keyAnswers as unknown[])).toHaveLength(8);
+    expect(saved).not.toHaveProperty('messages');
+    expect(saved).not.toHaveProperty('sourceDocuments');
+    expect(saved).not.toHaveProperty('unknown');
+    expect(normalized).toEqual({
+      collectionVersion: 1,
+      byWeek: normalized.byWeek,
+    });
+  });
+
+  it('drops malformed nested values and undeclared fields', () => {
+    const raw = {
+      ...persistedDraft(),
+      selectedSources: ['目标', '私密原文'],
+      pendingInput: 42,
+      keyAnswers: ['有效回答', 'x'.repeat(4_001)],
+      items: [{
+        ...completeItem('focus-1'),
+        fieldSources: { focus: 'user', outcome: 'unsafe', whyThisWeek: 'ai', evidence: 'ai' },
+        suggestions: { outcome: '可采用', private: '不得保留' },
+        rawSource: '不得保留',
+      }],
+      background: {
+        facts: ['事实'], assumptions: [], gaps: [], sources: ['path.md'], raw: '不得保留',
+      },
+      deletedItems: [{ id: 'focus-2', focusKey: '删除项', raw: '不得保留' }],
+    };
+
+    const normalized = normalizeWeeklyCoachDraftCollection({
+      collectionVersion: 1,
+      byWeek: { '2026-W32': raw },
+    });
+
+    expect(normalized.byWeek['2026-W32']).toBeUndefined();
   });
 });
