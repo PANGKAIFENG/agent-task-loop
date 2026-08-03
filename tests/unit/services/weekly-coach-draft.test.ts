@@ -201,7 +201,7 @@ describe('weekly coach session draft', () => {
     expect(merged.items[0]?.evidence).toBe('新的完成证据');
   });
 
-  it('records deletion tombstones and blocks equivalent AI recreation', () => {
+  it('records opaque deletion tombstones and blocks equivalent AI recreation', () => {
     const original = draftWith(completeItem('focus-1', '发布插件！'));
     const removed = removeWeeklyCoachDraftItem(original, 'focus-1');
     const recreated = mergeWeeklyCoachDraftOperations(removed, [{
@@ -210,8 +210,25 @@ describe('weekly coach session draft', () => {
       fields: { focus: ' 发布 插件 ' },
     }], { nextId: () => 'focus-2', focusedItemId: null }).draft;
 
-    expect(removed.deletedItems).toEqual([{ id: 'focus-1', focusKey: '发布插件' }]);
+    expect(removed.deletedItems).toHaveLength(1);
+    expect(removed.deletedItems[0]?.id).toBe('focus-1');
+    expect(removed.deletedItems[0]?.focusKey).toMatch(/^sha256:[a-f0-9]{64}$/u);
+    expect(removed.deletedItems[0]?.focusKey).not.toContain('发布插件');
     expect(recreated.items).toHaveLength(0);
+  });
+
+  it('does not persist credential content in deletion tombstones', () => {
+    const original = draftWith(completeItem(
+      'focus-1',
+      'api_key=weekly-coach-private-value',
+    ));
+
+    const removed = removeWeeklyCoachDraftItem(original, 'focus-1');
+    const serialized = JSON.stringify(removed.deletedItems);
+
+    expect(serialized).not.toContain('weekly-coach-private-value');
+    expect(serialized).not.toContain('apikeyweeklycoachprivatevalue');
+    expect(removed.deletedItems[0]?.focusKey).toMatch(/^sha256:[a-f0-9]{64}$/u);
   });
 
   it('caps AI-created items at three and rejects creations without a focus', () => {
@@ -438,6 +455,23 @@ describe('weekly coach session draft', () => {
       collectionVersion: 1,
       byWeek: normalized.byWeek,
     });
+  });
+
+  it('migrates legacy plaintext deletion tombstones to opaque digests', () => {
+    const legacy = {
+      ...persistedDraft(),
+      deletedItems: [{ id: 'focus-2', focusKey: '发布插件' }],
+    };
+
+    const normalized = normalizeWeeklyCoachDraftCollection({
+      collectionVersion: 1,
+      byWeek: { '2026-W32': legacy },
+    });
+    const serialized = JSON.stringify(normalized.byWeek['2026-W32']?.deletedItems);
+
+    expect(serialized).not.toContain('发布插件');
+    expect(normalized.byWeek['2026-W32']?.deletedItems[0]?.focusKey)
+      .toMatch(/^sha256:[a-f0-9]{64}$/u);
   });
 
   it('drops malformed nested values and undeclared fields', () => {

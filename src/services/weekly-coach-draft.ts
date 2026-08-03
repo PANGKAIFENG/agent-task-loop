@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import {
   WEEKLY_COACH_SOURCES,
   type WeeklyCoachSource,
@@ -92,6 +94,7 @@ const EMPTY_BACKGROUND: WeeklyFocusBackground = {
 const MAX_PERSISTED_WEEKS = 12;
 const MAX_FIELD_LENGTH = 4_000;
 const MAX_LIST_ITEMS = 30;
+const DELETION_FOCUS_KEY_PATTERN = /^sha256:[a-f0-9]{64}$/u;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -107,6 +110,23 @@ function boundedPersistedList(value: unknown, maximum = MAX_LIST_ITEMS): string[
   if (!Array.isArray(value) || value.length > maximum) return null;
   const normalized = value.map(boundedPersistedString);
   return normalized.every((item): item is string => item !== null) ? normalized : null;
+}
+
+function normalizedFocus(value: string): string {
+  return value.trim().toLocaleLowerCase('zh-CN').replace(/[\s\p{P}\p{S}]+/gu, '');
+}
+
+function focusKey(value: string): string {
+  const normalized = normalizedFocus(value);
+  return normalized === ''
+    ? ''
+    : `sha256:${createHash('sha256').update(normalized).digest('hex')}`;
+}
+
+function normalizedPersistedFocusKey(value: string): string {
+  return DELETION_FOCUS_KEY_PATTERN.test(value)
+    ? value
+    : focusKey(value);
 }
 
 function isLeapYear(year: number): boolean {
@@ -229,7 +249,10 @@ function normalizePersistedDraft(value: unknown, weekKey: string): WeeklyCoachSe
   for (const candidate of value.deletedItems.slice(0, MAX_LIST_ITEMS)) {
     if (!isRecord(candidate)) return null;
     const id = boundedPersistedString(candidate.id);
-    const deletedFocusKey = boundedPersistedString(candidate.focusKey);
+    const persistedFocusKey = boundedPersistedString(candidate.focusKey);
+    const deletedFocusKey = persistedFocusKey === null
+      ? null
+      : normalizedPersistedFocusKey(persistedFocusKey);
     if (id === null || id.trim() === '' || deletedFocusKey === null || deletedFocusKey === '') {
       return null;
     }
@@ -318,16 +341,12 @@ function redactSessionDraft(draft: WeeklyCoachSessionDraft): WeeklyCoachSessionD
   });
   next.deletedItems = next.deletedItems.map((item) => ({
     id: redactSecrets(item.id),
-    focusKey: redactSecrets(item.focusKey),
+    focusKey: normalizedPersistedFocusKey(item.focusKey),
   }));
   next.focusedItemId = next.focusedItemId === null
     ? null
     : redactSecrets(next.focusedItemId);
   return next;
-}
-
-function focusKey(value: string): string {
-  return value.trim().toLocaleLowerCase('zh-CN').replace(/[\s\p{P}\p{S}]+/gu, '');
 }
 
 function setReadiness(item: WeeklyCoachDraftItem): WeeklyCoachDraftItem {
