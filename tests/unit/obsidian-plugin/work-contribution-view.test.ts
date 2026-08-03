@@ -33,11 +33,10 @@ function weeklyFocus(status: '草稿' | '已确认'): WeeklyFocusDocument {
         currentQuestion: '什么结果能证明投入值得？',
         coachSummary: '需要先定义可观察结果。',
         focuses: [{
-          problem: '产品边界反复变化',
-          judgment: '先验证两个真实流程',
+          focus: '先验证两个真实流程',
           outcome: '形成团队可复用的边界说明',
+          whyThisWeek: '周五前完成验证',
           evidence: '两个流程使用同一份说明',
-          commitment: '周五前完成验证',
         }],
         noNewFocus: false,
         notDoing: ['不新增 Agent 名称'],

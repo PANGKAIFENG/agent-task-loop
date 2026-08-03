@@ -17,11 +17,10 @@ export type WeeklyFocusStatus = '草稿' | '已确认' | '已结束';
 export type WeeklyReviewStatus = '待复盘' | '已复盘';
 
 export interface WeeklyFocusItem {
-  problem: string;
-  judgment: string;
+  focus: string;
   outcome: string;
+  whyThisWeek: string;
   evidence: string;
-  commitment: string;
 }
 
 export interface WeeklyFocusBackground {
@@ -161,17 +160,31 @@ function sourceList(value: unknown): WeeklyCoachSource[] {
   return [...new Set(sources)] as WeeklyCoachSource[];
 }
 
+function firstString(raw: Record<string, unknown>, keys: string[]): unknown {
+  for (const key of keys) {
+    if (typeof raw[key] === 'string' && raw[key].trim() !== '') return raw[key];
+  }
+  return '';
+}
+
 function normalizeFocus(value: unknown, requireComplete: boolean): WeeklyFocusItem {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('本周判断格式无效');
   }
   const raw = value as Record<string, unknown>;
   return {
-    problem: boundedString(raw.problem ?? raw['真正想解决的问题'], '真正想解决的问题', !requireComplete),
-    judgment: boundedString(raw.judgment ?? raw['用户最终判断'], '用户最终判断', !requireComplete),
-    outcome: boundedString(raw.outcome ?? raw['希望产生的结果'], '希望产生的结果', !requireComplete),
-    evidence: boundedString(raw.evidence ?? raw['验证证据'], '验证证据', !requireComplete),
-    commitment: boundedString(raw.commitment ?? raw['本周承诺'], '本周承诺'),
+    focus: boundedString(firstString(raw, [
+      'focus', '重点事项', 'judgment', '用户最终判断', 'problem', '真正想解决的问题',
+    ]), '重点事项', !requireComplete),
+    outcome: boundedString(firstString(raw, [
+      'outcome', '预期结果', '希望产生的结果',
+    ]), '预期结果', !requireComplete),
+    whyThisWeek: boundedString(firstString(raw, [
+      'whyThisWeek', '为什么是本周', 'commitment', '本周承诺',
+    ]), '为什么是本周', !requireComplete),
+    evidence: boundedString(firstString(raw, [
+      'evidence', '完成证据', '验证证据',
+    ]), '完成证据', !requireComplete),
   };
 }
 
@@ -214,11 +227,10 @@ function normalizeInput(value: WeeklyFocusInput, requireComplete: boolean): Week
 
 function visibleFocus(focus: WeeklyFocusItem): Record<string, string> {
   return {
-    真正想解决的问题: focus.problem,
-    用户最终判断: focus.judgment,
-    希望产生的结果: focus.outcome,
-    验证证据: focus.evidence,
-    本周承诺: focus.commitment,
+    重点事项: focus.focus,
+    预期结果: focus.outcome,
+    为什么是本周: focus.whyThisWeek,
+    完成证据: focus.evidence,
   };
 }
 
@@ -240,15 +252,15 @@ function renderFocuses(input: WeeklyFocusInput): string {
     return '本周暂不新增重点，先完成既有承诺。';
   }
   return input.focuses.map((focus, index) => [
-    `### ${index + 1}. ${focus.problem || '待补充'}`,
+    `### ${index + 1}. ${focus.focus || '待补充'}`,
     '',
-    `**用户最终判断**：${focus.judgment || '待补充'}`,
+    `**重点事项**：${focus.focus || '待补充'}`,
     '',
-    `**希望产生的结果**：${focus.outcome || '待补充'}`,
+    `**预期结果**：${focus.outcome || '待补充'}`,
     '',
-    `**验证证据**：${focus.evidence || '待补充'}`,
+    `**为什么是本周**：${focus.whyThisWeek || '待补充'}`,
     '',
-    `**本周承诺**：${focus.commitment || '待补充'}`,
+    `**完成证据**：${focus.evidence || '待补充'}`,
   ].join('\n')).join('\n\n');
 }
 
@@ -260,7 +272,7 @@ function renderManagedBody(record: WeeklyFocusRecord): string {
     '',
     '> 这是你确认前可持续修改的判断记录。AI 只负责启发和整理，不替你决定重点。',
     '',
-    '## 本周真正想解决的问题',
+    '## 本周重点',
     '',
     renderFocuses(input),
     '',

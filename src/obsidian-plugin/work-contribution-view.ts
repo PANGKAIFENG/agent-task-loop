@@ -787,12 +787,12 @@ export class WorkContributionView extends ItemView {
       const title = element(
         'strong',
         'atl-home-focus-name',
-        focus.judgment.trim() === '' ? focus.problem : focus.judgment,
+        focus.focus,
       );
       const meta = element('span', 'atl-home-focus-meta');
       meta.append(
-        element('span', undefined, focus.problem),
         element('span', undefined, focus.outcome),
+        element('span', undefined, focus.whyThisWeek),
       );
       card.append(top, title, meta);
       card.addEventListener('click', () => {

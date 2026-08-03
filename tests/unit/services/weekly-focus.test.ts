@@ -21,11 +21,10 @@ function input(overrides: Partial<WeeklyFocusInput> = {}): WeeklyFocusInput {
     currentQuestion: '周五前希望出现什么可观察变化？',
     coachSummary: '用户希望减少重复讨论。',
     focuses: [{
-      problem: '把产品边界从功能讨论收敛成可沟通的判断。',
-      judgment: '先用两个真实流程验证分层。',
-      outcome: '形成一页边界图。',
-      evidence: '两个流程被团队共同确认。',
-      commitment: '周五前完成边界图。',
+      focus: '验证 StyleWork 产品边界是否能被团队复用。',
+      outcome: '形成一页团队共同使用的边界图。',
+      whyThisWeek: '本周有两个真实流程可用于验证，延后会继续重复讨论。',
+      evidence: '两个流程的负责人都确认采用同一份说明。',
     }],
     noNewFocus: false,
     notDoing: ['不扩展新的 Agent 名称。'],
@@ -128,8 +127,17 @@ describe('weekly focus service', () => {
       创建方式: 'ATL 思考教练',
       复盘状态: '待复盘',
     });
+    expect(data['本周判断']).toEqual([{
+      重点事项: '验证 StyleWork 产品边界是否能被团队复用。',
+      预期结果: '形成一页团队共同使用的边界图。',
+      为什么是本周: '本周有两个真实流程可用于验证，延后会继续重复讨论。',
+      完成证据: '两个流程的负责人都确认采用同一份说明。',
+    }]);
     expect(document.raw).not.toMatch(/\b(?:type|week|status|confirmed|pending)\s*:/i);
-    expect(document.raw).toContain('## 本周真正想解决的问题');
+    expect(document.raw).toContain('## 本周重点');
+    expect(document.raw).toContain('**为什么是本周**：本周有两个真实流程可用于验证');
+    expect(document.raw).not.toContain('用户最终判断');
+    expect(document.raw).not.toContain('本周承诺');
     expect(document.raw).toContain('## AI 已了解的背景');
     expect(document.raw).toContain('## 周末复盘');
   });
@@ -142,6 +150,33 @@ describe('weekly focus service', () => {
 
     expect(loaded?.record.input).toEqual(input());
     expect(loaded?.path).toBe('05_Reviews/Weekly/2026-W30 周度重点.md');
+  });
+
+  it('normalizes legacy five-field weekly notes into the four public fields', async () => {
+    const gateway = new MemoryGateway();
+    const saved = await saveWeeklyFocusDraft(gateway, () => NOW, input(), null, 'Asia/Shanghai');
+    const data = frontmatter(saved.raw);
+    data['本周判断'] = [{
+      真正想解决的问题: '收敛产品边界。',
+      用户最终判断: '先验证两个真实流程。',
+      希望产生的结果: '形成一页团队共同使用的边界图。',
+      验证证据: '两个流程的负责人都确认采用同一份说明。',
+      本周承诺: '周五前完成一页边界图。',
+    }];
+    const legacy = saved.raw.replace(
+      /^---\n[\s\S]*?\n---/u,
+      `---\n${YAML.stringify(data).trimEnd()}\n---`,
+    );
+    gateway.files.set(saved.path, legacy);
+
+    const loaded = await loadCurrentWeeklyFocus(gateway, () => NOW, 'Asia/Shanghai');
+
+    expect(loaded?.record.input.focuses[0]).toEqual({
+      focus: '先验证两个真实流程。',
+      outcome: '形成一页团队共同使用的边界图。',
+      whyThisWeek: '周五前完成一页边界图。',
+      evidence: '两个流程的负责人都确认采用同一份说明。',
+    });
   });
 
   it('confirms zero new focuses only when the user explicitly chooses that outcome', async () => {

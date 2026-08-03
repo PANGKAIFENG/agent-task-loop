@@ -97,8 +97,8 @@ function cloneInput(input: WeeklyFocusInput): WeeklyFocusInput {
   };
 }
 
-function emptyFocus(problem = ''): WeeklyFocusItem {
-  return { problem, judgment: '', outcome: '', evidence: '', commitment: '' };
+function emptyFocus(focus = ''): WeeklyFocusItem {
+  return { focus, outcome: '', whyThisWeek: '', evidence: '' };
 }
 
 function lines(value: string): string[] {
@@ -518,20 +518,17 @@ export class WeeklyThinkingCoachModal extends Modal {
         this.render();
       });
     }
-    this.appendTextArea(card, `第${index + 1}项真正想解决的问题`, focus.problem, '', (value) => {
-      focus.problem = value;
+    this.appendTextArea(card, `第${index + 1}项重点事项`, focus.focus, '', (value) => {
+      focus.focus = value;
     }, 2);
-    this.appendTextArea(card, `第${index + 1}项用户最终判断`, focus.judgment, '', (value) => {
-      focus.judgment = value;
-    }, 2);
-    this.appendTextArea(card, `第${index + 1}项希望产生的结果`, focus.outcome, '', (value) => {
+    this.appendTextArea(card, `第${index + 1}项预期结果`, focus.outcome, '', (value) => {
       focus.outcome = value;
     }, 2);
-    this.appendTextArea(card, `第${index + 1}项验证证据`, focus.evidence, '', (value) => {
-      focus.evidence = value;
+    this.appendTextArea(card, `第${index + 1}项为什么是本周`, focus.whyThisWeek, '', (value) => {
+      focus.whyThisWeek = value;
     }, 2);
-    this.appendTextArea(card, `第${index + 1}项本周承诺`, focus.commitment, '', (value) => {
-      focus.commitment = value;
+    this.appendTextArea(card, `第${index + 1}项完成证据`, focus.evidence, '', (value) => {
+      focus.evidence = value;
     }, 2);
   }
 
@@ -547,8 +544,8 @@ export class WeeklyThinkingCoachModal extends Modal {
     for (const [index, focus] of this.input.focuses.entries()) {
       const card = intro.createDiv({ cls: 'atl-weekly-coach-confirmed-focus' });
       card.createEl('span', { text: `判断 ${index + 1}` });
-      card.createEl('strong', { text: focus.judgment });
-      card.createEl('p', { text: `${focus.problem} · ${focus.outcome}` });
+      card.createEl('strong', { text: focus.focus });
+      card.createEl('p', { text: `${focus.outcome} · ${focus.whyThisWeek}` });
     }
     const actions = container.createDiv({ cls: 'atl-weekly-coach-actions' });
     this.appendButton(actions, '打开 Markdown', () => {
@@ -722,11 +719,10 @@ export class WeeklyThinkingCoachModal extends Modal {
       this.input.focuses = [draft === null || draft === undefined
         ? emptyFocus(this.input.conversationTopic)
         : {
-          problem: draft.problem,
-          judgment: '',
+          focus: draft.problem,
           outcome: draft.outcome,
+          whyThisWeek: draft.commitment,
           evidence: draft.evidence,
-          commitment: draft.commitment,
         }];
       if (draft !== null && draft !== undefined) this.input.notDoing = [...draft.notDoing];
     }

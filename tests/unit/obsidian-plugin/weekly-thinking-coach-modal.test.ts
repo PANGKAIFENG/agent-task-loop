@@ -64,11 +64,10 @@ function weeklyDocument(status: '草稿' | '已确认' = '草稿'): WeeklyFocusD
     currentQuestion: '周五前希望出现什么变化？',
     coachSummary: '需要先定义可观察结果。',
     focuses: [{
-      problem: '收敛产品边界',
-      judgment: status === '已确认' ? '先验证两个真实流程' : '',
+      focus: status === '已确认' ? '先验证两个真实流程' : '收敛产品边界',
       outcome: '形成一页边界图',
+      whyThisWeek: '周五前完成',
       evidence: '两个流程共同确认',
-      commitment: '周五前完成',
     }],
     background: {
       facts: ['边界问题反复出现'],
@@ -226,11 +225,11 @@ describe('WeeklyThinkingCoachModal', () => {
     button(modal, '结束讨论，进入确认').click();
     expect(modal.contentEl.textContent).toContain('这是对你表达的整理，不是 AI 替你决定');
     expect(modal.contentEl.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="第1项真正想解决的问题"]',
+      'textarea[aria-label="第1项重点事项"]',
     )?.value).toBe('收敛 StyleWork 产品边界。');
     expect(modal.contentEl.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="第1项用户最终判断"]',
-    )?.value).toBe('');
+      'textarea[aria-label="第1项预期结果"]',
+    )?.value).toBe('减少团队重复讨论。');
   });
 
   it('keeps input after a model failure and lets the user continue manually', async () => {
@@ -249,7 +248,7 @@ describe('WeeklyThinkingCoachModal', () => {
     button(modal, '直接人工整理').click();
     expect(modal.contentEl.textContent).toContain('这是对你表达的整理，不是 AI 替你决定');
     expect(modal.contentEl.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="第1项真正想解决的问题"]',
+      'textarea[aria-label="第1项重点事项"]',
     )?.value).toBe('需要人工继续的问题');
   });
 
@@ -275,16 +274,16 @@ describe('WeeklyThinkingCoachModal', () => {
     await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('继续本周思考'));
     expect(modal.contentEl.textContent).toContain(draft.record.input.currentQuestion);
     button(modal, '结束讨论，进入确认').click();
-    const judgment = modal.contentEl.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="第1项用户最终判断"]',
+    const focus = modal.contentEl.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="第1项重点事项"]',
     )!;
-    judgment.value = '先完成两个真实流程验证。';
-    judgment.dispatchEvent(new window.Event('input', { bubbles: true }));
+    focus.value = '先完成两个真实流程验证。';
+    focus.dispatchEvent(new window.Event('input', { bubbles: true }));
     button(modal, '保存草稿').click();
 
     await vi.waitFor(() => expect(saveDraft).toHaveBeenCalledWith(
       expect.objectContaining({
-        focuses: [expect.objectContaining({ judgment: '先完成两个真实流程验证。' })],
+        focuses: [expect.objectContaining({ focus: '先完成两个真实流程验证。' })],
       }),
       draft.raw,
     ));
@@ -543,7 +542,7 @@ describe('WeeklyThinkingCoachModal', () => {
     expect(control.signal.aborted).toBe(true);
     expect(modal.contentEl.textContent).toContain('这是对你表达的整理');
     expect(modal.contentEl.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="第1项真正想解决的问题"]',
+      'textarea[aria-label="第1项重点事项"]',
     )?.value).toBe('人工继续整理的判断');
   });
 
