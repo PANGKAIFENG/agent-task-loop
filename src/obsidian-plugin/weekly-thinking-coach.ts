@@ -273,7 +273,7 @@ function promptFor(input: WeeklyCoachTurnInput): string {
     `此前关键回答：${input.keyAnswers.slice(-8).map((answer) => answer.slice(0, 2_000)).join(' | ') || '暂无'}`,
     `上一轮摘要：${input.previousSummary?.slice(0, 4_000) || '暂无'}`,
     `本次授权范围：${input.context.authorizedSources.join('、') || '无'}`,
-    `已删除且不得重新创建的重点：${input.deletedFocuses.join('、') || '无'}`,
+    `已删除且不得重新创建的重点（包括同义改写后的同一方向）：${input.deletedFocuses.join('、') || '无'}`,
     `当前聚焦 itemId：${input.focusedItemId ?? '无'}`,
     '当前草稿：',
     draftForPrompt(input),

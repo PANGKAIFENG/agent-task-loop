@@ -675,7 +675,7 @@ export class WeeklyThinkingCoachModal extends Modal {
         fieldSources: { ...item.fieldSources },
         suggestions: { ...item.suggestions },
       })),
-      deletedFocuses: this.session.deletedItems.map((item) => item.focusKey),
+      deletedFocuses: this.session.deletedItems.map((item) => item.focusLabel),
       focusedItemId: this.session.focusedItemId,
     };
 

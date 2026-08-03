@@ -375,13 +375,15 @@ describe('WeeklyThinkingCoachModal', () => {
   });
 
   it('keeps a deleted direction removed when AI tries to recreate it', async () => {
-    const { modal } = setup({ draft: sessionDraft() });
+    const { modal, runCoach } = setup({ draft: sessionDraft() });
     await open(modal);
 
     button(modal, '删除重点').click();
     expect(modal.contentEl.textContent).toContain('0 / 3');
     sendMessage(modal, '继续');
     await vi.waitFor(() => expect(modal.contentEl.textContent).toContain(coachResult.assistantMessage));
+    expect(runCoach.mock.calls[0]?.[0].deletedFocuses)
+      .toEqual(['验证产品边界是否可复用']);
     expect(modal.contentEl.textContent).toContain('0 / 3');
     expect(modal.contentEl.querySelector('input[aria-label="重点事项"]')).toBeNull();
   });

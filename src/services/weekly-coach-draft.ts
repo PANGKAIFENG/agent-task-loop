@@ -44,7 +44,7 @@ export interface WeeklyCoachSessionDraft {
   questionReason: string;
   background: WeeklyFocusBackground;
   items: WeeklyCoachDraftItem[];
-  deletedItems: Array<{ id: string; focusKey: string }>;
+  deletedItems: Array<{ id: string; focusKey: string; focusLabel: string }>;
   focusedItemId: string | null;
   noNewFocus: boolean;
   updatedAt: string;
@@ -94,6 +94,7 @@ const EMPTY_BACKGROUND: WeeklyFocusBackground = {
 const MAX_PERSISTED_WEEKS = 12;
 const MAX_FIELD_LENGTH = 4_000;
 const MAX_LIST_ITEMS = 30;
+const MAX_DELETED_FOCUS_LABEL_LENGTH = 240;
 const DELETION_FOCUS_KEY_PATTERN = /^sha256:[a-f0-9]{64}$/u;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -127,6 +128,11 @@ function normalizedPersistedFocusKey(value: string): string {
   return DELETION_FOCUS_KEY_PATTERN.test(value)
     ? value
     : focusKey(value);
+}
+
+function safeFocusLabel(value: string): string {
+  const redacted = redactSecrets(value).trim().slice(0, MAX_DELETED_FOCUS_LABEL_LENGTH).trim();
+  return redacted === '' ? '已删除重点' : redacted;
 }
 
 function isLeapYear(year: number): boolean {
@@ -245,7 +251,7 @@ function normalizePersistedDraft(value: unknown, weekKey: string): WeeklyCoachSe
   const normalizedItems = items as WeeklyCoachDraftItem[];
   if (new Set(normalizedItems.map((item) => item.id)).size !== normalizedItems.length) return null;
 
-  const deletedItems: Array<{ id: string; focusKey: string }> = [];
+  const deletedItems: Array<{ id: string; focusKey: string; focusLabel: string }> = [];
   for (const candidate of value.deletedItems.slice(0, MAX_LIST_ITEMS)) {
     if (!isRecord(candidate)) return null;
     const id = boundedPersistedString(candidate.id);
@@ -253,10 +259,18 @@ function normalizePersistedDraft(value: unknown, weekKey: string): WeeklyCoachSe
     const deletedFocusKey = persistedFocusKey === null
       ? null
       : normalizedPersistedFocusKey(persistedFocusKey);
+    const persistedFocusLabel = Object.hasOwn(candidate, 'focusLabel')
+      ? boundedPersistedString(candidate.focusLabel)
+      : '已删除重点';
     if (id === null || id.trim() === '' || deletedFocusKey === null || deletedFocusKey === '') {
       return null;
     }
-    deletedItems.push({ id, focusKey: deletedFocusKey });
+    if (persistedFocusLabel === null) return null;
+    deletedItems.push({
+      id,
+      focusKey: deletedFocusKey,
+      focusLabel: safeFocusLabel(persistedFocusLabel),
+    });
   }
 
   const focusedItemId = typeof value.focusedItemId === 'string'
@@ -342,6 +356,7 @@ function redactSessionDraft(draft: WeeklyCoachSessionDraft): WeeklyCoachSessionD
   next.deletedItems = next.deletedItems.map((item) => ({
     id: redactSecrets(item.id),
     focusKey: normalizedPersistedFocusKey(item.focusKey),
+    focusLabel: safeFocusLabel(item.focusLabel),
   }));
   next.focusedItemId = next.focusedItemId === null
     ? null
@@ -439,7 +454,11 @@ export function removeWeeklyCoachDraftItem(
     deletedFocusKey !== ''
     && !next.deletedItems.some((candidate) => candidate.focusKey === deletedFocusKey)
   ) {
-    next.deletedItems.push({ id: item.id, focusKey: deletedFocusKey });
+    next.deletedItems.push({
+      id: item.id,
+      focusKey: deletedFocusKey,
+      focusLabel: safeFocusLabel(item.focus),
+    });
   }
   if (next.focusedItemId === itemId) next.focusedItemId = null;
   return next;

@@ -214,6 +214,8 @@ describe('weekly coach session draft', () => {
     expect(removed.deletedItems[0]?.id).toBe('focus-1');
     expect(removed.deletedItems[0]?.focusKey).toMatch(/^sha256:[a-f0-9]{64}$/u);
     expect(removed.deletedItems[0]?.focusKey).not.toContain('发布插件');
+    expect((removed.deletedItems[0] as unknown as Record<string, unknown>).focusLabel)
+      .toBe('发布插件！');
     expect(recreated.items).toHaveLength(0);
   });
 
@@ -229,6 +231,17 @@ describe('weekly coach session draft', () => {
     expect(serialized).not.toContain('weekly-coach-private-value');
     expect(serialized).not.toContain('apikeyweeklycoachprivatevalue');
     expect(removed.deletedItems[0]?.focusKey).toMatch(/^sha256:[a-f0-9]{64}$/u);
+    expect((removed.deletedItems[0] as unknown as Record<string, unknown>).focusLabel)
+      .toContain('[REDACTED]');
+  });
+
+  it('bounds deletion labels before they are sent back to the model', () => {
+    const original = draftWith(completeItem('focus-1', '方向'.repeat(200)));
+
+    const removed = removeWeeklyCoachDraftItem(original, 'focus-1');
+
+    expect((removed.deletedItems[0] as unknown as Record<string, unknown>).focusLabel)
+      .toHaveLength(240);
   });
 
   it('caps AI-created items at three and rejects creations without a focus', () => {
@@ -472,6 +485,8 @@ describe('weekly coach session draft', () => {
     expect(serialized).not.toContain('发布插件');
     expect(normalized.byWeek['2026-W32']?.deletedItems[0]?.focusKey)
       .toMatch(/^sha256:[a-f0-9]{64}$/u);
+    expect((normalized.byWeek['2026-W32']?.deletedItems[0] as unknown as Record<string, unknown>)
+      .focusLabel).toBe('已删除重点');
   });
 
   it('drops malformed nested values and undeclared fields', () => {

@@ -10,6 +10,8 @@ describe('redactSecrets', () => {
     ['OpenAI key', 'OPENAI_API_KEY=opaque-openai-private-value', 'opaque-openai-private-value'],
     ['generic token', 'token: generic-private-value', 'generic-private-value'],
     ['quoted JSON value', '"password": "json private value"', 'json private value'],
+    ['camelCase password', '"dbPassword": "camel private value"', 'camel private value'],
+    ['camelCase API key', '"openaiApiKey": "camel api private value"', 'camel api private value'],
   ])('redacts a prefixed or generic %s assignment', (_label, source, secret) => {
     const redacted = redactSecrets(source);
 
@@ -27,6 +29,30 @@ describe('redactSecrets', () => {
       '  endpoint: https://example.com',
     ].join('\n');
 
+    const redacted = redactSecrets(source);
+
+    expect(redacted).not.toContain('first-private-line');
+    expect(redacted).not.toContain('second-private-line');
+    expect(redacted).toContain('endpoint: https://example.com');
+    expect(redacted).toContain('[REDACTED]');
+  });
+
+  it.each([
+    ['explicit indentation', [
+      'service:',
+      '  password: |2',
+      '    first-private-line',
+      '    second-private-line',
+      '  endpoint: https://example.com',
+    ].join('\n')],
+    ['sequence entry', [
+      'services:',
+      '  - password: |',
+      '      first-private-line',
+      '      second-private-line',
+      '    endpoint: https://example.com',
+    ].join('\n')],
+  ])('redacts a complete YAML %s credential block', (_label, source) => {
     const redacted = redactSecrets(source);
 
     expect(redacted).not.toContain('first-private-line');
