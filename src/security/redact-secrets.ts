@@ -88,15 +88,16 @@ function collectYamlCredentialRanges(
   }
 }
 
-function redactYamlCredentials(value: string): string {
+function redactYamlCredentials(value: string, acceptPartialDocuments = false): string {
   let documents: ReturnType<typeof YAML.parseAllDocuments>;
   try {
     documents = YAML.parseAllDocuments(value, { keepSourceTokens: true });
   } catch {
     return value;
   }
-  if (documents.some((document) => document.errors.length > 0)) return value;
-
+  if (!acceptPartialDocuments && documents.some((document) => document.errors.length > 0)) {
+    return value;
+  }
   const ranges: Array<{ start: number; end: number }> = [];
   for (const document of documents) collectYamlCredentialRanges(document.contents, ranges);
 
@@ -113,37 +114,211 @@ function splitLinesPreservingEndings(value: string): string[] {
   return value.match(/[^\n]*\n|[^\n]+$/gu) ?? [];
 }
 
-function splitBlockquotePrefix(
-  line: string,
-): { prefix: string; remainder: string; depth: number } {
-  let prefix = '';
-  let remainder = line;
-  let depth = 0;
+type MarkdownContainer =
+  | { kind: 'blockquote' }
+  | { kind: 'list'; contentIndent: number };
+
+type MarkdownYamlFence = {
+  containers: MarkdownContainer[];
+  fence: string;
+  bodyIndent: number;
+};
+
+function parseMarkdownYamlFence(line: string): MarkdownYamlFence | null {
+  let offset = 0;
+  let column = 0;
+  const containers: MarkdownContainer[] = [];
   while (true) {
-    const match = /^[ \t]*>[ \t]?/u.exec(remainder);
-    if (match === null) break;
-    prefix += match[0];
-    remainder = remainder.slice(match[0].length);
-    depth += 1;
+    const remainder = line.slice(offset);
+    const blockquoteMatch = /^( {0,3})>[ \t]?/u.exec(remainder);
+    if (blockquoteMatch !== null) {
+      const container = blockquoteMatch[0];
+      column = advanceMarkdownColumn(column, container);
+      offset += container.length;
+      containers.push({ kind: 'blockquote' });
+      continue;
+    }
+    const listMatch = /^( {0,3})(?:[-+*]|\d{1,9}[.)])([ \t]+)/u.exec(
+      remainder,
+    );
+    if (listMatch === null) break;
+    const container = listMatch[0];
+    const startColumn = column;
+    column = advanceMarkdownColumn(column, container);
+    offset += container.length;
+    containers.push({ kind: 'list', contentIndent: column - startColumn });
   }
-  return { prefix, remainder, depth };
+
+  const match = /^( {0,3})(`{3,}|~{3,})[ \t]*ya?ml\b[^\r\n]*\r?\n?$/iu.exec(
+    line.slice(offset),
+  );
+  if (match === null) return null;
+  const leading = match[1] ?? '';
+  const startColumn = column;
+  column = advanceMarkdownColumn(column, leading);
+  return {
+    containers,
+    fence: match[2] ?? '',
+    bodyIndent: column - startColumn,
+  };
 }
 
-function stripBlockquoteDepth(line: string, depth: number): string | null {
+function advanceMarkdownColumn(initialColumn: number, value: string): number {
+  let column = initialColumn;
+  for (const character of value) {
+    column = character === '\t' ? column + (4 - (column % 4)) : column + 1;
+  }
+  return column;
+}
+
+function stripIndentToColumn(
+  value: string,
+  initialColumn: number,
+  targetColumn: number,
+  requireFull: boolean,
+): { remainder: string; column: number } | null {
+  let offset = 0;
+  let column = initialColumn;
+  while (column < targetColumn) {
+    const character = value[offset];
+    if (character !== ' ' && character !== '\t') break;
+    column = advanceMarkdownColumn(column, character);
+    offset += 1;
+  }
+  if (requireFull && column < targetColumn) return null;
+  return { remainder: value.slice(offset), column };
+}
+
+function stripFenceContainer(
+  line: string,
+  fence: MarkdownYamlFence,
+  requireFull: boolean,
+  includeBodyIndent = true,
+): string | null {
   let remainder = line;
-  for (let index = 0; index < depth; index += 1) {
-    const match = /^[ \t]*>[ \t]?/u.exec(remainder);
-    if (match === null) return null;
-    remainder = remainder.slice(match[0].length);
+  let column = 0;
+  for (const container of fence.containers) {
+    if (container.kind === 'blockquote') {
+      const match = /^( {0,3})>[ \t]?/u.exec(remainder);
+      if (match === null) return null;
+      column = advanceMarkdownColumn(column, match[0]);
+      remainder = remainder.slice(match[0].length);
+      continue;
+    }
+    const stripped = stripIndentToColumn(
+      remainder,
+      column,
+      column + container.contentIndent,
+      requireFull,
+    );
+    if (stripped === null) return null;
+    ({ remainder, column } = stripped);
   }
-  return remainder;
+  if (!includeBodyIndent) return remainder;
+  return stripIndentToColumn(
+    remainder,
+    column,
+    column + fence.bodyIndent,
+    requireFull,
+  )?.remainder ?? null;
 }
 
-function prefixLines(value: string, prefix: string): string {
+function stripFenceBodyContainer(line: string, fence: MarkdownYamlFence): string {
+  return stripFenceContainer(line, fence, false) ?? line;
+}
+
+function stripFenceClosingContainer(
+  line: string,
+  fence: MarkdownYamlFence,
+): string | null {
+  return stripFenceContainer(line, fence, true, false);
+}
+
+function buildFenceBodyPrefix(fence: MarkdownYamlFence): string {
+  let prefix = '';
+  for (const container of fence.containers) {
+    if (container.kind === 'blockquote') {
+      prefix += '> ';
+      continue;
+    }
+    prefix += ' '.repeat(container.contentIndent);
+  }
+  return `${prefix}${' '.repeat(fence.bodyIndent)}`;
+}
+
+function prefixFenceBody(value: string, fence: MarkdownYamlFence): string {
+  const prefix = buildFenceBodyPrefix(fence);
   if (prefix.length === 0) return value;
   return splitLinesPreservingEndings(value)
     .map((line) => `${prefix}${line}`)
     .join('');
+}
+
+function redactYamlCredentialsLinewise(value: string): string {
+  return splitLinesPreservingEndings(value).map((line) => {
+    const ending = /\r?\n$/u.exec(line)?.[0] ?? '';
+    const content = ending === '' ? line : line.slice(0, -ending.length);
+    return `${redactYamlCredentials(content)}${ending}`;
+  }).join('');
+}
+
+function redactExplicitYamlCredentials(value: string): string {
+  const lines = value.split('\n');
+  const redacted: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? '';
+    const keyMatch = /^(\s*)\?\s*(?:(['"])([^'"]+)\2|([A-Za-z0-9_. -]+))\s*(?:#.*)?\r?$/u.exec(line);
+    const key = keyMatch?.[3] ?? keyMatch?.[4];
+    if (keyMatch === null || key === undefined || !isCredentialKey(key)) {
+      redacted.push(line);
+      continue;
+    }
+
+    redacted.push(line);
+    const valueLine = lines[index + 1] ?? '';
+    const valueMatch = /^(\s*):\s*(.*?)(\r?)$/u.exec(valueLine);
+    if (valueMatch === null) continue;
+    const indentation = valueMatch[1] ?? '';
+    const rawValue = valueMatch[2] ?? '';
+    redacted.push(`${indentation}: [REDACTED]${valueMatch[3] ?? ''}`);
+    index += 1;
+
+    const trimmedValue = rawValue.trimStart();
+    const nodeProperties = YAML_NODE_PROPERTIES_PATTERN.exec(trimmedValue)?.[0] ?? '';
+    const scalarValue = trimmedValue.slice(nodeProperties.length);
+    const scalarQuote = scalarValue.startsWith('"')
+      ? '"'
+      : scalarValue.startsWith("'")
+        ? "'"
+        : null;
+    if (scalarQuote !== null && !hasQuotedScalarTerminator(scalarValue, scalarQuote, true)) {
+      while (index + 1 < lines.length) {
+        index += 1;
+        if (hasQuotedScalarTerminator(lines[index] ?? '', scalarQuote, false)) break;
+      }
+      continue;
+    }
+    if (!YAML_BLOCK_SCALAR_PATTERN.test(rawValue)) continue;
+    const blockIndentation = indentationWidth(indentation);
+    while (index + 1 < lines.length) {
+      const nextLine = lines[index + 1] ?? '';
+      if (nextLine.replace(/\r$/u, '').trim() === '') {
+        index += 1;
+        continue;
+      }
+      if (indentationWidth(nextLine) <= blockIndentation) break;
+      index += 1;
+    }
+  }
+  return redacted.join('\n');
+}
+
+function redactYamlFenceBody(value: string): string {
+  return redactStructuredCredentials(
+    redactYamlCredentialsLinewise(
+      redactExplicitYamlCredentials(redactYamlCredentials(value, true)),
+    ),
+  );
 }
 
 function redactFencedYamlCredentials(value: string): string {
@@ -152,48 +327,41 @@ function redactFencedYamlCredentials(value: string): string {
 
   for (let index = 0; index < lines.length; index += 1) {
     const openingLine = lines[index] ?? '';
-    const opening = splitBlockquotePrefix(openingLine);
-    const fenceMatch = /^[ \t]*(`{3,}|~{3,})[ \t]*ya?ml\b[^\r\n]*\r?\n?$/iu.exec(
-      opening.remainder,
-    );
-    if (fenceMatch === null) {
+    const opening = parseMarkdownYamlFence(openingLine);
+    if (opening === null) {
       redacted.push(openingLine);
       continue;
     }
 
-    const openingFence = fenceMatch[1] ?? '';
     let closingIndex = -1;
     for (let candidateIndex = index + 1; candidateIndex < lines.length; candidateIndex += 1) {
-      const candidate = stripBlockquoteDepth(lines[candidateIndex] ?? '', opening.depth);
+      const candidate = stripFenceClosingContainer(lines[candidateIndex] ?? '', opening);
       if (candidate === null) continue;
-      const closingFence = /^[ \t]*(`{3,}|~{3,})[ \t]*\r?\n?$/u.exec(candidate)?.[1];
+      const closingFence = /^ {0,3}(`{3,}|~{3,})[ \t]*\r?\n?$/u.exec(candidate)?.[1];
       if (
         closingFence !== undefined
-        && closingFence[0] === openingFence[0]
-        && closingFence.length >= openingFence.length
+        && closingFence[0] === opening.fence[0]
+        && closingFence.length >= opening.fence.length
       ) {
         closingIndex = candidateIndex;
         break;
       }
     }
-    if (closingIndex < 0) {
-      redacted.push(openingLine);
-      continue;
-    }
 
-    const bodyLines = lines.slice(index + 1, closingIndex);
+    const bodyEnd = closingIndex < 0 ? lines.length : closingIndex;
+    const bodyLines = lines.slice(index + 1, bodyEnd);
     const yamlBody = bodyLines
-      .map((line) => stripBlockquoteDepth(line, opening.depth) ?? line)
+      .map((line) => stripFenceBodyContainer(line, opening))
       .join('');
-    const redactedBody = redactYamlCredentials(yamlBody);
+    const redactedBody = redactYamlFenceBody(yamlBody);
     redacted.push(openingLine);
-    redacted.push(
-      redactedBody === yamlBody
-        ? bodyLines.join('')
-        : prefixLines(redactedBody, opening.prefix),
-    );
-    redacted.push(lines[closingIndex] ?? '');
-    index = closingIndex;
+    redacted.push(redactedBody === yamlBody ? bodyLines.join('') : prefixFenceBody(redactedBody, opening));
+    if (closingIndex >= 0) {
+      redacted.push(lines[closingIndex] ?? '');
+      index = closingIndex;
+    } else {
+      index = lines.length;
+    }
   }
 
   return redacted.join('');

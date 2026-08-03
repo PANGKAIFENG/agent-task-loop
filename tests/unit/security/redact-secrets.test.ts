@@ -208,4 +208,197 @@ describe('redactSecrets', () => {
     expect(redacted).toContain('> next: keep');
     expect(redacted).toContain('[REDACTED]');
   });
+
+  it.each([
+    ['unordered list', [
+      '- ```yaml',
+      '  ? password',
+      '  : "prefix-private',
+      '    suffix-private"',
+      '  next: keep',
+      '  ```',
+    ].join('\n')],
+    ['blockquote ordered list', [
+      '> 1. ```yaml',
+      '>    {password: !!str \'prefix-private\'\'suffix-private\', next: keep}',
+      '>    ```',
+    ].join('\n')],
+    ['tab-indented list', [
+      '-\t```yaml',
+      '\t? password',
+      '\t: "prefix-private',
+      '\t  suffix-private"',
+      '\tnext: keep',
+      '\t````',
+    ].join('\n')],
+    ['nested unordered list', [
+      '- - ```yaml',
+      '    ? password',
+      '    : "prefix-private',
+      '      suffix-private"',
+      '    next: keep',
+      '    ````',
+    ].join('\n')],
+    ['nested mixed list in a blockquote', [
+      '> 1. - ~~~yml',
+      '>      {password: !!str \'prefix-private\'\'suffix-private\', next: keep}',
+      '>      ~~~',
+    ].join('\n')],
+    ['list followed by a blockquote', [
+      '- > ```yaml',
+      '  > ? password',
+      '  > : "prefix-private',
+      '  >   suffix-private"',
+      '  > next: keep',
+      '  > ```',
+    ].join('\n')],
+    ['blockquote-list-blockquote nesting', [
+      '> - > ~~~yml',
+      '>   > {password: !!str \'prefix-private\'\'suffix-private\', next: keep}',
+      '>   > ~~~',
+    ].join('\n')],
+    ['nested lists followed by a blockquote', [
+      '- - > ```yaml',
+      '    > password: "prefix-private',
+      '    >   suffix-private"',
+      '    > next: keep',
+      '    > ```',
+    ].join('\n')],
+  ])('redacts YAML credentials inside a Markdown %s fence', (_label, source) => {
+    const redacted = redactSecrets(source);
+
+    expect(redacted).not.toContain('prefix-private');
+    expect(redacted).not.toContain('suffix-private');
+    expect(redacted).toContain('keep');
+    expect(redacted).toContain('[REDACTED]');
+  });
+
+  it.each([
+    ['plain fence', [
+      '```yaml',
+      '? password',
+      ': |',
+      '    ```',
+      '    suffix-private',
+      'next: keep',
+      '```',
+    ].join('\n')],
+    ['blockquote fence', [
+      '> ```yaml',
+      '> ? password',
+      '> : |',
+      '>     ```',
+      '>     suffix-private',
+      '> next: keep',
+      '> ```',
+    ].join('\n')],
+  ])('does not treat indented fence-like YAML content as the %s closer', (_label, source) => {
+    const redacted = redactSecrets(source);
+
+    expect(redacted).not.toContain('suffix-private');
+    expect(redacted).toContain('next: keep');
+    expect(redacted).toContain('[REDACTED]');
+  });
+
+  it('fails closed for an unclosed Markdown YAML fence', () => {
+    const source = [
+      '配置如下：',
+      '```yaml',
+      '? password',
+      ': "prefix-private',
+      '  suffix-private"',
+    ].join('\n');
+
+    const redacted = redactSecrets(source);
+
+    expect(redacted).not.toContain('prefix-private');
+    expect(redacted).not.toContain('suffix-private');
+    expect(redacted).toContain('[REDACTED]');
+  });
+
+  it('keeps content after a closed nested fence when blockquote indentation varies', () => {
+    const source = [
+      '   > - ```yaml',
+      '>   password: prefix-private',
+      '>   next: keep',
+      '>   ```',
+      'after: preserve',
+    ].join('\n');
+
+    const redacted = redactSecrets(source);
+
+    expect(redacted).not.toContain('prefix-private');
+    expect(redacted).toContain('>   next: keep');
+    expect(redacted).toContain('>   ```');
+    expect(redacted).toContain('\nafter: preserve');
+    expect(redacted).not.toContain('>   after: preserve');
+  });
+
+  it.each([
+    ['plain fence', [
+      '   ```yaml',
+      'password: prefix-private',
+      'next: keep',
+      '```',
+      'after: preserve',
+    ].join('\n')],
+    ['blockquote fence', [
+      '>    ~~~yaml',
+      '> password: prefix-private',
+      '> next: keep',
+      '> ~~~',
+      'after: preserve',
+    ].join('\n')],
+  ])('allows independent opening and closing indentation for a %s', (_label, source) => {
+    const redacted = redactSecrets(source);
+
+    expect(redacted).not.toContain('prefix-private');
+    expect(redacted).toContain('next: keep');
+    expect(redacted).toContain('\nafter: preserve');
+  });
+
+  it('fails closed when unrelated malformed YAML follows a credential', () => {
+    const source = [
+      '```yaml',
+      "{password: !!str 'prefix-private''suffix-private', next: keep}",
+      'broken: [',
+      '```',
+    ].join('\n');
+
+    const redacted = redactSecrets(source);
+
+    expect(redacted).not.toContain('prefix-private');
+    expect(redacted).not.toContain('suffix-private');
+    expect(redacted).toContain('keep');
+    expect(redacted).toContain('[REDACTED]');
+  });
+
+  it.each([
+    ['implicit mapping', [
+      '```yaml',
+      'password: !!str',
+      '  &credential "prefix-private',
+      '  suffix-private"',
+      'next: keep',
+      'broken: [',
+      '```',
+    ].join('\n')],
+    ['explicit mapping', [
+      '```yaml',
+      '? password',
+      ': !!str',
+      '  &credential "prefix-private',
+      '  suffix-private"',
+      'next: keep',
+      'broken: [',
+      '```',
+    ].join('\n')],
+  ])('fails closed for a property-split credential before malformed YAML in an %s', (_label, source) => {
+    const redacted = redactSecrets(source);
+
+    expect(redacted).not.toContain('prefix-private');
+    expect(redacted).not.toContain('suffix-private');
+    expect(redacted).toContain('keep');
+    expect(redacted).toContain('[REDACTED]');
+  });
 });
