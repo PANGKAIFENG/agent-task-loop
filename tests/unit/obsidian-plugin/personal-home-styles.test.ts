@@ -159,15 +159,29 @@ describe('personal home heatmap styles', () => {
       .toMatch(/grid-template-rows\s*:/);
     expect(declarationsFor(css, '.atl-weekly-coach-content'))
       .toMatch(/overflow\s*:\s*hidden/);
-    expect(declarationsFor(css, '.atl-weekly-coach-modal.atl-weekly-coach-modal--busy'))
-      .toMatch(/height\s*:\s*min\(480px,\s*calc\(100vh\s*-\s*48px\)\)/);
-    expect(declarationsFor(css, '.atl-weekly-coach-progress-step'))
-      .toMatch(/grid-template-columns\s*:/);
-    expect(declarationsFor(css, '.atl-weekly-coach-choice-grid'))
-      .toMatch(/grid-template-columns\s*:\s*repeat\(2/);
-    expect(declarationsFor(css, '.atl-weekly-coach-choice'))
-      .toMatch(/text-align\s*:\s*left/);
-    expect(declarationsFor(css, '.atl-weekly-coach-choice small'))
-      .toMatch(/font-size\s*:\s*11px/);
+    expect(declarationsFor(css, '.atl-weekly-coach-main'))
+      .toMatch(/grid-template-columns\s*:\s*minmax\(0,\s*1\.35fr\)\s+minmax\(300px,\s*0\.85fr\)/);
+    expect(declarationsFor(css, '.atl-weekly-coach-conversation'))
+      .toMatch(/overflow-y\s*:\s*auto/);
+    expect(declarationsFor(css, '.atl-weekly-coach-draft-panel'))
+      .toMatch(/overflow-y\s*:\s*auto/);
+    expect(css)
+      .toMatch(/@media\s*\(max-width:\s*760px\)[\s\S]*\.atl-weekly-coach-main[\s\S]*grid-template-columns\s*:\s*1fr/);
+  });
+
+  it('uses the confirmed restrained status and action colors', async () => {
+    const css = await readFile(
+      new URL('../../../src/obsidian-plugin/styles.css', import.meta.url),
+      'utf8',
+    );
+
+    expect(declarationsFor(css, '.atl-weekly-coach-draft-card'))
+      .toMatch(/border-radius\s*:\s*8px/);
+    expect(declarationsFor(css, '.atl-weekly-coach-model-status'))
+      .toMatch(/color\s*:\s*#00a8c6/);
+    expect(declarationsFor(css, '.atl-weekly-coach-card-heading .is-pending'))
+      .toMatch(/color\s*:\s*#d97706/);
+    expect(declarationsFor(css, '.atl-weekly-coach-footer .mod-cta'))
+      .toMatch(/background\s*:\s*#6a00ff/);
   });
 });
