@@ -122,7 +122,10 @@ const coachResult: WeeklyCoachResult = {
 
 function button(modal: WeeklyThinkingCoachModal, label: string): HTMLButtonElement {
   const match = [...modal.contentEl.querySelectorAll<HTMLButtonElement>('button')]
-    .find((item) => item.textContent?.trim() === label);
+    .find((item) => (
+      item.getAttribute('aria-label') === label
+      || item.textContent?.trim() === label
+    ));
   if (match === undefined) throw new Error(`Missing button: ${label}`);
   return match;
 }
@@ -130,13 +133,19 @@ function button(modal: WeeklyThinkingCoachModal, label: string): HTMLButtonEleme
 function setup(options: {
   initial?: WeeklyFocusDocument | null;
   coach?: WeeklyCoachResult | Error;
-  coachOperation?: () => Promise<WeeklyCoachResult>;
+  coachOperation?: (control?: {
+    signal: AbortSignal;
+    onProgress(progress: unknown): void;
+  }) => Promise<WeeklyCoachResult>;
   allowed?: () => boolean;
   confirmOperation?: (input: WeeklyFocusInput) => Promise<WeeklyFocusDocument>;
   saveDraftError?: Error;
 } = {}) {
-  const runCoach = vi.fn(async () => {
-    if (options.coachOperation !== undefined) return options.coachOperation();
+  const runCoach = vi.fn(async (_turn: unknown, control?: {
+    signal: AbortSignal;
+    onProgress(progress: unknown): void;
+  }) => {
+    if (options.coachOperation !== undefined) return options.coachOperation(control);
     if (options.coach instanceof Error) throw options.coach;
     return options.coach ?? coachResult;
   });
@@ -202,16 +211,19 @@ describe('WeeklyThinkingCoachModal', () => {
     topic.dispatchEvent(new window.Event('input', { bubbles: true }));
 
     button(modal, '确认并开始').click();
-    expect(modal.contentEl.textContent).toContain('正在整理背景');
+    expect(modal.contentEl.textContent).toContain('正在准备本周教练建议');
     await vi.waitFor(() => expect(modal.contentEl.textContent).toContain(coachResult.currentQuestion));
-    expect(runCoach).toHaveBeenCalledWith(expect.objectContaining({
-      topic: '这周是否应该收敛产品边界？',
-      selectedSources: ['目标', '项目', '任务', '日历', '周复盘'],
-    }));
+    expect(runCoach).toHaveBeenCalledWith(
+      expect.objectContaining({
+        topic: '这周是否应该收敛产品边界？',
+        selectedSources: ['目标', '项目', '任务', '日历', '周复盘'],
+      }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
     expect(modal.contentEl.textContent).toContain('已确认事实');
     expect(modal.contentEl.textContent).toContain('可考虑方向');
 
-    button(modal, '整理我的判断').click();
+    button(modal, '结束讨论，进入确认').click();
     expect(modal.contentEl.textContent).toContain('这是对你表达的整理，不是 AI 替你决定');
     expect(modal.contentEl.querySelector<HTMLTextAreaElement>(
       'textarea[aria-label="第1项真正想解决的问题"]',
@@ -241,6 +253,20 @@ describe('WeeklyThinkingCoachModal', () => {
     )?.value).toBe('需要人工继续的问题');
   });
 
+  it('distinguishes a three-minute timeout from a general model failure', async () => {
+    const timeout = Object.assign(new Error('timed out'), { code: 'claude_timeout' });
+    const { modal } = setup({ coach: timeout });
+    modal.open();
+    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('从一个困惑开始'));
+
+    button(modal, '确认并开始').click();
+
+    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('等待已超时'));
+    expect(modal.contentEl.textContent).toContain('达到 3 分钟');
+    expect(modal.contentEl.textContent).toContain('重新尝试');
+    expect(modal.contentEl.textContent).toContain('直接人工整理');
+  });
+
   it('resumes a saved draft and saves it without requiring AI', async () => {
     const draft = weeklyDocument('草稿');
     const { modal, saveDraft } = setup({ initial: draft });
@@ -248,7 +274,7 @@ describe('WeeklyThinkingCoachModal', () => {
 
     await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('继续本周思考'));
     expect(modal.contentEl.textContent).toContain(draft.record.input.currentQuestion);
-    button(modal, '整理我的判断').click();
+    button(modal, '结束讨论，进入确认').click();
     const judgment = modal.contentEl.querySelector<HTMLTextAreaElement>(
       'textarea[aria-label="第1项用户最终判断"]',
     )!;
@@ -276,7 +302,7 @@ describe('WeeklyThinkingCoachModal', () => {
     modal.open();
 
     await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('继续本周思考'));
-    button(modal, '调整本次授权').click();
+    button(modal, '修改 AI 读取范围').click();
 
     expect(modal.contentEl.querySelector<HTMLInputElement>(
       'input[aria-label="授权笔记同步助手"]',
@@ -297,13 +323,14 @@ describe('WeeklyThinkingCoachModal', () => {
     modal.open();
     await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('继续本周思考'));
 
-    button(modal, '回答并继续').click();
+    button(modal, '提交回答，继续讨论').click();
 
     await vi.waitFor(() => expect(runCoach).toHaveBeenCalledWith(
       expect.objectContaining({
         selectedSources: ['目标', '项目', '任务', '日历', '周复盘'],
         previousSummary: null,
       }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     ));
   });
 
@@ -411,6 +438,143 @@ describe('WeeklyThinkingCoachModal', () => {
       null,
     ));
     finishCoach?.(coachResult);
+  });
+
+  it('shows real coach stages, source statistics, elapsed time, and slow-response guidance', async () => {
+    vi.useFakeTimers();
+    try {
+      const pendingCoach = new Promise<WeeklyCoachResult>(() => undefined);
+      const { modal } = setup({
+        coachOperation: async (control) => {
+          control?.onProgress({
+            stage: 'context_ready',
+            sourceCount: 5,
+            documentCount: 23,
+            totalCharacters: 31_824,
+          });
+          control?.onProgress({ stage: 'model_started' });
+          return pendingCoach;
+        },
+      });
+      modal.open();
+      await Promise.resolve();
+
+      button(modal, '确认并开始').click();
+
+      expect(modal.contentEl.textContent).toContain('已读取授权资料');
+      expect(modal.contentEl.textContent).toContain('5 类 · 23 篇 · 31,824 字');
+      expect(modal.contentEl.textContent).toContain('Claude Code 已启动');
+      expect(modal.contentEl.textContent).toContain('正在等待教练整理');
+      expect(modal.contentEl.textContent).toContain('00:00 / 最长 03:00');
+
+      await vi.advanceTimersByTimeAsync(45_000);
+
+      expect(modal.contentEl.textContent).toContain('00:45 / 最长 03:00');
+      expect(modal.contentEl.textContent).toContain('响应比平时慢');
+      modal.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('enforces the displayed three-minute limit across the whole coach operation', async () => {
+    vi.useFakeTimers();
+    try {
+      const pendingCoach = new Promise<WeeklyCoachResult>(() => undefined);
+      const { modal, runCoach } = setup({ coachOperation: async () => pendingCoach });
+      modal.open();
+      await Promise.resolve();
+
+      button(modal, '确认并开始').click();
+      const control = runCoach.mock.calls[0]?.[1] as { signal: AbortSignal };
+
+      await vi.advanceTimersByTimeAsync(180_000);
+
+      expect(control.signal.aborted).toBe(true);
+      expect(modal.contentEl.textContent).toContain('等待已超时');
+      expect(modal.contentEl.textContent).toContain('达到 3 分钟');
+      expect(modal.contentEl.textContent).toContain('重新尝试');
+      expect(modal.contentEl.textContent).not.toContain('停止等待');
+      modal.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops the active coach request and keeps the session input', async () => {
+    const pendingCoach = new Promise<WeeklyCoachResult>(() => undefined);
+    const { modal, runCoach } = setup({
+      coachOperation: async () => pendingCoach,
+    });
+    modal.open();
+    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('从一个困惑开始'));
+    const topic = modal.contentEl.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="本周想讨论的问题"]',
+    )!;
+    topic.value = '停止后仍要保留的判断';
+    topic.dispatchEvent(new window.Event('input', { bubbles: true }));
+
+    button(modal, '确认并开始').click();
+    const control = runCoach.mock.calls[0]?.[1] as { signal: AbortSignal };
+    button(modal, '停止等待').click();
+
+    expect(control.signal.aborted).toBe(true);
+    expect(modal.contentEl.textContent).toContain('已停止 AI 整理');
+    expect(modal.contentEl.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="本周想讨论的问题"]',
+    )?.value).toBe('停止后仍要保留的判断');
+  });
+
+  it('aborts the coach and opens manual organization without losing input', async () => {
+    const pendingCoach = new Promise<WeeklyCoachResult>(() => undefined);
+    const { modal, runCoach } = setup({ coachOperation: async () => pendingCoach });
+    modal.open();
+    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('从一个困惑开始'));
+    const topic = modal.contentEl.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="本周想讨论的问题"]',
+    )!;
+    topic.value = '人工继续整理的判断';
+    topic.dispatchEvent(new window.Event('input', { bubbles: true }));
+
+    button(modal, '确认并开始').click();
+    const control = runCoach.mock.calls[0]?.[1] as { signal: AbortSignal };
+    button(modal, '转为人工整理').click();
+
+    expect(control.signal.aborted).toBe(true);
+    expect(modal.contentEl.textContent).toContain('这是对你表达的整理');
+    expect(modal.contentEl.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="第1项真正想解决的问题"]',
+    )?.value).toBe('人工继续整理的判断');
+  });
+
+  it('aborts the coach process when the modal closes', async () => {
+    const pendingCoach = new Promise<WeeklyCoachResult>(() => undefined);
+    const { modal, runCoach } = setup({ coachOperation: async () => pendingCoach });
+    modal.open();
+    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('从一个困惑开始'));
+
+    button(modal, '确认并开始').click();
+    const control = runCoach.mock.calls[0]?.[1] as { signal: AbortSignal };
+    modal.close();
+
+    expect(control.signal.aborted).toBe(true);
+  });
+
+  it('explains the result actions and distinguishes analysis from Obsidian persistence', async () => {
+    const { modal } = setup({ initial: weeklyDocument('草稿') });
+    modal.open();
+
+    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('继续本周思考'));
+    const actionPanel = modal.contentEl.querySelector('.atl-weekly-coach-result-actions');
+    const choices = actionPanel?.querySelectorAll('.atl-weekly-coach-choice');
+
+    expect(actionPanel?.textContent).toContain('想调整资料来源？');
+    expect(actionPanel?.textContent).toContain('修改 AI 读取范围');
+    expect(choices).toHaveLength(2);
+    expect(choices?.[0]?.textContent).toContain('提交回答，继续讨论');
+    expect(choices?.[0]?.textContent).toContain('AI 会结合当前回答再分析一轮，不会写入 Obsidian');
+    expect(choices?.[1]?.textContent).toContain('结束讨论，进入确认');
+    expect(choices?.[1]?.textContent).toContain('把当前建议整理成可编辑清单，下一步确认后才写入 Obsidian');
   });
 
   it('notifies the user when close-triggered draft saving fails', async () => {

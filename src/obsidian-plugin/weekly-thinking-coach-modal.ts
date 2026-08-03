@@ -7,10 +7,16 @@ import type {
   WeeklyFocusInput,
   WeeklyFocusItem,
 } from '../services/weekly-focus.js';
-import type { WeeklyCoachResult } from './weekly-thinking-coach.js';
+import type {
+  WeeklyCoachResult,
+  WeeklyThinkingCoachProgress,
+  WeeklyThinkingCoachRunControl,
+} from './weekly-thinking-coach.js';
 
 const DEFAULT_SOURCES: WeeklyCoachSource[] = ['目标', '项目', '任务', '日历', '周复盘'];
 const SENSITIVE_SOURCES = new Set<WeeklyCoachSource>(['笔记同步助手', '每日所思']);
+const COACH_TIMEOUT_SECONDS = 180;
+const SLOW_RESPONSE_SECONDS = 45;
 
 type CoachView = 'loading' | 'start' | 'coaching' | 'organize' | 'confirmed';
 
@@ -28,7 +34,10 @@ export interface WeeklyThinkingCoachModalDependencies {
   week: string;
   modelLabel: string;
   load(): Promise<WeeklyFocusDocument | null>;
-  runCoach(input: WeeklyThinkingCoachTurn): Promise<WeeklyCoachResult>;
+  runCoach(
+    input: WeeklyThinkingCoachTurn,
+    control: WeeklyThinkingCoachRunControl,
+  ): Promise<WeeklyCoachResult>;
   saveDraft(
     input: WeeklyFocusInput,
     expectedContent: string | null,
@@ -42,6 +51,12 @@ export interface WeeklyThinkingCoachModalDependencies {
   openRecord(path: string): Promise<void>;
   notify(message: string): void;
 }
+
+type CoachProgress =
+  | { stage: 'collecting' }
+  | WeeklyThinkingCoachProgress;
+
+type CoachFailure = 'timeout' | 'unavailable' | null;
 
 function emptyInput(): WeeklyFocusInput {
   return {
@@ -104,6 +119,13 @@ export class WeeklyThinkingCoachModal extends Modal {
   private finalized = false;
   private closed = false;
   private priorSensitiveSources = new Set<WeeklyCoachSource>();
+  private coachProgress: CoachProgress = { stage: 'collecting' };
+  private lastContextStatistics: string | null = null;
+  private coachFailure: CoachFailure = null;
+  private coachAbortController: AbortController | null = null;
+  private elapsedSeconds = 0;
+  private elapsedTimer: ReturnType<typeof setInterval> | null = null;
+  private deadlineTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     app: App,
@@ -123,6 +145,7 @@ export class WeeklyThinkingCoachModal extends Modal {
 
   override onClose(): void {
     this.closed = true;
+    this.abortActiveCoach();
     if (
       !this.finalized
       && !this.persisting
@@ -172,6 +195,7 @@ export class WeeklyThinkingCoachModal extends Modal {
 
   private render(): void {
     this.contentEl.empty();
+    this.modalEl.classList.toggle('atl-weekly-coach-modal--busy', this.busy);
     if (this.view === 'loading') {
       this.contentEl.createDiv({ cls: 'atl-weekly-coach-loading', text: '正在读取本周判断...' });
       return;
@@ -250,16 +274,20 @@ export class WeeklyThinkingCoachModal extends Modal {
 
   private renderCoaching(container: HTMLElement): void {
     if (this.busy) {
-      const loading = container.createDiv({ cls: 'atl-weekly-coach-loading' });
-      loading.createEl('strong', { text: '正在整理背景' });
-      loading.createEl('p', { text: '教练正在区分事实、推测和仍需补充的信息。' });
+      this.renderCoachProgress(container);
       return;
     }
 
-    if (this.coachResult === null && this.error !== '') {
+    if (this.error !== '') {
       const failure = container.createDiv({ cls: 'atl-weekly-coach-failure' });
-      failure.createEl('h3', { text: 'AI 暂时不可用' });
-      failure.createEl('p', { text: '你的输入仍保留，可以重试，也可以直接人工整理。' });
+      failure.createEl('h3', {
+        text: this.coachFailure === 'timeout' ? '等待已超时' : 'AI 暂时不可用',
+      });
+      failure.createEl('p', {
+        text: this.coachFailure === 'timeout'
+          ? '本次等待已达到 3 分钟。你的输入仍保留，可以重试或转为人工整理。'
+          : '你的输入仍保留，可以重试，也可以直接人工整理。',
+      });
       const actions = failure.createDiv({ cls: 'atl-weekly-coach-actions' });
       this.appendButton(actions, '重新尝试', () => { void this.runCoach(); });
       this.appendButton(actions, '直接人工整理', () => this.openOrganizer(), true);
@@ -289,18 +317,110 @@ export class WeeklyThinkingCoachModal extends Modal {
 
     this.renderBackground(container);
     this.renderDirections(container);
-    const actions = container.createDiv({ cls: 'atl-weekly-coach-actions' });
-    this.appendButton(actions, '调整本次授权', () => {
+    const resultActions = container.createDiv({ cls: 'atl-weekly-coach-result-actions' });
+    const scopeAction = resultActions.createDiv({ cls: 'atl-weekly-coach-scope-action' });
+    scopeAction.createEl('span', { text: '想调整资料来源？' });
+    this.appendButton(scopeAction, '修改 AI 读取范围', () => {
       this.view = 'start';
       this.message = '';
       this.render();
     });
+    const choices = resultActions.createDiv({ cls: 'atl-weekly-coach-choice-grid' });
     if (this.input.currentQuestion !== '') {
-      this.appendButton(actions, '回答并继续', () => { void this.runCoach(); });
+      this.appendCoachChoice(
+        choices,
+        '提交回答，继续讨论',
+        'AI 会结合当前回答再分析一轮，不会写入 Obsidian',
+        () => { void this.runCoach(); },
+      );
     } else {
-      this.appendButton(actions, '重新整理背景', () => { void this.runCoach(); });
+      this.appendCoachChoice(
+        choices,
+        '让 AI 再分析一轮',
+        '重新整理当前背景与方向，不会写入 Obsidian',
+        () => { void this.runCoach(); },
+      );
     }
-    this.appendButton(actions, '整理我的判断', () => this.openOrganizer(), true);
+    this.appendCoachChoice(
+      choices,
+      '结束讨论，进入确认',
+      '把当前建议整理成可编辑清单，下一步确认后才写入 Obsidian',
+      () => this.openOrganizer(),
+      true,
+    );
+  }
+
+  private renderCoachProgress(container: HTMLElement): void {
+    const progress = container.createDiv({ cls: 'atl-weekly-coach-progress' });
+    const heading = progress.createDiv({ cls: 'atl-weekly-coach-progress-heading' });
+    heading.createEl('strong', { text: '正在准备本周教练建议' });
+    heading.createEl('span', {
+      text: `${this.formatElapsed(this.elapsedSeconds)} / 最长 03:00`,
+    });
+
+    const stage = this.progressStageNumber();
+    const steps = progress.createDiv({ cls: 'atl-weekly-coach-progress-steps' });
+    this.appendProgressStep(
+      steps,
+      1,
+      stage,
+      stage > 1 ? '已读取授权资料' : '正在读取授权资料',
+      this.coachProgress.stage === 'collecting'
+        ? '从本次允许读取的范围中准备背景'
+        : this.contextStatistics(),
+    );
+    this.appendProgressStep(
+      steps,
+      2,
+      stage,
+      stage > 2 ? 'Claude Code 已启动' : '正在启动 Claude Code',
+      this.dependencies.modelLabel,
+    );
+    this.appendProgressStep(
+      steps,
+      3,
+      stage,
+      stage > 3 ? '教练整理已完成' : '正在等待教练整理',
+      '正在区分事实、推测、信息缺口与可考虑方向',
+    );
+    this.appendProgressStep(
+      steps,
+      4,
+      stage,
+      '解析并展示结果',
+      '把结构化结果转换为可继续讨论的界面',
+    );
+
+    if (this.elapsedSeconds >= SLOW_RESPONSE_SECONDS) {
+      progress.createDiv({
+        cls: 'atl-weekly-coach-slow-notice',
+        text: '响应比平时慢，但仍在 3 分钟等待范围内。你可以继续等待，或转为人工整理。',
+      });
+    }
+
+    const actions = progress.createDiv({ cls: 'atl-weekly-coach-actions' });
+    this.appendButton(actions, '停止等待', () => this.stopCoach(false), false, true);
+    this.appendButton(actions, '转为人工整理', () => this.stopCoach(true), false, true);
+  }
+
+  private appendProgressStep(
+    container: HTMLElement,
+    step: number,
+    activeStep: number,
+    label: string,
+    detail: string,
+  ): void {
+    const status = step < activeStep ? 'complete' : step === activeStep ? 'active' : 'pending';
+    const row = container.createDiv({
+      cls: `atl-weekly-coach-progress-step is-${status}`,
+    });
+    row.createEl('span', {
+      cls: 'atl-weekly-coach-progress-marker',
+      text: status === 'complete' ? '✓' : status === 'active' ? '●' : '○',
+    });
+    const copy = row.createDiv();
+    copy.createEl('strong', { text: label });
+    copy.createEl('small', { text: detail });
   }
 
   private renderBackground(container: HTMLElement): void {
@@ -438,6 +558,12 @@ export class WeeklyThinkingCoachModal extends Modal {
 
   private async runCoach(): Promise<void> {
     if (this.busy) return;
+    const controller = new AbortController();
+    this.coachAbortController = controller;
+    this.coachProgress = { stage: 'collecting' };
+    this.lastContextStatistics = null;
+    this.coachFailure = null;
+    this.elapsedSeconds = 0;
     this.busy = true;
     this.error = '';
     this.message = '';
@@ -446,6 +572,7 @@ export class WeeklyThinkingCoachModal extends Modal {
     const answer = this.latestAnswer.trim();
     if (answer !== '') this.input.keyAnswers.push(answer);
     this.latestAnswer = '';
+    this.startElapsedTimer(controller);
     this.render();
     try {
       const result = await this.dependencies.runCoach({
@@ -456,8 +583,19 @@ export class WeeklyThinkingCoachModal extends Modal {
         previousSummary: this.canReusePreviousSummary()
           ? this.input.coachSummary || null
           : null,
+      }, {
+        signal: controller.signal,
+        onProgress: (progress) => {
+          if (
+            this.closed
+            || controller.signal.aborted
+            || this.coachAbortController !== controller
+          ) return;
+          this.coachProgress = progress;
+          this.render();
+        },
       });
-      if (this.closed) return;
+      if (this.closed || controller.signal.aborted) return;
       this.coachResult = result;
       this.input.background = {
         facts: [...result.background.facts],
@@ -477,14 +615,105 @@ export class WeeklyThinkingCoachModal extends Modal {
       this.priorSensitiveSources = new Set(
         this.input.selectedSources.filter((source) => SENSITIVE_SOURCES.has(source)),
       );
-    } catch {
-      if (this.closed) return;
+    } catch (error) {
+      if (this.closed || controller.signal.aborted) return;
       this.coachResult = null;
-      this.error = 'AI 暂时不可用。你的输入没有丢失。';
+      this.coachFailure = this.isTimeoutError(error) ? 'timeout' : 'unavailable';
+      this.error = this.coachFailure === 'timeout'
+        ? '等待已超过 3 分钟。你的输入没有丢失。'
+        : 'AI 暂时不可用。你的输入没有丢失。';
     } finally {
-      this.busy = false;
-      if (!this.closed) this.render();
+      if (this.coachAbortController === controller) {
+        this.coachAbortController = null;
+        this.stopElapsedTimer();
+        this.busy = false;
+        if (!this.closed) this.render();
+      }
     }
+  }
+
+  private stopCoach(openManualOrganizer: boolean): void {
+    if (this.coachAbortController === null) return;
+    this.abortActiveCoach();
+    this.busy = false;
+    this.coachFailure = null;
+    if (openManualOrganizer) {
+      this.openOrganizer();
+      return;
+    }
+    this.view = 'start';
+    this.message = '已停止 AI 整理，你的输入仍保留。';
+    this.render();
+  }
+
+  private abortActiveCoach(): void {
+    const controller = this.coachAbortController;
+    this.coachAbortController = null;
+    this.stopElapsedTimer();
+    controller?.abort();
+  }
+
+  private startElapsedTimer(controller: AbortController): void {
+    this.stopElapsedTimer();
+    this.elapsedTimer = setInterval(() => {
+      if (!this.busy || this.closed) return;
+      this.elapsedSeconds = Math.min(this.elapsedSeconds + 1, COACH_TIMEOUT_SECONDS);
+      this.render();
+    }, 1_000);
+    this.deadlineTimer = setTimeout(() => {
+      this.timeoutCoach(controller);
+    }, COACH_TIMEOUT_SECONDS * 1_000);
+  }
+
+  private stopElapsedTimer(): void {
+    if (this.elapsedTimer !== null) {
+      clearInterval(this.elapsedTimer);
+      this.elapsedTimer = null;
+    }
+    if (this.deadlineTimer !== null) {
+      clearTimeout(this.deadlineTimer);
+      this.deadlineTimer = null;
+    }
+  }
+
+  private timeoutCoach(controller: AbortController): void {
+    if (this.coachAbortController !== controller || this.closed) return;
+    this.coachAbortController = null;
+    this.stopElapsedTimer();
+    controller.abort();
+    this.coachFailure = 'timeout';
+    this.error = '等待已超过 3 分钟。你的输入没有丢失。';
+    this.busy = false;
+    this.render();
+  }
+
+  private progressStageNumber(): number {
+    if (this.coachProgress.stage === 'collecting') return 1;
+    if (this.coachProgress.stage === 'context_ready') return 2;
+    if (this.coachProgress.stage === 'model_started') return 3;
+    return 4;
+  }
+
+  private contextStatistics(): string {
+    if (this.coachProgress.stage === 'collecting') return '';
+    if (this.coachProgress.stage === 'model_started' || this.coachProgress.stage === 'parsing') {
+      return this.lastContextStatistics ?? '授权资料已准备完成';
+    }
+    const statistics = `${this.coachProgress.sourceCount} 类 · ${this.coachProgress.documentCount} 篇 · ${new Intl.NumberFormat('zh-CN').format(this.coachProgress.totalCharacters)} 字`;
+    this.lastContextStatistics = statistics;
+    return statistics;
+  }
+
+  private formatElapsed(seconds: number): string {
+    const minutes = Math.floor(seconds / 60).toString().padStart(2, '0');
+    const remaining = (seconds % 60).toString().padStart(2, '0');
+    return `${minutes}:${remaining}`;
+  }
+
+  private isTimeoutError(error: unknown): boolean {
+    return error instanceof Error
+      && 'code' in error
+      && (error as Error & { code?: unknown }).code === 'claude_timeout';
   }
 
   private openOrganizer(): void {
@@ -584,10 +813,30 @@ export class WeeklyThinkingCoachModal extends Modal {
     label: string,
     onClick: () => void,
     primary = false,
+    allowWhileBusy = false,
   ): HTMLButtonElement {
     const button = container.createEl('button', primary
       ? { cls: 'mod-cta', text: label, type: 'button' }
       : { text: label, type: 'button' });
+    button.disabled = this.busy && !allowWhileBusy;
+    button.addEventListener('click', onClick);
+    return button;
+  }
+
+  private appendCoachChoice(
+    container: HTMLElement,
+    label: string,
+    description: string,
+    onClick: () => void,
+    primary = false,
+  ): HTMLButtonElement {
+    const button = container.createEl('button', {
+      cls: primary ? 'atl-weekly-coach-choice mod-cta' : 'atl-weekly-coach-choice',
+      type: 'button',
+    });
+    button.createEl('strong', { text: label });
+    button.createEl('small', { text: description });
+    button.setAttribute('aria-label', label);
     button.disabled = this.busy;
     button.addEventListener('click', onClick);
     return button;

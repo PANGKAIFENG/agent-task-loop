@@ -539,19 +539,28 @@ export default class AgentTaskLoopPlugin extends Plugin {
       week: currentIsoWeek(clock(), timeZone),
       modelLabel: this.weeklyCoachModelLabel(),
       load: () => loadCurrentWeeklyFocus(gateway, clock, timeZone),
-      runCoach: async (turn) => {
+      runCoach: async (turn, control) => {
         const context = await collectWeeklyCoachContext(
           this.createWeeklyCoachContextGateway(),
           turn.selectedSources,
           { now: clock() },
         );
-        return runWeeklyThinkingCoach(await this.createStructuredExecutor(), {
+        if (control.signal.aborted) throw new Error('weekly_coach_cancelled');
+        control.onProgress({
+          stage: 'context_ready',
+          sourceCount: new Set(context.documents.map(({ source }) => source)).size,
+          documentCount: context.documents.length,
+          totalCharacters: context.totalCharacters,
+        });
+        const executor = await this.createStructuredExecutor();
+        if (control.signal.aborted) throw new Error('weekly_coach_cancelled');
+        return runWeeklyThinkingCoach(executor, {
           topic: turn.topic,
           latestAnswer: turn.latestAnswer,
           keyAnswers: turn.keyAnswers,
           previousSummary: turn.previousSummary,
           context,
-        });
+        }, control);
       },
       saveDraft: (input, expectedContent) => saveWeeklyFocusDraft(
         gateway,

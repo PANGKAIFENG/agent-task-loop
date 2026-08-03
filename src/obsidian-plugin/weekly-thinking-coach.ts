@@ -1,6 +1,9 @@
 import { z } from 'zod';
 
-import type { ClaudeStructuredExecutor } from '../runner/claude-driver.js';
+import type {
+  ClaudeStructuredExecutor,
+  ClaudeStructuredProgress,
+} from '../runner/claude-driver.js';
 import type { WeeklyCoachContext } from '../services/weekly-coach-context.js';
 
 const text = z.string().trim().min(1).max(4_000);
@@ -45,6 +48,20 @@ export interface WeeklyCoachTurnInput {
   keyAnswers: string[];
   previousSummary: string | null;
   context: WeeklyCoachContext;
+}
+
+export type WeeklyThinkingCoachProgress =
+  | {
+    stage: 'context_ready';
+    sourceCount: number;
+    documentCount: number;
+    totalCharacters: number;
+  }
+  | ClaudeStructuredProgress;
+
+export interface WeeklyThinkingCoachRunControl {
+  signal: AbortSignal;
+  onProgress(progress: WeeklyThinkingCoachProgress): void;
 }
 
 const weeklyCoachJsonSchema = {
@@ -198,12 +215,15 @@ function promptFor(input: WeeklyCoachTurnInput): string {
 export async function runWeeklyThinkingCoach(
   executor: ClaudeStructuredExecutor,
   input: WeeklyCoachTurnInput,
+  control?: Pick<WeeklyThinkingCoachRunControl, 'signal' | 'onProgress'>,
 ): Promise<WeeklyCoachResult> {
   const raw = await executor.execute({
     prompt: promptFor(input),
     jsonSchema: weeklyCoachJsonSchema,
     schema: weeklyCoachResultSchema,
     timeoutMs: COACH_TIMEOUT_MS,
+    ...(control?.signal === undefined ? {} : { signal: control.signal }),
+    ...(control?.onProgress === undefined ? {} : { onProgress: control.onProgress }),
   });
   return normalize(
     weeklyCoachResultSchema.parse(raw),
