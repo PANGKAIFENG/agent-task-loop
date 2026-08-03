@@ -1,6 +1,8 @@
 const CREDENTIAL_KEY_SUFFIX_PATTERN = /(?:^|_)(?:API_KEY|ACCESS_TOKEN|AUTH_TOKEN|APP_SECRET|CLIENT_SECRET|PRIVATE_KEY|PASSWORD|PASSWD|CREDENTIAL|TOKEN|SECRET)$/u;
 
-const INLINE_CREDENTIAL_PATTERN = /(?:(?:["'])?\b[A-Za-z0-9_-]*(?:api[_ -]?key|access[_ -]?token|auth[_ -]?token|app[_ -]?secret|client[_ -]?secret|private[_ -]?key|password|passwd|credential|token|secret)\b(?:["'])?)\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)/giu;
+const INLINE_CREDENTIAL_PATTERN = /(?:(?:["'])?\b[A-Za-z0-9_-]*(?:api[_ -]?key|access[_ -]?token|auth[_ -]?token|app[_ -]?secret|client[_ -]?secret|private[_ -]?key|password|passwd|credential|token|secret)\b(?:["'])?)\s*[:=]\s*(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|[^\s,;}]+)/giu;
+
+const YAML_BLOCK_SCALAR_PATTERN = /^(?:(?:![^\s]+|&[^\s]+)\s+)*[|>](?:[+-]?[1-9]?|[1-9][+-]?)(?:\s+#.*)?\r?$/u;
 
 const SECRET_PATTERNS: RegExp[] = [
   /\bsk-[A-Za-z0-9_-]{8,}\b/g,
@@ -51,7 +53,7 @@ function redactStructuredCredentials(value: string): string {
 
     if (
       !separator.includes(':')
-      || !/^[|>](?:[+-]?[1-9]?|[1-9][+-]?)(?:\s+#.*)?\r?$/u.test(rawValue)
+      || !YAML_BLOCK_SCALAR_PATTERN.test(rawValue)
     ) continue;
 
     const blockIndentation = indentationWidth(indentation) + listMarker.length;

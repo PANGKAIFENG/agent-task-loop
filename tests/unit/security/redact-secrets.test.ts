@@ -52,12 +52,40 @@ describe('redactSecrets', () => {
       '      second-private-line',
       '    endpoint: https://example.com',
     ].join('\n')],
+    ['tagged block', [
+      'service:',
+      '  password: !!str |',
+      '    first-private-line',
+      '    second-private-line',
+      '  endpoint: https://example.com',
+    ].join('\n')],
+    ['anchored block', [
+      'service:',
+      '  password: &credential >-',
+      '    first-private-line',
+      '    second-private-line',
+      '  endpoint: https://example.com',
+    ].join('\n')],
   ])('redacts a complete YAML %s credential block', (_label, source) => {
     const redacted = redactSecrets(source);
 
     expect(redacted).not.toContain('first-private-line');
     expect(redacted).not.toContain('second-private-line');
     expect(redacted).toContain('endpoint: https://example.com');
+    expect(redacted).toContain('[REDACTED]');
+  });
+
+  it('redacts an entire compact JSON credential with an escaped quote', () => {
+    const source = JSON.stringify({
+      dbPassword: 'prefix-private"suffix-private',
+      endpoint: 'https://example.com',
+    });
+
+    const redacted = redactSecrets(source);
+
+    expect(redacted).not.toContain('prefix-private');
+    expect(redacted).not.toContain('suffix-private');
+    expect(redacted).toContain('https://example.com');
     expect(redacted).toContain('[REDACTED]');
   });
 });

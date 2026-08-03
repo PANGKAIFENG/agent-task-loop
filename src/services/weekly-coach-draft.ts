@@ -256,15 +256,17 @@ function normalizePersistedDraft(value: unknown, weekKey: string): WeeklyCoachSe
     if (!isRecord(candidate)) return null;
     const id = boundedPersistedString(candidate.id);
     const persistedFocusKey = boundedPersistedString(candidate.focusKey);
-    const deletedFocusKey = persistedFocusKey === null
-      ? null
-      : normalizedPersistedFocusKey(persistedFocusKey);
-    const persistedFocusLabel = Object.hasOwn(candidate, 'focusLabel')
-      ? boundedPersistedString(candidate.focusLabel)
-      : '已删除重点';
-    if (id === null || id.trim() === '' || deletedFocusKey === null || deletedFocusKey === '') {
+    if (id === null || id.trim() === '' || persistedFocusKey === null || persistedFocusKey === '') {
       return null;
     }
+    const deletedFocusKey = normalizedPersistedFocusKey(persistedFocusKey);
+    const legacyFocusLabel = DELETION_FOCUS_KEY_PATTERN.test(persistedFocusKey)
+      ? '已删除重点'
+      : persistedFocusKey;
+    const persistedFocusLabel = Object.hasOwn(candidate, 'focusLabel')
+      ? boundedPersistedString(candidate.focusLabel)
+      : legacyFocusLabel;
+    if (deletedFocusKey === '') return null;
     if (persistedFocusLabel === null) return null;
     deletedItems.push({
       id,

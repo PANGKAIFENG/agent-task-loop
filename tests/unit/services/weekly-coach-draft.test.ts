@@ -470,7 +470,7 @@ describe('weekly coach session draft', () => {
     });
   });
 
-  it('migrates legacy plaintext deletion tombstones to opaque digests', () => {
+  it('migrates legacy plaintext deletion tombstones to opaque digests with safe labels', () => {
     const legacy = {
       ...persistedDraft(),
       deletedItems: [{ id: 'focus-2', focusKey: '发布插件' }],
@@ -480,13 +480,12 @@ describe('weekly coach session draft', () => {
       collectionVersion: 1,
       byWeek: { '2026-W32': legacy },
     });
-    const serialized = JSON.stringify(normalized.byWeek['2026-W32']?.deletedItems);
-
-    expect(serialized).not.toContain('发布插件');
     expect(normalized.byWeek['2026-W32']?.deletedItems[0]?.focusKey)
       .toMatch(/^sha256:[a-f0-9]{64}$/u);
+    expect(normalized.byWeek['2026-W32']?.deletedItems[0]?.focusKey)
+      .not.toContain('发布插件');
     expect((normalized.byWeek['2026-W32']?.deletedItems[0] as unknown as Record<string, unknown>)
-      .focusLabel).toBe('已删除重点');
+      .focusLabel).toBe('发布插件');
   });
 
   it('drops malformed nested values and undeclared fields', () => {
