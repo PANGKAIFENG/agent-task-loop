@@ -132,6 +132,14 @@ describe('redactSecrets', () => {
       "password: 'prefix-private",
       "  suffix-private'",
     ].join('\n')],
+    ['tagged double-quoted scalar', [
+      'password: !!str "prefix-private',
+      '  suffix-private"',
+    ].join('\n')],
+    ['anchored double-quoted scalar', [
+      'password: &credential "prefix-private',
+      '  suffix-private"',
+    ].join('\n')],
   ])('redacts a Markdown-embedded multi-line YAML %s', (_label, credential) => {
     const source = [
       '配置如下：',

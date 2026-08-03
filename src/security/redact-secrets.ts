@@ -4,6 +4,7 @@ const CREDENTIAL_KEY_SUFFIX_PATTERN = /(?:^|_)(?:API_KEY|ACCESS_TOKEN|AUTH_TOKEN
 
 const INLINE_CREDENTIAL_PATTERN = /(?:(?:["'])?\b[A-Za-z0-9_-]*(?:api[_ -]?key|access[_ -]?token|auth[_ -]?token|app[_ -]?secret|client[_ -]?secret|private[_ -]?key|password|passwd|credential|token|secret)\b(?:["'])?)\s*[:=]\s*(?:"(?:\\.|[^"\\\r\n])*"|'(?:''|\\.|[^'\\\r\n])*'|[^\s,;}]+)/giu;
 
+const YAML_NODE_PROPERTIES_PATTERN = /^(?:(?:![^\s]+|&[^\s]+)\s+)*/u;
 const YAML_BLOCK_SCALAR_PATTERN = /^(?:(?:![^\s]+|&[^\s]+)\s+)*[|>](?:[+-]?[1-9]?|[1-9][+-]?)(?:\s+#.*)?\r?$/u;
 
 const SECRET_PATTERNS: RegExp[] = [
@@ -129,14 +130,16 @@ function redactStructuredCredentials(value: string): string {
     redacted.push(`${indentation}${listMarker}${renderedKey}${separator}[REDACTED]${carriageReturn}`);
 
     const trimmedValue = rawValue.trimStart();
-    const scalarQuote = trimmedValue.startsWith('"')
+    const nodeProperties = YAML_NODE_PROPERTIES_PATTERN.exec(trimmedValue)?.[0] ?? '';
+    const scalarValue = trimmedValue.slice(nodeProperties.length);
+    const scalarQuote = scalarValue.startsWith('"')
       ? '"'
-      : trimmedValue.startsWith("'")
+      : scalarValue.startsWith("'")
         ? "'"
         : null;
     if (
       scalarQuote !== null
-      && !hasQuotedScalarTerminator(trimmedValue, scalarQuote, true)
+      && !hasQuotedScalarTerminator(scalarValue, scalarQuote, true)
     ) {
       while (index + 1 < lines.length) {
         index += 1;
