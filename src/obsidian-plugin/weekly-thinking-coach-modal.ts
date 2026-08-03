@@ -358,9 +358,10 @@ export class WeeklyThinkingCoachModal extends Modal {
       const label = list.createEl('label', { cls: 'atl-weekly-coach-source' });
       const checkbox = label.createEl('input', { type: 'checkbox' });
       checkbox.checked = this.session.selectedSources.includes(source);
-      checkbox.disabled = this.busy;
+      checkbox.disabled = this.busy || this.persisting;
       checkbox.setAttribute('aria-label', `授权${source}`);
       checkbox.addEventListener('change', () => {
+        if (this.busy || this.persisting) return;
         this.session = {
           ...this.session,
           selectedSources: checkbox.checked
@@ -404,7 +405,9 @@ export class WeeklyThinkingCoachModal extends Modal {
     });
     textarea.rows = 3;
     textarea.value = this.session.pendingInput;
+    textarea.disabled = this.persisting;
     textarea.addEventListener('input', () => {
+      if (this.persisting) return;
       this.session = { ...this.session, pendingInput: textarea.value };
       send.disabled = this.busy || this.persisting || textarea.value.trim() === '';
       this.changed();
@@ -529,7 +532,9 @@ export class WeeklyThinkingCoachModal extends Modal {
       },
     });
     input.value = item[field];
+    input.disabled = this.persisting;
     input.addEventListener('input', () => {
+      if (this.persisting) return;
       this.session = editWeeklyCoachDraftField(this.session, itemId, field, input.value);
       this.validationIssues = this.validationIssues.filter((issue) => (
         issue.itemId !== itemId || issue.field !== field
@@ -559,8 +564,10 @@ export class WeeklyThinkingCoachModal extends Modal {
     const choice = container.createEl('label', { cls: 'atl-weekly-coach-no-focus' });
     const checkbox = choice.createEl('input', { type: 'checkbox' });
     checkbox.checked = this.session.noNewFocus;
+    checkbox.disabled = this.persisting;
     checkbox.setAttribute('aria-label', '本周暂不新增重点，先完成既有承诺');
     checkbox.addEventListener('change', () => {
+      if (this.persisting) return;
       this.session = { ...this.session, noNewFocus: checkbox.checked };
       this.validationIssues = this.validationIssues.filter((issue) => issue.field !== 'noNewFocus');
       this.changed();
@@ -593,7 +600,10 @@ export class WeeklyThinkingCoachModal extends Modal {
 
   private renderFooter(): void {
     const footer = this.contentEl.createDiv({ cls: 'atl-weekly-coach-footer' });
-    footer.createEl('span', { cls: 'atl-weekly-coach-save-status', text: this.saveStatus });
+    footer.createEl('span', {
+      cls: 'atl-weekly-coach-save-status',
+      text: this.persisting ? '正在写入正式记录' : this.saveStatus,
+    });
     const actions = footer.createDiv({ cls: 'atl-weekly-coach-footer-actions' });
     if (this.isConfirmed()) {
       this.appendTextButton(actions, '打开 Markdown', () => {
@@ -616,7 +626,7 @@ export class WeeklyThinkingCoachModal extends Modal {
   }
 
   private addManualItem(): void {
-    if (this.session.items.length >= 3) return;
+    if (this.persisting || this.session.items.length >= 3) return;
     this.session = {
       ...this.session,
       items: [...this.session.items, createManualWeeklyCoachDraftItem(this.dependencies.createId())],
@@ -644,7 +654,7 @@ export class WeeklyThinkingCoachModal extends Modal {
   }
 
   private async retryCoach(): Promise<void> {
-    if (this.busy || this.lastAnswer === '') return;
+    if (this.busy || this.persisting || this.lastAnswer === '') return;
     this.error = '';
     this.coachFailure = null;
     await this.runCoach(this.lastAnswer);
@@ -740,7 +750,7 @@ export class WeeklyThinkingCoachModal extends Modal {
   }
 
   private stopCoach(): void {
-    if (this.coachAbortController === null) return;
+    if (this.persisting || this.coachAbortController === null) return;
     this.abortActiveCoach();
     this.busy = false;
     this.coachFailure = 'cancelled';
@@ -947,7 +957,11 @@ export class WeeklyThinkingCoachModal extends Modal {
       type: 'button',
       attr: { 'aria-label': label },
     });
-    button.addEventListener('click', onClick);
+    button.disabled = this.persisting;
+    button.addEventListener('click', () => {
+      if (this.persisting) return;
+      onClick();
+    });
     return button;
   }
 
@@ -963,7 +977,11 @@ export class WeeklyThinkingCoachModal extends Modal {
       attr: { 'aria-label': label, title: label },
     });
     setIcon(button, icon);
-    button.addEventListener('click', onClick);
+    button.disabled = this.persisting;
+    button.addEventListener('click', () => {
+      if (this.persisting) return;
+      onClick();
+    });
     return button;
   }
 }

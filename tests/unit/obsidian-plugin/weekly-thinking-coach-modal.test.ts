@@ -644,6 +644,58 @@ describe('WeeklyThinkingCoachModal', () => {
     expect(notify).toHaveBeenCalledWith('正式记录已确认，临时草稿清理失败');
   });
 
+  it('freezes every editing entry while formal confirmation is in flight', async () => {
+    let rejectConfirmation: ((reason: Error) => void) | undefined;
+    const pendingConfirmation = new Promise<WeeklyFocusDocument>((_resolve, reject) => {
+      rejectConfirmation = reject;
+    });
+    const draft = sessionDraft({
+      items: [draftItem('focus-1', { suggestions: { focus: '直接发布完整产品' } })],
+    });
+    const { modal, confirm } = setup({
+      draft,
+      confirmOperation: async () => pendingConfirmation,
+    });
+    await open(modal);
+
+    button(modal, '确认并写入 Obsidian').click();
+    await vi.waitFor(() => expect(confirm).toHaveBeenCalledOnce());
+
+    const controls = [...modal.contentEl.querySelectorAll<
+      HTMLButtonElement | HTMLInputElement | HTMLTextAreaElement
+    >('button, input, textarea')];
+    expect(controls.length).toBeGreaterThan(0);
+    expect(controls.every((control) => control.disabled)).toBe(true);
+    expect(modal.contentEl.textContent).toContain('正在写入正式记录');
+
+    const composer = modal.contentEl.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="给本周思考教练发消息"]',
+    )!;
+    composer.value = '等待期间输入的内容';
+    composer.dispatchEvent(new window.Event('input', { bubbles: true }));
+    const focus = modal.contentEl.querySelector<HTMLInputElement>('input[aria-label="重点事项"]')!;
+    focus.value = '等待期间修改的重点';
+    focus.dispatchEvent(new window.Event('input', { bubbles: true }));
+    const source = modal.contentEl.querySelector<HTMLInputElement>('input[aria-label="授权目标"]')!;
+    source.checked = false;
+    source.dispatchEvent(new window.Event('change', { bubbles: true }));
+    button(modal, '删除重点').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+
+    rejectConfirmation?.(new Error('synthetic confirmation failure'));
+    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('本周判断未能写入'));
+    expect(modal.contentEl.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="给本周思考教练发消息"]',
+    )?.value).toBe('');
+    expect(modal.contentEl.querySelector<HTMLInputElement>(
+      'input[aria-label="重点事项"]',
+    )?.value).toBe('验证产品边界是否可复用');
+    expect(modal.contentEl.querySelector<HTMLInputElement>(
+      'input[aria-label="授权目标"]',
+    )?.checked).toBe(true);
+    expect(modal.contentEl.textContent).toContain('1 / 3');
+    expect(modal.contentEl.textContent).toContain('采用建议');
+  });
+
   it('keeps user input after model failure and still allows manual confirmation', async () => {
     const { modal, confirm } = setup({ coach: new Error('private model detail') });
     await open(modal);
