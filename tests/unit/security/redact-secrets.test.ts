@@ -88,4 +88,22 @@ describe('redactSecrets', () => {
     expect(redacted).toContain('https://example.com');
     expect(redacted).toContain('[REDACTED]');
   });
+
+  it.each([
+    ['single-quoted compact scalar', [
+      "{dbPassword: 'prefix-private''suffix-private', next: keep}",
+    ].join('\n')],
+    ['multi-line double-quoted scalar', [
+      'dbPassword: "prefix-private',
+      '  suffix-private"',
+      'next: keep',
+    ].join('\n')],
+  ])('redacts a complete valid YAML %s', (_label, source) => {
+    const redacted = redactSecrets(source);
+
+    expect(redacted).not.toContain('prefix-private');
+    expect(redacted).not.toContain('suffix-private');
+    expect(redacted).toContain('keep');
+    expect(redacted).toContain('[REDACTED]');
+  });
 });

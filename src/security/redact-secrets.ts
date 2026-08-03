@@ -1,3 +1,5 @@
+import YAML, { isMap, isNode, isScalar, isSeq } from 'yaml';
+
 const CREDENTIAL_KEY_SUFFIX_PATTERN = /(?:^|_)(?:API_KEY|ACCESS_TOKEN|AUTH_TOKEN|APP_SECRET|CLIENT_SECRET|PRIVATE_KEY|PASSWORD|PASSWD|CREDENTIAL|TOKEN|SECRET)$/u;
 
 const INLINE_CREDENTIAL_PATTERN = /(?:(?:["'])?\b[A-Za-z0-9_-]*(?:api[_ -]?key|access[_ -]?token|auth[_ -]?token|app[_ -]?secret|client[_ -]?secret|private[_ -]?key|password|passwd|credential|token|secret)\b(?:["'])?)\s*[:=]\s*(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|[^\s,;}]+)/giu;
@@ -29,6 +31,56 @@ function isCredentialKey(value: string): boolean {
     .replace(/^_+|_+$/gu, '')
     .toUpperCase();
   return CREDENTIAL_KEY_SUFFIX_PATTERN.test(normalized);
+}
+
+function collectYamlCredentialRanges(
+  node: unknown,
+  ranges: Array<{ start: number; end: number }>,
+): void {
+  if (isMap(node)) {
+    for (const pair of node.items) {
+      const key = isScalar(pair.key) ? String(pair.key.value ?? '') : '';
+      const range = isNode(pair.value) ? pair.value.range : undefined;
+      if (
+        isCredentialKey(key)
+        && range !== undefined
+        && range !== null
+        && Number.isInteger(range[0])
+        && Number.isInteger(range[1])
+        && range[1] > range[0]
+      ) {
+        ranges.push({ start: range[0], end: range[1] });
+        continue;
+      }
+      collectYamlCredentialRanges(pair.value, ranges);
+    }
+    return;
+  }
+
+  if (isSeq(node)) {
+    for (const item of node.items) collectYamlCredentialRanges(item, ranges);
+  }
+}
+
+function redactYamlCredentials(value: string): string {
+  let documents: ReturnType<typeof YAML.parseAllDocuments>;
+  try {
+    documents = YAML.parseAllDocuments(value, { keepSourceTokens: true });
+  } catch {
+    return value;
+  }
+  if (documents.some((document) => document.errors.length > 0)) return value;
+
+  const ranges: Array<{ start: number; end: number }> = [];
+  for (const document of documents) collectYamlCredentialRanges(document.contents, ranges);
+
+  return ranges
+    .sort((left, right) => right.start - left.start)
+    .reduce((redacted, range) => {
+      const matched = redacted.slice(range.start, range.end);
+      const trailingLineBreak = /(?:\r?\n)$/u.exec(matched)?.[0] ?? '';
+      return `${redacted.slice(0, range.start)}[REDACTED]${trailingLineBreak}${redacted.slice(range.end)}`;
+    }, value);
 }
 
 function redactStructuredCredentials(value: string): string {
@@ -74,6 +126,6 @@ function redactStructuredCredentials(value: string): string {
 export function redactSecrets(value: string): string {
   return SECRET_PATTERNS.reduce(
     (redacted, pattern) => redacted.replace(pattern, '[REDACTED]'),
-    redactStructuredCredentials(value),
+    redactStructuredCredentials(redactYamlCredentials(value)),
   );
 }

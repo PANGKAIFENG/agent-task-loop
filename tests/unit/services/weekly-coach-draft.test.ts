@@ -488,6 +488,27 @@ describe('weekly coach session draft', () => {
       .focusLabel).toBe('发布插件');
   });
 
+  it.each([
+    'apikeyweeklycoachprivatevalue',
+    'bearerweeklycoachprivatevalue',
+    'skweeklycoachprivatevalue1234567890',
+  ])('does not restore a normalized legacy secret as a deletion label: %s', (focusKey) => {
+    const normalized = normalizeWeeklyCoachDraftCollection({
+      collectionVersion: 1,
+      byWeek: {
+        '2026-W32': {
+          ...persistedDraft(),
+          deletedItems: [{ id: 'focus-secret', focusKey }],
+        },
+      },
+    });
+
+    const deletedItem = normalized.byWeek['2026-W32']?.deletedItems[0];
+    expect(deletedItem?.focusKey).toMatch(/^sha256:[a-f0-9]{64}$/u);
+    expect(deletedItem?.focusLabel).toBe('已删除重点');
+    expect(JSON.stringify(deletedItem)).not.toContain(focusKey);
+  });
+
   it('drops malformed nested values and undeclared fields', () => {
     const raw = {
       ...persistedDraft(),

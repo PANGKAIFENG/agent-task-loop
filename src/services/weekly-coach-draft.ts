@@ -96,6 +96,7 @@ const MAX_FIELD_LENGTH = 4_000;
 const MAX_LIST_ITEMS = 30;
 const MAX_DELETED_FOCUS_LABEL_LENGTH = 240;
 const DELETION_FOCUS_KEY_PATTERN = /^sha256:[a-f0-9]{64}$/u;
+const LEGACY_NORMALIZED_SECRET_PATTERN = /(?:(?:api(?:key)|access(?:token)?|auth(?:token)?|appsecret|clientsecret|privatekey|password|passwd|credential|token|secret|bearer)[a-z0-9]{6,}|^(?:sk|gh[pousr]|githubpat|xox[baprs]|aiza|akia|glpat|npm|whsec)[a-z0-9]{16,}$)/iu;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -133,6 +134,12 @@ function normalizedPersistedFocusKey(value: string): string {
 function safeFocusLabel(value: string): string {
   const redacted = redactSecrets(value).trim().slice(0, MAX_DELETED_FOCUS_LABEL_LENGTH).trim();
   return redacted === '' ? '已删除重点' : redacted;
+}
+
+function safeLegacyFocusLabel(value: string): string {
+  return LEGACY_NORMALIZED_SECRET_PATTERN.test(value)
+    ? '已删除重点'
+    : safeFocusLabel(value);
 }
 
 function isLeapYear(year: number): boolean {
@@ -262,7 +269,7 @@ function normalizePersistedDraft(value: unknown, weekKey: string): WeeklyCoachSe
     const deletedFocusKey = normalizedPersistedFocusKey(persistedFocusKey);
     const legacyFocusLabel = DELETION_FOCUS_KEY_PATTERN.test(persistedFocusKey)
       ? '已删除重点'
-      : persistedFocusKey;
+      : safeLegacyFocusLabel(persistedFocusKey);
     const persistedFocusLabel = Object.hasOwn(candidate, 'focusLabel')
       ? boundedPersistedString(candidate.focusLabel)
       : legacyFocusLabel;
