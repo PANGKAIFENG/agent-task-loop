@@ -96,7 +96,7 @@ const MAX_FIELD_LENGTH = 4_000;
 const MAX_LIST_ITEMS = 30;
 const MAX_DELETED_FOCUS_LABEL_LENGTH = 240;
 const DELETION_FOCUS_KEY_PATTERN = /^sha256:[a-f0-9]{64}$/u;
-const LEGACY_NORMALIZED_SECRET_PATTERN = /(?:(?:api(?:key)|access(?:token)?|auth(?:token)?|appsecret|clientsecret|privatekey|password|passwd|credential|token|secret|bearer)[a-z0-9]{6,}|^(?:sk|gh[pousr]|githubpat|xox[baprs]|aiza|akia|glpat|npm|whsec)[a-z0-9]{16,}$)/iu;
+const LEGACY_NORMALIZED_SECRET_PATTERN = /(?:(?:apikey|access(?:token)?|auth(?:token)?|appsecret|clientsecret|privatekey|password|passwd|credential|token|secret|bearer).+|^(?:sk[a-z0-9]{8,}|gh[pousr][a-z0-9]{20,}|githubpat[a-z0-9]{20,}|xox[baprs][a-z0-9]{10,}|aiza[a-z0-9]{20,}|akia[a-z0-9]{16}|glpat[a-z0-9]{20,}|npm[a-z0-9]{20,}|whsec[a-z0-9]{20,})$)/iu;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);

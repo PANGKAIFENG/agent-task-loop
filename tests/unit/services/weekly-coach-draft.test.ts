@@ -492,6 +492,11 @@ describe('weekly coach session draft', () => {
     'apikeyweeklycoachprivatevalue',
     'bearerweeklycoachprivatevalue',
     'skweeklycoachprivatevalue1234567890',
+    'skabcdefgh',
+    'xoxbabcdefghij',
+    'passwordx',
+    'password密',
+    'bearerx',
   ])('does not restore a normalized legacy secret as a deletion label: %s', (focusKey) => {
     const normalized = normalizeWeeklyCoachDraftCollection({
       collectionVersion: 1,

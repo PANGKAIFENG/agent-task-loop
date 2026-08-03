@@ -106,4 +106,46 @@ describe('redactSecrets', () => {
     expect(redacted).toContain('keep');
     expect(redacted).toContain('[REDACTED]');
   });
+
+  it('redacts YAML single-quote escapes embedded in Markdown', () => {
+    const source = [
+      '配置如下：',
+      '```yaml',
+      "{dbPassword: 'prefix-private''suffix-private', next: keep}",
+      '```',
+    ].join('\n');
+
+    const redacted = redactSecrets(source);
+
+    expect(redacted).not.toContain('prefix-private');
+    expect(redacted).not.toContain('suffix-private');
+    expect(redacted).toContain('keep');
+    expect(redacted).toContain('[REDACTED]');
+  });
+
+  it.each([
+    ['double-quoted scalar', [
+      'dbPassword: "prefix-private',
+      '  suffix-private"',
+    ].join('\n')],
+    ['single-quoted scalar', [
+      "password: 'prefix-private",
+      "  suffix-private'",
+    ].join('\n')],
+  ])('redacts a Markdown-embedded multi-line YAML %s', (_label, credential) => {
+    const source = [
+      '配置如下：',
+      '```yaml',
+      credential,
+      'next: keep',
+      '```',
+    ].join('\n');
+
+    const redacted = redactSecrets(source);
+
+    expect(redacted).not.toContain('prefix-private');
+    expect(redacted).not.toContain('suffix-private');
+    expect(redacted).toContain('next: keep');
+    expect(redacted).toContain('[REDACTED]');
+  });
 });

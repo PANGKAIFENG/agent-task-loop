@@ -2,7 +2,7 @@ import YAML, { isMap, isNode, isScalar, isSeq } from 'yaml';
 
 const CREDENTIAL_KEY_SUFFIX_PATTERN = /(?:^|_)(?:API_KEY|ACCESS_TOKEN|AUTH_TOKEN|APP_SECRET|CLIENT_SECRET|PRIVATE_KEY|PASSWORD|PASSWD|CREDENTIAL|TOKEN|SECRET)$/u;
 
-const INLINE_CREDENTIAL_PATTERN = /(?:(?:["'])?\b[A-Za-z0-9_-]*(?:api[_ -]?key|access[_ -]?token|auth[_ -]?token|app[_ -]?secret|client[_ -]?secret|private[_ -]?key|password|passwd|credential|token|secret)\b(?:["'])?)\s*[:=]\s*(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|[^\s,;}]+)/giu;
+const INLINE_CREDENTIAL_PATTERN = /(?:(?:["'])?\b[A-Za-z0-9_-]*(?:api[_ -]?key|access[_ -]?token|auth[_ -]?token|app[_ -]?secret|client[_ -]?secret|private[_ -]?key|password|passwd|credential|token|secret)\b(?:["'])?)\s*[:=]\s*(?:"(?:\\.|[^"\\\r\n])*"|'(?:''|\\.|[^'\\\r\n])*'|[^\s,;}]+)/giu;
 
 const YAML_BLOCK_SCALAR_PATTERN = /^(?:(?:![^\s]+|&[^\s]+)\s+)*[|>](?:[+-]?[1-9]?|[1-9][+-]?)(?:\s+#.*)?\r?$/u;
 
@@ -31,6 +31,31 @@ function isCredentialKey(value: string): boolean {
     .replace(/^_+|_+$/gu, '')
     .toUpperCase();
   return CREDENTIAL_KEY_SUFFIX_PATTERN.test(normalized);
+}
+
+function hasQuotedScalarTerminator(
+  value: string,
+  quote: '"' | "'",
+  includesOpeningQuote: boolean,
+): boolean {
+  let index = includesOpeningQuote ? 1 : 0;
+  while (index < value.length) {
+    const character = value[index];
+    if (quote === '"' && character === '\\') {
+      index += 2;
+      continue;
+    }
+    if (character !== quote) {
+      index += 1;
+      continue;
+    }
+    if (quote === "'" && value[index + 1] === "'") {
+      index += 2;
+      continue;
+    }
+    return true;
+  }
+  return false;
 }
 
 function collectYamlCredentialRanges(
@@ -102,6 +127,23 @@ function redactStructuredCredentials(value: string): string {
     ] = match;
     const renderedKey = quotedKey === undefined ? (plainKey ?? '') : `${quote}${quotedKey}${quote}`;
     redacted.push(`${indentation}${listMarker}${renderedKey}${separator}[REDACTED]${carriageReturn}`);
+
+    const trimmedValue = rawValue.trimStart();
+    const scalarQuote = trimmedValue.startsWith('"')
+      ? '"'
+      : trimmedValue.startsWith("'")
+        ? "'"
+        : null;
+    if (
+      scalarQuote !== null
+      && !hasQuotedScalarTerminator(trimmedValue, scalarQuote, true)
+    ) {
+      while (index + 1 < lines.length) {
+        index += 1;
+        if (hasQuotedScalarTerminator(lines[index] ?? '', scalarQuote, false)) break;
+      }
+      continue;
+    }
 
     if (
       !separator.includes(':')
