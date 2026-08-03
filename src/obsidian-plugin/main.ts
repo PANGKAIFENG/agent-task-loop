@@ -1,4 +1,5 @@
 import { homedir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { readFile as readExternalFile, stat as statExternalFile } from 'node:fs/promises';
 import { basename, extname, join, relative, sep } from 'node:path';
 
@@ -28,11 +29,15 @@ import {
   type WeeklyCoachContextGateway,
 } from '../services/weekly-coach-context.js';
 import {
+  getWeeklyCoachSessionDraft,
+  putWeeklyCoachSessionDraft,
+  removeWeeklyCoachSessionDraft,
+  type WeeklyCoachSessionDraft,
+} from '../services/weekly-coach-draft.js';
+import {
   confirmWeeklyFocus,
   currentIsoWeek,
   loadCurrentWeeklyFocus,
-  saveWeeklyFocusDraft,
-  type WeeklyFocusDocument,
   type WeeklyFocusGateway,
 } from '../services/weekly-focus.js';
 import { createVaultWriteAuthorization } from '../storage/task-paths.js';
@@ -451,6 +456,9 @@ export default class AgentTaskLoopPlugin extends Plugin {
       openCompletionDateBackfill: (tasks) => this.openCompletionDateBackfill(tasks),
       openSettings: () => this.openPluginSettings(),
       loadWeeklyFocus: () => this.loadWeeklyFocus(),
+      loadWeeklyCoachDraft: async () => this.loadWeeklyCoachSessionDraft(
+        currentIsoWeek(new Date(), resolveSystemTimeZone()),
+      ),
       openWeeklyCoach: (onChanged) => this.openWeeklyCoach(onChanged),
       openWeeklyFocus: (path) => this.openWeeklyFocus(path),
     });
@@ -521,6 +529,26 @@ export default class AgentTaskLoopPlugin extends Plugin {
     );
   }
 
+  private loadWeeklyCoachSessionDraft(week: string): WeeklyCoachSessionDraft | null {
+    return getWeeklyCoachSessionDraft(this.settings.weeklyCoachDrafts, week);
+  }
+
+  private async saveWeeklyCoachSessionDraft(draft: WeeklyCoachSessionDraft): Promise<void> {
+    this.settings.weeklyCoachDrafts = putWeeklyCoachSessionDraft(
+      this.settings.weeklyCoachDrafts,
+      draft,
+    );
+    await this.saveSettings();
+  }
+
+  private async clearWeeklyCoachSessionDraft(week: string): Promise<void> {
+    this.settings.weeklyCoachDrafts = removeWeeklyCoachSessionDraft(
+      this.settings.weeklyCoachDrafts,
+      week,
+    );
+    await this.saveSettings();
+  }
+
   private weeklyCoachModelLabel(): string {
     const modelService = modelServiceConfiguration(this.settings.background);
     if (!modelService.valid) return '模型配置需检查（可人工整理）';
@@ -530,15 +558,17 @@ export default class AgentTaskLoopPlugin extends Plugin {
   }
 
   private openWeeklyCoach(
-    onChanged: (document: WeeklyFocusDocument) => void,
+    onChanged: () => void,
   ): void {
     const timeZone = resolveSystemTimeZone();
     const clock = () => new Date();
+    const week = currentIsoWeek(clock(), timeZone);
     const gateway = this.createWeeklyFocusGateway();
     new WeeklyThinkingCoachModal(this.app, {
-      week: currentIsoWeek(clock(), timeZone),
+      week,
       modelLabel: this.weeklyCoachModelLabel(),
-      load: () => loadCurrentWeeklyFocus(gateway, clock, timeZone),
+      loadRecord: () => loadCurrentWeeklyFocus(gateway, clock, timeZone),
+      loadSessionDraft: () => this.loadWeeklyCoachSessionDraft(week),
       runCoach: async (turn, control) => {
         const context = await collectWeeklyCoachContext(
           this.createWeeklyCoachContextGateway(),
@@ -559,27 +589,29 @@ export default class AgentTaskLoopPlugin extends Plugin {
           latestAnswer: turn.latestAnswer,
           keyAnswers: turn.keyAnswers,
           previousSummary: turn.previousSummary,
+          draftItems: turn.draftItems,
+          deletedFocuses: turn.deletedFocuses,
+          focusedItemId: turn.focusedItemId,
           context,
         }, control);
       },
-      saveDraft: (input, expectedContent) => saveWeeklyFocusDraft(
-        gateway,
-        clock,
-        input,
-        expectedContent,
-        timeZone,
-      ),
+      saveSessionDraft: (draft) => this.saveWeeklyCoachSessionDraft(draft),
+      clearSessionDraft: () => this.clearWeeklyCoachSessionDraft(week),
       confirm: (input, expectedContent) => confirmWeeklyFocus(
         gateway,
         clock,
         input,
         expectedContent,
+        week,
         timeZone,
       ),
       canManageVault: () => this.settings.allowVaultManagement,
       onChanged,
       openRecord: (path) => this.openWeeklyFocus(path),
       notify: (message) => { new Notice(message); },
+      now: clock,
+      currentWeek: () => currentIsoWeek(clock(), timeZone),
+      createId: randomUUID,
     }).open();
   }
 
@@ -717,7 +749,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
         if (view instanceof WorkContributionView) {
           void Promise.all([
             view.refreshContribution(),
-            view.refreshWeeklyFocus(),
+            view.refreshWeeklyCoachState(),
           ]);
         }
       }

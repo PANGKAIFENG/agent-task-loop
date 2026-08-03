@@ -2,6 +2,7 @@ import { ItemView, setIcon, type WorkspaceLeaf } from 'obsidian';
 
 import type { ContributionRange } from '../services/query-contribution.js';
 import type { PersonalHomeTask } from '../services/query-personal-home.js';
+import type { WeeklyCoachSessionDraft } from '../services/weekly-coach-draft.js';
 import type { WeeklyFocusDocument } from '../services/weekly-focus.js';
 import {
   type ContributionDashboardController,
@@ -20,9 +21,8 @@ export interface WorkContributionViewDependencies {
   ) => Promise<void> | void;
   openSettings: () => Promise<void> | void;
   loadWeeklyFocus: () => Promise<WeeklyFocusDocument | null>;
-  openWeeklyCoach: (
-    onChanged: (document: WeeklyFocusDocument) => void,
-  ) => Promise<void> | void;
+  loadWeeklyCoachDraft: () => Promise<WeeklyCoachSessionDraft | null>;
+  openWeeklyCoach: (onChanged: () => void) => Promise<void> | void;
   openWeeklyFocus: (path: string) => Promise<void> | void;
 }
 
@@ -273,6 +273,7 @@ export class WorkContributionView extends ItemView {
   private activeTab: HomeTab = 'overview';
   private pulseMode: PulseMode = 'ai';
   private weeklyFocus: WeeklyFocusDocument | null = null;
+  private weeklyCoachDraft: WeeklyCoachSessionDraft | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -303,7 +304,7 @@ export class WorkContributionView extends ItemView {
     });
     await Promise.all([
       this.controller.initialize(),
-      this.refreshWeeklyFocus(),
+      this.refreshWeeklyCoachState(),
     ]);
   }
 
@@ -314,6 +315,7 @@ export class WorkContributionView extends ItemView {
     this.controller = null;
     this.state = null;
     this.weeklyFocus = null;
+    this.weeklyCoachDraft = null;
     this.contentEl.replaceChildren();
   }
 
@@ -321,12 +323,13 @@ export class WorkContributionView extends ItemView {
     return this.controller?.refreshContribution() ?? Promise.resolve();
   }
 
-  async refreshWeeklyFocus(): Promise<void> {
-    try {
-      this.weeklyFocus = await this.dependencies.loadWeeklyFocus();
-    } catch {
-      this.weeklyFocus = null;
-    }
+  async refreshWeeklyCoachState(): Promise<void> {
+    const [weeklyFocus, weeklyCoachDraft] = await Promise.all([
+      this.dependencies.loadWeeklyFocus().catch(() => null),
+      this.dependencies.loadWeeklyCoachDraft().catch(() => null),
+    ]);
+    this.weeklyFocus = weeklyFocus;
+    this.weeklyCoachDraft = weeklyCoachDraft;
     this.rerender();
   }
 
@@ -704,15 +707,14 @@ export class WorkContributionView extends ItemView {
       confirmed === null ? 'CURRENT FOCUS · 系统候选' : 'CURRENT FOCUS · 用户确认',
       '当前最值得推进的三件事',
       'atl-home-focus',
-      this.weeklyFocus === null
-        ? '梳理本周重点'
-        : this.weeklyFocus.record.status === '草稿'
+      this.weeklyFocus?.record.status === '已确认'
+        ? '查看本周判断'
+        : this.weeklyCoachDraft !== null || this.weeklyFocus?.record.status === '草稿'
           ? '继续本周思考'
-          : '查看本周判断',
+          : '梳理本周重点',
       () => {
-        void this.dependencies.openWeeklyCoach((document) => {
-          this.weeklyFocus = document;
-          this.rerender();
+        void this.dependencies.openWeeklyCoach(() => {
+          void this.refreshWeeklyCoachState();
         });
       },
     );
@@ -787,12 +789,12 @@ export class WorkContributionView extends ItemView {
       const title = element(
         'strong',
         'atl-home-focus-name',
-        focus.judgment.trim() === '' ? focus.problem : focus.judgment,
+        focus.focus,
       );
       const meta = element('span', 'atl-home-focus-meta');
       meta.append(
-        element('span', undefined, focus.problem),
         element('span', undefined, focus.outcome),
+        element('span', undefined, focus.whyThisWeek),
       );
       card.append(top, title, meta);
       card.addEventListener('click', () => {

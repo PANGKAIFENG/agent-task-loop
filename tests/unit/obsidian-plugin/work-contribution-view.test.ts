@@ -11,6 +11,10 @@ import {
   WorkContributionView,
   WORK_CONTRIBUTION_VIEW_TYPE,
 } from '../../../src/obsidian-plugin/work-contribution-view.js';
+import {
+  createWeeklyCoachSessionDraft,
+  type WeeklyCoachSessionDraft,
+} from '../../../src/services/weekly-coach-draft.js';
 import type { WeeklyFocusDocument } from '../../../src/services/weekly-focus.js';
 
 function weeklyFocus(status: '草稿' | '已确认'): WeeklyFocusDocument {
@@ -33,11 +37,10 @@ function weeklyFocus(status: '草稿' | '已确认'): WeeklyFocusDocument {
         currentQuestion: '什么结果能证明投入值得？',
         coachSummary: '需要先定义可观察结果。',
         focuses: [{
-          problem: '产品边界反复变化',
-          judgment: '先验证两个真实流程',
+          focus: '先验证两个真实流程',
           outcome: '形成团队可复用的边界说明',
+          whyThisWeek: '周五前完成验证',
           evidence: '两个流程使用同一份说明',
-          commitment: '周五前完成验证',
         }],
         noNewFocus: false,
         notDoing: ['不新增 Agent 名称'],
@@ -51,6 +54,10 @@ function weeklyFocus(status: '草稿' | '已确认'): WeeklyFocusDocument {
       },
     },
   };
+}
+
+function weeklyDraft(): WeeklyCoachSessionDraft {
+  return createWeeklyCoachSessionDraft('2026-W32', '2026-08-03T09:00:00.000Z');
 }
 
 function state(overrides: Partial<ContributionDashboardState> = {}): ContributionDashboardState {
@@ -164,7 +171,11 @@ function contributionDays(count: number) {
   });
 }
 
-function setup(initial = state(), initialWeeklyFocus: WeeklyFocusDocument | null = null) {
+function setup(
+  initial = state(),
+  initialWeeklyFocus: WeeklyFocusDocument | null = null,
+  initialWeeklyDraft: WeeklyCoachSessionDraft | null = null,
+) {
   let current = initial;
   let listener: ((state: ContributionDashboardState) => void) | null = null;
   const controller = {
@@ -184,7 +195,8 @@ function setup(initial = state(), initialWeeklyFocus: WeeklyFocusDocument | null
   const openArtifact = vi.fn(async () => undefined);
   const openCompletionDateBackfill = vi.fn(async () => undefined);
   const loadWeeklyFocus = vi.fn(async () => initialWeeklyFocus);
-  const openWeeklyCoach = vi.fn();
+  const loadWeeklyCoachDraft = vi.fn(async () => initialWeeklyDraft);
+  const openWeeklyCoach = vi.fn<(onChanged: () => void) => void>();
   const openWeeklyFocus = vi.fn(async () => undefined);
   const view = new WorkContributionView(new WorkspaceLeaf(), {
     createController: () => controller as never,
@@ -193,6 +205,7 @@ function setup(initial = state(), initialWeeklyFocus: WeeklyFocusDocument | null
     openCompletionDateBackfill,
     openSettings: vi.fn(),
     loadWeeklyFocus,
+    loadWeeklyCoachDraft,
     openWeeklyCoach,
     openWeeklyFocus,
   });
@@ -202,6 +215,7 @@ function setup(initial = state(), initialWeeklyFocus: WeeklyFocusDocument | null
     openArtifact,
     openCompletionDateBackfill,
     loadWeeklyFocus,
+    loadWeeklyCoachDraft,
     openWeeklyCoach,
     openWeeklyFocus,
     view,
@@ -287,13 +301,44 @@ describe('WorkContributionView', () => {
   });
 
   it('offers to continue a saved weekly thinking draft', async () => {
-    const { view } = setup(state(), weeklyFocus('草稿'));
+    const { view } = setup(state(), null, weeklyDraft());
     await view.onOpen();
 
     expect(view.contentEl.querySelector('.atl-home-focus .atl-home-section-link')?.textContent)
       .toContain('继续本周思考');
     expect(view.contentEl.querySelector('.atl-home-focus')?.textContent)
       .toContain('CURRENT FOCUS · 系统候选');
+  });
+
+  it('keeps legacy Markdown drafts resumable', async () => {
+    const { view } = setup(state(), weeklyFocus('草稿'));
+    await view.onOpen();
+
+    expect(view.contentEl.querySelector('.atl-home-focus .atl-home-section-link')?.textContent)
+      .toContain('继续本周思考');
+  });
+
+  it('reloads both weekly coach sources after the modal reports a change', async () => {
+    const setupResult = setup(state(), null, weeklyDraft());
+    await setupResult.view.onOpen();
+    setupResult.loadWeeklyFocus.mockResolvedValue(weeklyFocus('已确认'));
+    setupResult.loadWeeklyCoachDraft.mockResolvedValue(null);
+
+    const action = setupResult.view.contentEl.querySelector<HTMLButtonElement>(
+      '.atl-home-focus .atl-home-section-link',
+    );
+    fireEvent.click(action!);
+    const onChanged = setupResult.openWeeklyCoach.mock.calls[0]?.[0];
+    expect(onChanged).toBeDefined();
+    onChanged?.();
+
+    await vi.waitFor(() => {
+      expect(setupResult.loadWeeklyFocus).toHaveBeenCalledTimes(2);
+      expect(setupResult.loadWeeklyCoachDraft).toHaveBeenCalledTimes(2);
+      expect(setupResult.view.contentEl.querySelector(
+        '.atl-home-focus .atl-home-section-link',
+      )?.textContent).toContain('查看本周判断');
+    });
   });
 
   it('replaces only focus cards with confirmed judgments and opens the weekly record', async () => {

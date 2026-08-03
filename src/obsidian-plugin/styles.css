@@ -2434,11 +2434,7 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
 .atl-weekly-coach-modal {
   height: min(700px, calc(100vh - 48px));
   max-width: 960px;
-  width: calc(100vw - 48px);
-}
-
-.atl-weekly-coach-modal.atl-weekly-coach-modal--busy {
-  height: min(480px, calc(100vh - 48px));
+  width: min(960px, calc(100vw - 48px));
 }
 
 .atl-weekly-coach-modal .modal-content,
@@ -2449,7 +2445,7 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
 
 .atl-weekly-coach-content {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
   overflow: hidden;
   padding: 0;
 }
@@ -2460,23 +2456,33 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
   display: flex;
   gap: 20px;
   justify-content: space-between;
-  padding: 22px 26px 18px;
+  min-height: 78px;
+  padding: 16px 22px;
+}
+
+.atl-weekly-coach-title {
+  min-width: 0;
 }
 
 .atl-weekly-coach-title h2,
-.atl-weekly-coach-title p {
+.atl-weekly-coach-title p,
+.atl-weekly-coach-draft-heading h3,
+.atl-weekly-coach-empty-slot p,
+.atl-weekly-coach-confirmed-message p {
   margin: 0;
 }
 
 .atl-weekly-coach-title h2 {
   font-size: 20px;
+  letter-spacing: 0;
   line-height: 1.3;
 }
 
 .atl-weekly-coach-title p {
   color: var(--text-muted);
   font-size: 12px;
-  margin-top: 5px;
+  line-height: 1.5;
+  margin-top: 4px;
 }
 
 .atl-weekly-coach-meta {
@@ -2486,377 +2492,520 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
   flex-direction: column;
   flex-shrink: 0;
   font-size: 11px;
-  gap: 4px;
+  gap: 3px;
 }
 
-.atl-weekly-coach-body {
+.atl-weekly-coach-model-status {
+  color: #00a8c6;
+  font-weight: 700;
+}
+
+.atl-weekly-coach-model-status.is-warning {
+  color: #d97706;
+}
+
+.atl-weekly-coach-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.85fr);
   min-height: 0;
-  overflow: auto;
-  padding: 22px 26px 28px;
 }
 
-.atl-weekly-coach-body h3 {
-  font-size: 14px;
-  margin: 0 0 8px;
+.atl-weekly-coach-conversation,
+.atl-weekly-coach-draft-panel {
+  min-width: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
-.atl-weekly-coach-body p {
+.atl-weekly-coach-conversation {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 18px 22px 20px;
+}
+
+.atl-weekly-coach-draft-panel {
+  background: var(--background-secondary);
+  border-left: 1px solid var(--background-modifier-border);
+  padding: 18px;
+}
+
+.atl-weekly-coach-sources {
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding-bottom: 14px;
+}
+
+.atl-weekly-coach-section-heading,
+.atl-weekly-coach-draft-heading,
+.atl-weekly-coach-card-heading,
+.atl-weekly-coach-footer,
+.atl-weekly-coach-footer-actions,
+.atl-weekly-coach-card-actions,
+.atl-weekly-coach-error-actions {
+  align-items: center;
+  display: flex;
+}
+
+.atl-weekly-coach-section-heading {
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.atl-weekly-coach-section-heading strong,
+.atl-weekly-coach-draft-heading h3 {
+  font-size: 13px;
+}
+
+.atl-weekly-coach-section-heading small {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.atl-weekly-coach-source-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 12px;
+  margin-top: 10px;
+}
+
+.atl-weekly-coach-source {
+  align-items: center;
   color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.6;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 11px;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.atl-weekly-coach-source:has(input:checked) {
+  color: var(--text-normal);
+}
+
+.atl-weekly-coach-source input {
   margin: 0;
 }
 
-.atl-weekly-coach-intro,
-.atl-weekly-coach-sources,
-.atl-weekly-coach-question,
-.atl-weekly-coach-background,
-.atl-weekly-coach-directions,
-.atl-weekly-coach-organize-notice,
-.atl-weekly-coach-confirmed {
-  margin-bottom: 20px;
+.atl-weekly-coach-messages {
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 160px;
 }
 
-.atl-weekly-coach-field {
+.atl-weekly-coach-message {
+  border-radius: 8px;
+  line-height: 1.6;
+  max-width: 88%;
+  padding: 10px 12px;
+}
+
+.atl-weekly-coach-message > small {
+  color: var(--text-faint);
+  display: block;
+  font-size: 9px;
+  font-weight: 700;
+  margin-bottom: 3px;
+}
+
+.atl-weekly-coach-message p {
+  font-size: 12px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.atl-weekly-coach-message--assistant {
+  align-self: flex-start;
+  background: var(--background-secondary);
+  border-left: 3px solid #00a8c6;
+}
+
+.atl-weekly-coach-message--user {
+  align-self: flex-end;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.atl-weekly-coach-message--user > small {
+  color: inherit;
+  opacity: .72;
+}
+
+.atl-weekly-coach-message--system {
+  align-self: stretch;
+  background: transparent;
+  border: 1px dashed var(--background-modifier-border);
+  color: var(--text-muted);
+  max-width: 100%;
+}
+
+.atl-weekly-coach-question {
+  border-top: 1px solid var(--background-modifier-border);
+  display: grid;
+  gap: 3px;
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.atl-weekly-coach-question strong {
+  font-size: 12px;
+}
+
+.atl-weekly-coach-question small {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.atl-weekly-coach-error {
+  background: rgba(217, 119, 6, .08);
+  border-left: 3px solid #d97706;
+  border-radius: 4px;
+  color: var(--text-normal);
   display: grid;
   font-size: 11px;
-  font-weight: 600;
-  gap: 7px;
-  margin-top: 14px;
+  gap: 9px;
+  padding: 10px 12px;
 }
 
-.atl-weekly-coach-field textarea {
+.atl-weekly-coach-error-actions,
+.atl-weekly-coach-card-actions,
+.atl-weekly-coach-footer-actions {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.atl-weekly-coach-composer {
+  align-items: end;
+  border-top: 1px solid var(--background-modifier-border);
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 36px;
+  padding-top: 14px;
+}
+
+.atl-weekly-coach-composer textarea {
   background: var(--background-primary);
   border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
+  border-radius: 8px;
   font-family: inherit;
   font-size: 12px;
-  line-height: 1.55;
-  min-height: 54px;
+  line-height: 1.5;
+  max-height: 144px;
+  min-height: 72px;
   padding: 9px 10px;
   resize: vertical;
   width: 100%;
 }
 
-.atl-weekly-coach-source-grid {
+.atl-weekly-coach-composer > button {
+  height: 36px;
+  padding: 0;
+  width: 36px;
+}
+
+.atl-weekly-coach-composer > small {
+  color: var(--text-faint);
+  font-size: 9px;
+  grid-column: 1 / -1;
+}
+
+.atl-weekly-coach-progress {
+  background: rgba(0, 168, 198, .07);
+  border-left: 3px solid #00a8c6;
+  border-radius: 4px;
   display: grid;
-  gap: 8px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin-top: 12px;
+  font-size: 10px;
+  gap: 4px;
+  padding: 10px 12px;
 }
 
-.atl-weekly-coach-source {
-  align-items: center;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
-  cursor: pointer;
-  display: flex;
-  gap: 8px;
-  min-height: 48px;
-  padding: 8px 10px;
-}
-
-.atl-weekly-coach-source div {
-  display: grid;
-  gap: 2px;
-}
-
-.atl-weekly-coach-source strong {
+.atl-weekly-coach-progress > strong {
+  color: var(--text-normal);
   font-size: 11px;
 }
 
-.atl-weekly-coach-source small {
+.atl-weekly-coach-progress > span {
   color: var(--text-muted);
-  font-size: 9px;
+  font-variant-numeric: tabular-nums;
 }
 
-.atl-weekly-coach-actions {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
+.atl-weekly-coach-progress > button {
+  justify-self: start;
+  margin-top: 4px;
+}
+
+.atl-weekly-coach-slow-notice {
+  color: #d97706;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.atl-weekly-coach-draft-heading {
   gap: 8px;
-  justify-content: flex-end;
-  margin-top: 18px;
+  justify-content: space-between;
+  margin-bottom: 14px;
 }
 
-.atl-weekly-coach-actions button,
-.atl-weekly-coach-focus-heading button,
-.atl-weekly-coach-focus-list > button {
-  min-height: 34px;
+.atl-weekly-coach-draft-heading > div {
+  align-items: baseline;
+  display: flex;
+  gap: 7px;
 }
 
-.atl-weekly-coach-result-actions {
-  border-top: 1px solid var(--background-modifier-border);
+.atl-weekly-coach-draft-heading span {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.atl-weekly-coach-draft-heading > button,
+.atl-weekly-coach-card-heading > button {
+  height: 30px;
+  padding: 0;
+  width: 30px;
+}
+
+.atl-weekly-coach-draft-list {
   display: grid;
   gap: 10px;
-  margin-top: 18px;
-  padding-top: 14px;
 }
 
-.atl-weekly-coach-scope-action {
-  align-items: center;
-  color: var(--text-muted);
-  display: flex;
-  font-size: 10px;
-  gap: 8px;
-  justify-content: flex-end;
-}
-
-.atl-weekly-coach-scope-action button {
-  min-height: 30px;
-}
-
-.atl-weekly-coach-choice-grid {
+.atl-weekly-coach-draft-card {
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
   display: grid;
+  gap: 11px;
+  padding: 13px;
+}
+
+.atl-weekly-coach-draft-card.is-focused {
+  border-color: #6a00ff;
+  box-shadow: 0 0 0 1px rgba(106, 0, 255, .16);
+}
+
+.atl-weekly-coach-card-heading {
   gap: 8px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.atl-weekly-coach-choice {
-  align-content: center;
-  display: grid;
-  gap: 3px;
-  height: auto;
-  min-height: 68px;
-  padding: 10px 12px;
-  text-align: left;
-  white-space: normal;
-}
-
-.atl-weekly-coach-choice strong {
+.atl-weekly-coach-card-heading > strong {
   font-size: 12px;
+  margin-right: auto;
+}
+
+.atl-weekly-coach-card-heading > span {
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.atl-weekly-coach-card-heading .is-ready {
+  color: var(--color-green);
+}
+
+.atl-weekly-coach-card-heading .is-pending {
+  color: #d97706;
+}
+
+.atl-weekly-coach-draft-field {
+  display: grid;
+  gap: 5px;
+}
+
+.atl-weekly-coach-field-label {
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.atl-weekly-coach-field-label span {
+  color: var(--text-muted);
+  font-size: 10px;
   font-weight: 650;
 }
 
-.atl-weekly-coach-choice small {
+.atl-weekly-coach-field-label small {
+  color: #00a8c6;
+  font-size: 9px;
+}
+
+.atl-weekly-coach-draft-field input {
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  font-size: 11px;
+  min-height: 34px;
+  padding: 7px 8px;
+  width: 100%;
+}
+
+.atl-weekly-coach-draft-field > small {
+  color: var(--text-faint);
+  font-size: 9px;
+}
+
+.atl-weekly-coach-field-error {
+  color: #d97706 !important;
+  font-size: 10px;
+}
+
+.atl-weekly-coach-suggestion {
+  border-left: 2px solid #00a8c6;
+  display: grid;
+  font-size: 10px;
+  gap: 6px;
+  padding-left: 8px;
+}
+
+.atl-weekly-coach-suggestion span {
+  color: var(--text-muted);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.atl-weekly-coach-suggestion button {
+  justify-self: start;
+}
+
+.atl-weekly-coach-card-actions {
+  border-top: 1px solid var(--background-modifier-border);
+  padding-top: 9px;
+}
+
+.atl-weekly-coach-card-actions button,
+.atl-weekly-coach-error-actions button,
+.atl-weekly-coach-progress button {
+  font-size: 10px;
+  min-height: 28px;
+}
+
+.atl-weekly-coach-empty-slot {
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: 8px;
+  margin-top: 10px;
+  padding: 12px;
+}
+
+.atl-weekly-coach-empty-slot strong {
   color: var(--text-muted);
   font-size: 11px;
-  font-weight: 400;
+}
+
+.atl-weekly-coach-empty-slot p {
+  color: var(--text-faint);
+  font-size: 10px;
+  line-height: 1.5;
+  margin-top: 3px;
+}
+
+.atl-weekly-coach-no-focus {
+  align-items: flex-start;
+  display: flex;
+  font-size: 11px;
+  gap: 7px;
+  line-height: 1.45;
+  margin-top: 12px;
+}
+
+.atl-weekly-coach-no-focus input {
+  margin-top: 2px;
+}
+
+.atl-weekly-coach-boundary-note {
+  color: var(--text-faint);
+  display: block;
+  font-size: 9px;
+  line-height: 1.45;
+  margin-top: 12px;
+}
+
+.atl-weekly-coach-confirmed-message {
+  border-left: 3px solid var(--color-green);
+  padding: 10px 12px;
+}
+
+.atl-weekly-coach-confirmed-message strong {
+  font-size: 13px;
+}
+
+.atl-weekly-coach-confirmed-message p {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+  margin-top: 4px;
+}
+
+.atl-weekly-coach-confirmed-focus {
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  display: grid;
+  gap: 5px;
+  margin-bottom: 10px;
+  padding: 12px;
+}
+
+.atl-weekly-coach-confirmed-focus small {
+  color: var(--text-faint);
+  font-size: 9px;
+}
+
+.atl-weekly-coach-confirmed-focus strong {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.atl-weekly-coach-confirmed-focus span {
+  color: var(--text-muted);
+  font-size: 10px;
   line-height: 1.45;
 }
 
-.atl-weekly-coach-choice.mod-cta small {
-  color: var(--text-on-accent);
-  opacity: .8;
+.atl-weekly-coach-footer {
+  border-top: 1px solid var(--background-modifier-border);
+  gap: 14px;
+  justify-content: space-between;
+  min-height: 58px;
+  padding: 11px 18px;
+}
+
+.atl-weekly-coach-save-status {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.atl-weekly-coach-footer-actions {
+  justify-content: flex-end;
+}
+
+.atl-weekly-coach-footer button {
+  min-height: 34px;
+}
+
+.atl-weekly-coach-footer .mod-cta {
+  background: #6a00ff;
+  border-color: #6a00ff;
+  color: #fff;
+}
+
+.atl-weekly-coach-modal button:focus-visible,
+.atl-weekly-coach-modal input:focus-visible,
+.atl-weekly-coach-modal textarea:focus-visible {
+  box-shadow: 0 0 0 2px rgba(106, 0, 255, .3);
+  outline: 1px solid #6a00ff;
+  outline-offset: 1px;
 }
 
 .atl-weekly-coach-loading {
   align-content: center;
   color: var(--text-muted);
   display: grid;
-  gap: 6px;
   height: 100%;
   justify-items: center;
   min-height: 220px;
-  text-align: center;
 }
 
-.atl-weekly-coach-progress {
-  display: grid;
-  gap: 16px;
-  margin: 0 auto;
-  max-width: 620px;
-}
-
-.atl-weekly-coach-progress-heading {
-  align-items: baseline;
-  display: flex;
-  gap: 16px;
-  justify-content: space-between;
-}
-
-.atl-weekly-coach-progress-heading strong {
-  color: var(--text-normal);
-  font-size: 14px;
-}
-
-.atl-weekly-coach-progress-heading span {
-  color: var(--text-muted);
-  flex-shrink: 0;
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-}
-
-.atl-weekly-coach-progress-steps {
-  display: grid;
-  gap: 3px;
-}
-
-.atl-weekly-coach-progress-step {
-  align-items: start;
-  display: grid;
-  gap: 10px;
-  grid-template-columns: 16px minmax(0, 1fr);
-  padding: 6px 0;
-}
-
-.atl-weekly-coach-progress-step > div {
-  display: grid;
-  gap: 2px;
-}
-
-.atl-weekly-coach-progress-step strong {
-  color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.atl-weekly-coach-progress-step small {
-  color: var(--text-faint);
-  font-size: 9px;
-  line-height: 1.4;
-}
-
-.atl-weekly-coach-progress-step.is-active strong,
-.atl-weekly-coach-progress-step.is-complete strong {
-  color: var(--text-normal);
-}
-
-.atl-weekly-coach-progress-marker {
-  color: var(--text-faint);
-  font-size: 11px;
-  line-height: 1.4;
-  text-align: center;
-}
-
-.atl-weekly-coach-progress-step.is-active .atl-weekly-coach-progress-marker {
-  color: var(--interactive-accent);
-}
-
-.atl-weekly-coach-progress-step.is-complete .atl-weekly-coach-progress-marker {
-  color: var(--color-green);
-}
-
-.atl-weekly-coach-slow-notice {
-  background: var(--background-secondary);
-  border-left: 3px solid var(--color-yellow);
-  color: var(--text-muted);
-  font-size: 10px;
-  line-height: 1.5;
-  padding: 8px 10px;
-}
-
-.atl-weekly-coach-message {
-  background: rgba(0, 168, 107, .08);
-  border: 1px solid rgba(0, 168, 107, .2);
-  border-radius: 6px;
-  color: #007b52;
-  font-size: 11px;
-  margin-bottom: 16px;
-  padding: 9px 11px;
-}
-
-.atl-weekly-coach-question {
-  background: var(--background-secondary);
-  border-left: 3px solid var(--interactive-accent);
-  padding: 16px 18px;
-}
-
-.atl-weekly-coach-eyebrow {
-  color: var(--interactive-accent);
-  display: block;
-  font-size: 9px;
-  font-weight: 700;
-  margin-bottom: 8px;
-}
-
-.atl-weekly-coach-background {
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
-  padding: 12px 14px;
-}
-
-.atl-weekly-coach-background summary {
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.atl-weekly-coach-background-grid {
-  display: grid;
-  gap: 12px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  margin-top: 14px;
-}
-
-.atl-weekly-coach-background-section {
-  background: var(--background-secondary);
-  border-radius: 5px;
-  min-width: 0;
-  padding: 10px 12px;
-}
-
-.atl-weekly-coach-background-section strong {
-  font-size: 10px;
-}
-
-.atl-weekly-coach-background-section ul {
-  font-size: 11px;
-  line-height: 1.55;
-  margin: 7px 0 0;
-  padding-left: 16px;
-}
-
-.atl-weekly-coach-direction,
-.atl-weekly-coach-focus-editor,
-.atl-weekly-coach-confirmed-focus {
-  border-bottom: 1px solid var(--background-modifier-border);
-  padding: 12px 2px;
-}
-
-.atl-weekly-coach-direction small {
-  color: var(--text-muted);
-  display: block;
-  font-size: 10px;
-  line-height: 1.5;
-  margin-top: 5px;
-}
-
-.atl-weekly-coach-organize-notice {
-  background: rgba(106, 0, 255, .06);
-  border: 1px solid rgba(106, 0, 255, .16);
-  border-radius: 6px;
-  padding: 12px 14px;
-}
-
-.atl-weekly-coach-no-focus {
-  align-items: center;
-  display: flex;
-  font-size: 12px;
-  gap: 8px;
-  margin-bottom: 14px;
-}
-
-.atl-weekly-coach-focus-heading {
-  align-items: center;
-  display: flex;
-  justify-content: space-between;
-}
-
-.atl-weekly-coach-focus-list > button {
-  margin-top: 10px;
-}
-
-.atl-weekly-coach-confirmed-focus span {
-  color: var(--text-muted);
-  display: block;
-  font-size: 9px;
-  margin-bottom: 4px;
-}
-
-.atl-weekly-coach-confirmed-focus strong {
-  font-size: 13px;
-}
-
-.atl-weekly-coach-empty-decision {
-  background: var(--background-secondary);
-  border-radius: 6px;
-  font-size: 12px;
-  margin-top: 14px;
-  padding: 14px;
-}
-
-@media (max-width: 720px) {
+@media (max-width: 760px) {
   .atl-weekly-coach-modal {
     height: calc(100vh - 24px);
     width: calc(100vw - 24px);
@@ -2864,20 +3013,54 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
 
   .atl-weekly-coach-header {
     align-items: flex-start;
-    padding: 18px 16px 14px;
+    min-height: 70px;
+    padding: 14px 16px;
   }
 
   .atl-weekly-coach-meta {
     display: none;
   }
 
-  .atl-weekly-coach-body {
-    padding: 16px;
+  .atl-weekly-coach-main {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(300px, 1fr) minmax(240px, 1fr);
   }
 
-  .atl-weekly-coach-source-grid,
-  .atl-weekly-coach-background-grid,
-  .atl-weekly-coach-choice-grid {
-    grid-template-columns: 1fr;
+  .atl-weekly-coach-conversation {
+    padding: 15px 16px 18px;
+  }
+
+  .atl-weekly-coach-draft-panel {
+    border-left: 0;
+    border-top: 1px solid var(--background-modifier-border);
+    padding: 15px 16px;
+  }
+
+  .atl-weekly-coach-footer {
+    padding: 10px 14px;
+  }
+}
+
+@media (max-width: 520px) {
+  .atl-weekly-coach-title p {
+    display: none;
+  }
+
+  .atl-weekly-coach-message {
+    max-width: 96%;
+  }
+
+  .atl-weekly-coach-footer {
+    align-items: stretch;
+    display: grid;
+  }
+
+  .atl-weekly-coach-footer-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .atl-weekly-coach-footer-actions button {
+    width: 100%;
   }
 }
