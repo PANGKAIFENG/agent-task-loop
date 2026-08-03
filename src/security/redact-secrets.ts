@@ -109,6 +109,96 @@ function redactYamlCredentials(value: string): string {
     }, value);
 }
 
+function splitLinesPreservingEndings(value: string): string[] {
+  return value.match(/[^\n]*\n|[^\n]+$/gu) ?? [];
+}
+
+function splitBlockquotePrefix(
+  line: string,
+): { prefix: string; remainder: string; depth: number } {
+  let prefix = '';
+  let remainder = line;
+  let depth = 0;
+  while (true) {
+    const match = /^[ \t]*>[ \t]?/u.exec(remainder);
+    if (match === null) break;
+    prefix += match[0];
+    remainder = remainder.slice(match[0].length);
+    depth += 1;
+  }
+  return { prefix, remainder, depth };
+}
+
+function stripBlockquoteDepth(line: string, depth: number): string | null {
+  let remainder = line;
+  for (let index = 0; index < depth; index += 1) {
+    const match = /^[ \t]*>[ \t]?/u.exec(remainder);
+    if (match === null) return null;
+    remainder = remainder.slice(match[0].length);
+  }
+  return remainder;
+}
+
+function prefixLines(value: string, prefix: string): string {
+  if (prefix.length === 0) return value;
+  return splitLinesPreservingEndings(value)
+    .map((line) => `${prefix}${line}`)
+    .join('');
+}
+
+function redactFencedYamlCredentials(value: string): string {
+  const lines = splitLinesPreservingEndings(value);
+  const redacted: string[] = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const openingLine = lines[index] ?? '';
+    const opening = splitBlockquotePrefix(openingLine);
+    const fenceMatch = /^[ \t]*(`{3,}|~{3,})[ \t]*ya?ml\b[^\r\n]*\r?\n?$/iu.exec(
+      opening.remainder,
+    );
+    if (fenceMatch === null) {
+      redacted.push(openingLine);
+      continue;
+    }
+
+    const openingFence = fenceMatch[1] ?? '';
+    let closingIndex = -1;
+    for (let candidateIndex = index + 1; candidateIndex < lines.length; candidateIndex += 1) {
+      const candidate = stripBlockquoteDepth(lines[candidateIndex] ?? '', opening.depth);
+      if (candidate === null) continue;
+      const closingFence = /^[ \t]*(`{3,}|~{3,})[ \t]*\r?\n?$/u.exec(candidate)?.[1];
+      if (
+        closingFence !== undefined
+        && closingFence[0] === openingFence[0]
+        && closingFence.length >= openingFence.length
+      ) {
+        closingIndex = candidateIndex;
+        break;
+      }
+    }
+    if (closingIndex < 0) {
+      redacted.push(openingLine);
+      continue;
+    }
+
+    const bodyLines = lines.slice(index + 1, closingIndex);
+    const yamlBody = bodyLines
+      .map((line) => stripBlockquoteDepth(line, opening.depth) ?? line)
+      .join('');
+    const redactedBody = redactYamlCredentials(yamlBody);
+    redacted.push(openingLine);
+    redacted.push(
+      redactedBody === yamlBody
+        ? bodyLines.join('')
+        : prefixLines(redactedBody, opening.prefix),
+    );
+    redacted.push(lines[closingIndex] ?? '');
+    index = closingIndex;
+  }
+
+  return redacted.join('');
+}
+
 function redactStructuredCredentials(value: string): string {
   const lines = value.split('\n');
   const redacted: string[] = [];
@@ -171,6 +261,6 @@ function redactStructuredCredentials(value: string): string {
 export function redactSecrets(value: string): string {
   return SECRET_PATTERNS.reduce(
     (redacted, pattern) => redacted.replace(pattern, '[REDACTED]'),
-    redactStructuredCredentials(redactYamlCredentials(value)),
+    redactStructuredCredentials(redactFencedYamlCredentials(redactYamlCredentials(value))),
   );
 }

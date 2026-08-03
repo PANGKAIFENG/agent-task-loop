@@ -156,4 +156,56 @@ describe('redactSecrets', () => {
     expect(redacted).toContain('next: keep');
     expect(redacted).toContain('[REDACTED]');
   });
+
+  it.each([
+    ['explicit mapping key', [
+      '? password',
+      ': "prefix-private',
+      '  suffix-private"',
+      'next: keep',
+    ].join('\n')],
+    ['tagged flow map scalar', [
+      "{password: !!str 'prefix-private''suffix-private', next: keep}",
+    ].join('\n')],
+    ['anchored flow map scalar', [
+      '{password: &credential "prefix-private suffix-private", next: keep}',
+    ].join('\n')],
+    ['properties split across lines', [
+      'password: !!str',
+      '  &credential "prefix-private',
+      '  suffix-private"',
+      'next: keep',
+    ].join('\n')],
+  ])('redacts a complete Markdown-embedded YAML %s', (_label, credential) => {
+    const source = [
+      '配置如下：',
+      '```yaml',
+      credential,
+      '```',
+    ].join('\n');
+
+    const redacted = redactSecrets(source);
+
+    expect(redacted).not.toContain('prefix-private');
+    expect(redacted).not.toContain('suffix-private');
+    expect(redacted).toContain('keep');
+    expect(redacted).toContain('[REDACTED]');
+  });
+
+  it('redacts a complete YAML credential inside a Markdown blockquote fence', () => {
+    const source = [
+      '> ```yaml',
+      '> password: "prefix-private',
+      '>   suffix-private"',
+      '> next: keep',
+      '> ```',
+    ].join('\n');
+
+    const redacted = redactSecrets(source);
+
+    expect(redacted).not.toContain('prefix-private');
+    expect(redacted).not.toContain('suffix-private');
+    expect(redacted).toContain('> next: keep');
+    expect(redacted).toContain('[REDACTED]');
+  });
 });
