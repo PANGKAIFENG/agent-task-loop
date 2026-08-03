@@ -598,6 +598,7 @@ export function validateWeeklyCoachSessionDraft(
 
 export function weeklyCoachDraftToFocusInput(
   draft: WeeklyCoachSessionDraft,
+  baseInput?: WeeklyFocusInput,
 ): WeeklyFocusInput {
   const safeDraft = redactSessionDraft(draft);
   return {
@@ -612,19 +613,19 @@ export function weeklyCoachDraftToFocusInput(
       evidence: item.evidence,
     })),
     noNewFocus: safeDraft.noNewFocus,
-    notDoing: [],
+    notDoing: redactStringList(baseInput?.notDoing ?? []),
     background: {
       facts: [...safeDraft.background.facts],
       assumptions: [...safeDraft.background.assumptions],
       gaps: [...safeDraft.background.gaps],
       sources: [...safeDraft.background.sources],
     },
-    coachInsights: [],
-    consideredDirections: [],
+    coachInsights: redactStringList(baseInput?.coachInsights ?? []),
+    consideredDirections: redactStringList(baseInput?.consideredDirections ?? []),
     keyAnswers: [...safeDraft.keyAnswers],
-    linkedGoals: [],
-    linkedTasks: [],
-    adjustmentNote: '',
+    linkedGoals: redactStringList(baseInput?.linkedGoals ?? []),
+    linkedTasks: redactStringList(baseInput?.linkedTasks ?? []),
+    adjustmentNote: redactSecrets(baseInput?.adjustmentNote ?? ''),
   };
 }
 

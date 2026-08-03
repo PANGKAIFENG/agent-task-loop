@@ -788,7 +788,7 @@ export class WeeklyThinkingCoachModal extends Modal {
     this.render();
     try {
       const result = await this.dependencies.confirm(
-        weeklyCoachDraftToFocusInput(this.session),
+        weeklyCoachDraftToFocusInput(this.session, this.currentRecord?.record.input),
         this.currentRecord?.raw ?? null,
       );
       this.currentRecord = result;

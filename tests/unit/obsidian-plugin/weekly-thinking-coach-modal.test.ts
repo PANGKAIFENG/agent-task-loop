@@ -520,6 +520,30 @@ describe('WeeklyThinkingCoachModal', () => {
     )?.value).toBe('继续补充完成证据');
   });
 
+  it('preserves legacy weekly draft fields that are not editable in the conversation modal', async () => {
+    const record = weeklyDocument('草稿');
+    const preserved = {
+      notDoing: ['本周不扩展第二套方案'],
+      coachInsights: ['先验证是否真的被团队采用'],
+      consideredDirections: ['直接发布', '先试跑两个流程'],
+      linkedGoals: ['季度目标/验证产品价值'],
+      linkedTasks: ['10_Tasks/Active/验证边界.md'],
+      adjustmentNote: '周三根据试跑反馈调整范围',
+    };
+    record.record.input = { ...record.record.input, ...preserved };
+    record.record.linkedGoals = [...preserved.linkedGoals];
+    record.record.linkedTasks = [...preserved.linkedTasks];
+    const { modal, confirm } = setup({ record });
+    await open(modal);
+
+    button(modal, '确认并写入 Obsidian').click();
+
+    await vi.waitFor(() => expect(confirm).toHaveBeenCalledWith(
+      expect.objectContaining(preserved),
+      record.raw,
+    ));
+  });
+
   it('shows inline validation and supports explicit zero-item confirmation', async () => {
     const { modal, confirm, clearSessionDraft } = setup();
     await open(modal);
