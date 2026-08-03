@@ -190,6 +190,8 @@ function setup(options: {
     expectedContent: string | null,
   ) => Promise<WeeklyFocusDocument>;
   allowed?: () => boolean;
+  currentWeek?: () => string;
+  modelLabel?: string;
 } = {}) {
   let id = 0;
   const runCoach = vi.fn(async (
@@ -217,7 +219,7 @@ function setup(options: {
   const notify = vi.fn();
   const modal = new WeeklyThinkingCoachModal({} as never, {
     week: '2026-W32',
-    modelLabel: '沿用 Claude Code / CC-Switch',
+    modelLabel: options.modelLabel ?? '沿用 Claude Code / CC-Switch',
     loadRecord: vi.fn(async () => options.record ?? null),
     loadSessionDraft: vi.fn(() => options.draft ?? null),
     runCoach,
@@ -229,6 +231,7 @@ function setup(options: {
     openRecord,
     notify,
     now: () => NOW,
+    currentWeek: options.currentWeek ?? (() => '2026-W32'),
     createId: () => `generated-${++id}`,
   });
   return {
@@ -260,6 +263,8 @@ describe('WeeklyThinkingCoachModal', () => {
     expect(modal.contentEl.textContent).toContain('0 / 3');
     expect(modal.contentEl.textContent).toContain('2026-W32');
     expect(modal.contentEl.textContent).toContain('沿用 Claude Code / CC-Switch');
+    expect(modal.contentEl.textContent).toContain('已配置');
+    expect(modal.contentEl.textContent).not.toContain('已连接');
     expect(modal.contentEl.querySelector<HTMLInputElement>('input[aria-label="授权任务"]')?.checked)
       .toBe(true);
     expect(modal.contentEl.querySelector<HTMLInputElement>(
@@ -267,6 +272,14 @@ describe('WeeklyThinkingCoachModal', () => {
     )?.checked).toBe(false);
     expect(button(modal, '发送').title).toBe('发送');
     expect(button(modal, '人工添加重点').title).toBe('人工添加重点');
+  });
+
+  it('does not claim a model connection when configuration is invalid', async () => {
+    const { modal } = setup({ modelLabel: '模型配置需检查（可人工整理）' });
+    await open(modal);
+
+    expect(modal.contentEl.textContent).toContain('需配置');
+    expect(modal.contentEl.textContent).not.toContain('已连接');
   });
 
   it('updates the conversation and live draft atomically after one AI response', async () => {
@@ -469,6 +482,24 @@ describe('WeeklyThinkingCoachModal', () => {
       expect(clearSessionDraft).toHaveBeenCalledOnce();
       expect(modal.contentEl.textContent).toContain('这是你确认的本周判断');
     });
+  });
+
+  it('keeps the draft and blocks formal confirmation after the week changes', async () => {
+    const { modal, confirm, clearSessionDraft } = setup({
+      currentWeek: () => '2026-W33',
+    });
+    await open(modal);
+
+    const noFocus = modal.contentEl.querySelector<HTMLInputElement>(
+      'input[aria-label="本周暂不新增重点，先完成既有承诺"]',
+    )!;
+    noFocus.checked = true;
+    noFocus.dispatchEvent(new window.Event('change', { bubbles: true }));
+    button(modal, '确认并写入 Obsidian').click();
+
+    expect(modal.contentEl.textContent).toContain('已进入新的自然周');
+    expect(confirm).not.toHaveBeenCalled();
+    expect(clearSessionDraft).not.toHaveBeenCalled();
   });
 
   it('places missing-field validation beside the affected card', async () => {

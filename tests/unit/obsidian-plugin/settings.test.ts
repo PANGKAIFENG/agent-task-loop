@@ -414,6 +414,22 @@ describe('weekly coach draft settings integration', () => {
     expect(source).toMatch(/saveWeeklyCoachSessionDraft[\s\S]*await this\.saveSettings\(\)/u);
     expect(source).toMatch(/clearWeeklyCoachSessionDraft[\s\S]*await this\.saveSettings\(\)/u);
   });
+
+  it('freezes the ISO week when a coach modal opens', async () => {
+    const source = await readFile(resolve('src/obsidian-plugin/main.ts'), 'utf8');
+    const openWeeklyCoach = source.match(
+      /private openWeeklyCoach\([\s\S]*?(?=\n {2}private async openWeeklyFocus)/u,
+    )?.[0] ?? '';
+
+    expect(openWeeklyCoach).toContain('const week = currentIsoWeek(clock(), timeZone);');
+    expect(openWeeklyCoach).toContain('week,');
+    expect(openWeeklyCoach).toContain('this.loadWeeklyCoachSessionDraft(week)');
+    expect(openWeeklyCoach).toContain('this.clearWeeklyCoachSessionDraft(week)');
+    expect(openWeeklyCoach).toContain(
+      'currentWeek: () => currentIsoWeek(clock(), timeZone)',
+    );
+    expect(openWeeklyCoach.match(/currentIsoWeek\(clock\(\), timeZone\)/gu)).toHaveLength(2);
+  });
 });
 
 describe('modelServiceConfiguration', () => {

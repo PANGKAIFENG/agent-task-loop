@@ -70,6 +70,7 @@ export interface WeeklyThinkingCoachModalDependencies {
   openRecord(path: string): Promise<void>;
   notify(message: string): void;
   now(): Date;
+  currentWeek(): string;
   createId(): string;
 }
 
@@ -296,7 +297,11 @@ export class WeeklyThinkingCoachModal extends Modal {
       text: `${this.dependencies.week} · 和 AI 一起想清楚本周真正值得投入的事情`,
     });
     const meta = header.createDiv({ cls: 'atl-weekly-coach-meta' });
-    meta.createEl('span', { cls: 'atl-weekly-coach-model-status', text: '已连接' });
+    const requiresConfiguration = this.dependencies.modelLabel.startsWith('模型配置需检查');
+    meta.createEl('span', {
+      cls: `atl-weekly-coach-model-status${requiresConfiguration ? ' is-warning' : ''}`,
+      text: requiresConfiguration ? '需配置' : '已配置',
+    });
     meta.createEl('span', { text: this.dependencies.modelLabel });
   }
 
@@ -745,6 +750,11 @@ export class WeeklyThinkingCoachModal extends Modal {
 
   private async confirm(): Promise<void> {
     if (this.busy || this.persisting || this.isConfirmed()) return;
+    if (this.dependencies.currentWeek() !== this.dependencies.week) {
+      this.error = '已进入新的自然周，请保存后重新打开本周思考教练。';
+      this.render();
+      return;
+    }
     if (!this.dependencies.canManageVault()) {
       this.error = 'Vault 管理权限已关闭，请在 ATL 设置中开启后再确认。';
       this.render();

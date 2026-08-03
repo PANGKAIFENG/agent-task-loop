@@ -562,14 +562,13 @@ export default class AgentTaskLoopPlugin extends Plugin {
   ): void {
     const timeZone = resolveSystemTimeZone();
     const clock = () => new Date();
+    const week = currentIsoWeek(clock(), timeZone);
     const gateway = this.createWeeklyFocusGateway();
     new WeeklyThinkingCoachModal(this.app, {
-      week: currentIsoWeek(clock(), timeZone),
+      week,
       modelLabel: this.weeklyCoachModelLabel(),
       loadRecord: () => loadCurrentWeeklyFocus(gateway, clock, timeZone),
-      loadSessionDraft: () => this.loadWeeklyCoachSessionDraft(
-        currentIsoWeek(clock(), timeZone),
-      ),
+      loadSessionDraft: () => this.loadWeeklyCoachSessionDraft(week),
       runCoach: async (turn, control) => {
         const context = await collectWeeklyCoachContext(
           this.createWeeklyCoachContextGateway(),
@@ -597,9 +596,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
         }, control);
       },
       saveSessionDraft: (draft) => this.saveWeeklyCoachSessionDraft(draft),
-      clearSessionDraft: () => this.clearWeeklyCoachSessionDraft(
-        currentIsoWeek(clock(), timeZone),
-      ),
+      clearSessionDraft: () => this.clearWeeklyCoachSessionDraft(week),
       confirm: (input, expectedContent) => confirmWeeklyFocus(
         gateway,
         clock,
@@ -612,6 +609,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
       openRecord: (path) => this.openWeeklyFocus(path),
       notify: (message) => { new Notice(message); },
       now: clock,
+      currentWeek: () => currentIsoWeek(clock(), timeZone),
       createId: randomUUID,
     }).open();
   }
