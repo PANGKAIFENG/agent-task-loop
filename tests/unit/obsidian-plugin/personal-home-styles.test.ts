@@ -216,4 +216,14 @@ describe('personal home heatmap styles', () => {
     expect(declarationsFor(css, '.atl-weekly-coach-scroll-latest'))
       .toMatch(/position\s*:\s*absolute/);
   });
+
+  it('keeps the weekly coach source controls visually collapsed while hidden', async () => {
+    const css = await readFile(
+      new URL('../../../src/obsidian-plugin/styles.css', import.meta.url),
+      'utf8',
+    );
+
+    expect(declarationsFor(css, '.atl-weekly-coach-source-list[hidden]'))
+      .toMatch(/display\s*:\s*none/);
+  });
 });
