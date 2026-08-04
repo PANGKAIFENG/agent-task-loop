@@ -537,6 +537,33 @@ describe('weekly coach session draft', () => {
     expect(removeWeeklyCoachDraftItem(draft, 'focus-1').deferredTaskQuestions).toEqual([]);
   });
 
+  it('protects questions removed with a focus from AI restoration', () => {
+    const original = {
+      ...draftWith(completeItem('focus-1')),
+      deferredTaskQuestions: [{
+        id: 'question-1',
+        relatedItemId: 'focus-1',
+        relatedFocus: '发布插件',
+        question: '定义兼容范围',
+      }],
+    };
+
+    const removed = removeWeeklyCoachDraftItem(original, 'focus-1');
+    const merged = mergeWeeklyCoachDeferredTaskQuestions(removed, [{
+      relatedItemId: null,
+      relatedFocus: '发布插件',
+      question: '定义兼容范围。',
+    }], { nextId: () => 'question-restored' });
+
+    expect(removed.deferredTaskQuestions).toEqual([]);
+    expect.soft(removed.protectedDeferredTaskQuestionKeys).toEqual([
+      expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+    ]);
+    expect(JSON.stringify(removed.protectedDeferredTaskQuestionKeys))
+      .not.toContain('定义兼容范围');
+    expect.soft(merged.deferredTaskQuestions).toEqual([]);
+  });
+
   it('does not persist credential content in deletion tombstones', () => {
     const original = draftWith(completeItem(
       'focus-1',

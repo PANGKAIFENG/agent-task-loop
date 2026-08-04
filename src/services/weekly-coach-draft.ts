@@ -618,6 +618,9 @@ export function removeWeeklyCoachDraftItem(
   if (item === undefined) return draft;
   const next = cloneDraft(draft);
   next.items = next.items.filter((candidate) => candidate.id !== itemId);
+  for (const question of next.deferredTaskQuestions) {
+    if (question.relatedItemId === itemId) protectDeferredTaskQuestion(next, question.question);
+  }
   next.deferredTaskQuestions = next.deferredTaskQuestions.filter(
     (question) => question.relatedItemId !== itemId,
   );
