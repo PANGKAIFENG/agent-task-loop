@@ -45,6 +45,7 @@ const input: WeeklyCoachTurnInput = {
   draftItems: [draftItem],
   deletedFocuses: ['不再讨论命名'],
   focusedItemId: 'focus-1',
+  deferredTaskQuestions: [],
   context,
 };
 
@@ -53,6 +54,8 @@ function validOutput(overrides: Record<string, unknown> = {}): Record<string, un
     assistantMessage: '先不要急着列任务。你真正要验证的是边界图是否会被团队使用。',
     nextQuestion: '如果周五只看到一个变化，什么变化最能证明这件事值得做？',
     questionReason: '这个答案会决定预期结果和完成证据。',
+    nextQuestionDimension: '周级结果',
+    deferredTaskQuestions: [],
     background: {
       facts: [' 产品边界讨论反复出现。 ', '产品边界讨论反复出现。'],
       assumptions: ['边界图可能减少重复讨论。'],
@@ -124,6 +127,7 @@ describe('runWeeklyThinkingCoach', () => {
     const result = await runWeeklyThinkingCoach(executor(validOutput({
       nextQuestion: null,
       questionReason: null,
+      nextQuestionDimension: null,
       draftOperations: [],
       readiness: '可确认',
     })), input);
@@ -179,6 +183,93 @@ describe('runWeeklyThinkingCoach', () => {
       })),
       topThree: ['不允许的字段'],
     })), input)).rejects.toThrow();
+  });
+
+  it('restricts follow-up questions to weekly decision dimensions', async () => {
+    const fake = executor(validOutput({
+      nextQuestion: '如果本周投入它，需要延后什么？',
+      questionReason: '需要确认机会成本。',
+      nextQuestionDimension: '机会成本',
+    }));
+
+    const result = await runWeeklyThinkingCoach(fake, input);
+    expect(result.nextQuestionDimension).toBe('机会成本');
+
+    const execution = fake.execute.mock.calls[0]?.[0] as ClaudeStructuredInput<unknown>;
+    expect(execution.prompt).toContain('目标关联、本周时机、周级结果、结果价值、机会成本、投入容量');
+    expect(execution.prompt).toContain('什么叫可用的 Skill');
+    expect(execution.prompt).toContain('进入任务后待思考的问题');
+    expect(execution.prompt).toContain('不得再次追问');
+  });
+
+  it('includes the ordered decision procedure, fixed examples, and task-question stop rules', async () => {
+    const fake = executor(validOutput());
+
+    await runWeeklyThinkingCoach(fake, input);
+
+    const execution = fake.execute.mock.calls[0]?.[0] as ClaudeStructuredInput<unknown>;
+    expect(execution.prompt).toContain([
+      '请严格按以下顺序工作：',
+      '1. 吸收用户最新回答并更新已确认事实。',
+      '2. 识别其中的周级判断和任务级问题。',
+      '3. 将任务级问题写入延后处理列表。',
+      '4. 判断是否仍存在影响本周取舍的周级缺口。',
+      '5. 有周级缺口时只问一个；没有时停止追问。',
+      '6. 更新草稿时只填写已有依据的周级字段，不用任务方案补造完成证据。',
+    ].join('\n'));
+    expect(execution.prompt).toContain([
+      '可以追问：',
+      '“筛选 10 个 Skill 这件事为什么必须在本周完成？”',
+      '“它与周四前的另一个承诺相比，哪个结果更重要？”',
+      '',
+      '不得追问：',
+      '“什么叫可用的 Skill？”',
+      '“应该用哪些维度筛选 Skill？”',
+      '',
+      '正确处理：',
+      '将后两项记录为“进入任务后待思考的问题”，继续讨论本周价值和取舍。',
+    ].join('\n'));
+    expect(execution.prompt).toContain(
+      '如果只剩任务级问题，且当前重点四个周级字段已经完整，readiness 必须为“可确认”，nextQuestion、questionReason 和 nextQuestionDimension 必须为 null。',
+    );
+    expect(execution.prompt).toContain(
+      '任务级问题不得放入 background.gaps 作为待用户回答的缺口。',
+    );
+    expect(execution.prompt).toContain(
+      '所有需要用户回答的问题只能放在唯一的 nextQuestion 中。',
+    );
+  });
+
+  it('rejects a question without an allowed weekly dimension', async () => {
+    await expect(runWeeklyThinkingCoach(executor(validOutput({
+      nextQuestion: '什么叫可用的 Skill？',
+      questionReason: '需要定义任务标准。',
+      nextQuestionDimension: '任务执行',
+    })), input)).rejects.toThrow();
+  });
+
+  it('requires the question fields and dimension to be null together', async () => {
+    await expect(runWeeklyThinkingCoach(executor(validOutput({
+      nextQuestion: null,
+      questionReason: null,
+      nextQuestionDimension: '周级结果',
+    })), input)).rejects.toThrow();
+  });
+
+  it('rejects an exact re-ask of a deferred task question', async () => {
+    await expect(runWeeklyThinkingCoach(executor(validOutput({
+      nextQuestion: '什么叫可用的 Skill？',
+      questionReason: '需要继续确认。',
+      nextQuestionDimension: '周级结果',
+    })), {
+      ...input,
+      deferredTaskQuestions: [{
+        id: 'question-1',
+        relatedItemId: 'focus-1',
+        relatedFocus: '验证 StyleWork 产品边界是否可复用',
+        question: '什么叫可用的 Skill',
+      }],
+    })).rejects.toThrow('已延后的任务级问题不得再次追问');
   });
 
   it('requires create operations to carry evidence for at least three visible fields', async () => {

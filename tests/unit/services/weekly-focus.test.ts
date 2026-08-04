@@ -25,6 +25,7 @@ function input(overrides: Partial<WeeklyFocusInput> = {}): WeeklyFocusInput {
       outcome: '形成一页团队共同使用的边界图。',
       whyThisWeek: '本周有两个真实流程可用于验证，延后会继续重复讨论。',
       evidence: '两个流程的负责人都确认采用同一份说明。',
+      deferredTaskQuestions: ['定义边界图的内部模板'],
     }],
     noNewFocus: false,
     notDoing: ['不扩展新的 Agent 名称。'],
@@ -40,6 +41,7 @@ function input(overrides: Partial<WeeklyFocusInput> = {}): WeeklyFocusInput {
     linkedGoals: ['[[完善个人 AI 工作系统]]'],
     linkedTasks: [],
     adjustmentNote: '',
+    unassignedDeferredTaskQuestions: ['确认后续任务承载位置'],
     ...overrides,
   };
 }
@@ -108,6 +110,7 @@ describe('weekly focus service', () => {
       '复盘状态',
       '更新时间',
       '本周判断',
+      '其他进入任务后待思考的问题',
       '本周暂不新增重点',
       '本周不做',
       'AI背景',
@@ -132,10 +135,14 @@ describe('weekly focus service', () => {
       预期结果: '形成一页团队共同使用的边界图。',
       为什么是本周: '本周有两个真实流程可用于验证，延后会继续重复讨论。',
       完成证据: '两个流程的负责人都确认采用同一份说明。',
+      进入任务后待思考的问题: ['定义边界图的内部模板'],
     }]);
+    expect(data['其他进入任务后待思考的问题']).toEqual(['确认后续任务承载位置']);
     expect(document.raw).not.toMatch(/\b(?:type|week|status|confirmed|pending)\s*:/i);
     expect(document.raw).toContain('## 本周重点');
     expect(document.raw).toContain('**为什么是本周**：本周有两个真实流程可用于验证');
+    expect(document.raw).toContain('#### 进入任务后待思考的问题');
+    expect(document.raw).toContain('## 其他进入任务后待思考的问题');
     expect(document.raw).not.toContain('用户最终判断');
     expect(document.raw).not.toContain('本周承诺');
     expect(document.raw).toContain('## AI 已了解的背景');
@@ -176,7 +183,79 @@ describe('weekly focus service', () => {
       outcome: '形成一页团队共同使用的边界图。',
       whyThisWeek: '周五前完成一页边界图。',
       evidence: '两个流程的负责人都确认采用同一份说明。',
+      deferredTaskQuestions: [],
     });
+  });
+
+  it('loads old records without deferred-question fields as empty lists', async () => {
+    const gateway = new MemoryGateway();
+    const saved = await saveWeeklyFocusDraft(gateway, () => NOW, input(), null, 'Asia/Shanghai');
+    const data = frontmatter(saved.raw);
+    delete data['其他进入任务后待思考的问题'];
+    const focuses = data['本周判断'] as Array<Record<string, unknown>>;
+    delete focuses[0]?.['进入任务后待思考的问题'];
+    const legacy = saved.raw.replace(
+      /^---\n[\s\S]*?\n---/u,
+      `---\n${YAML.stringify(data).trimEnd()}\n---`,
+    );
+    gateway.files.set(saved.path, legacy);
+
+    const loaded = await loadCurrentWeeklyFocus(gateway, () => NOW, 'Asia/Shanghai');
+
+    expect(loaded?.record.input.focuses[0]?.deferredTaskQuestions).toEqual([]);
+    expect(loaded?.record.input.unassignedDeferredTaskQuestions).toEqual([]);
+  });
+
+  it('deduplicates and caps deferred questions when saving a formal weekly record', async () => {
+    const gateway = new MemoryGateway();
+    const linkedQuestions = [
+      ...Array.from({ length: 6 }, (_, index) => `重点问题 ${index + 1}`),
+      '重点问题 1。',
+    ];
+    const unassignedQuestions = [
+      ...Array.from({ length: 11 }, (_, index) => `未关联问题 ${index + 1}`),
+      '未关联问题 1！',
+    ];
+
+    const saved = await saveWeeklyFocusDraft(gateway, () => NOW, input({
+      focuses: [{ ...input().focuses[0]!, deferredTaskQuestions: linkedQuestions }],
+      unassignedDeferredTaskQuestions: unassignedQuestions,
+    }), null, 'Asia/Shanghai');
+
+    expect(saved.record.input.focuses[0]?.deferredTaskQuestions).toEqual(
+      linkedQuestions.slice(0, 5),
+    );
+    expect(saved.record.input.unassignedDeferredTaskQuestions).toEqual(
+      unassignedQuestions.slice(0, 10),
+    );
+  });
+
+  it('deduplicates and caps deferred questions parsed from an existing weekly record', async () => {
+    const gateway = new MemoryGateway();
+    const saved = await saveWeeklyFocusDraft(gateway, () => NOW, input(), null, 'Asia/Shanghai');
+    const data = frontmatter(saved.raw);
+    const focuses = data['本周判断'] as Array<Record<string, unknown>>;
+    focuses[0]!['进入任务后待思考的问题'] = [
+      ...Array.from({ length: 6 }, (_, index) => `重点问题 ${index + 1}`),
+      '重点问题 1。',
+    ];
+    data['其他进入任务后待思考的问题'] = [
+      ...Array.from({ length: 11 }, (_, index) => `未关联问题 ${index + 1}`),
+      '未关联问题 1！',
+    ];
+    gateway.files.set(saved.path, saved.raw.replace(
+      /^---\n[\s\S]*?\n---/u,
+      `---\n${YAML.stringify(data).trimEnd()}\n---`,
+    ));
+
+    const loaded = await loadCurrentWeeklyFocus(gateway, () => NOW, 'Asia/Shanghai');
+
+    expect(loaded?.record.input.focuses[0]?.deferredTaskQuestions).toEqual(
+      Array.from({ length: 5 }, (_, index) => `重点问题 ${index + 1}`),
+    );
+    expect(loaded?.record.input.unassignedDeferredTaskQuestions).toEqual(
+      Array.from({ length: 10 }, (_, index) => `未关联问题 ${index + 1}`),
+    );
   });
 
   it('confirms zero new focuses only when the user explicitly chooses that outcome', async () => {

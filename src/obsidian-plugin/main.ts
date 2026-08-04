@@ -592,6 +592,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
           draftItems: turn.draftItems,
           deletedFocuses: turn.deletedFocuses,
           focusedItemId: turn.focusedItemId,
+          deferredTaskQuestions: turn.deferredTaskQuestions,
           context,
         }, control);
       },

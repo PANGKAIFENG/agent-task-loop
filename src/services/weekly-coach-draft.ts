@@ -41,6 +41,19 @@ export interface WeeklyCoachDraftItem {
   readiness: WeeklyCoachDraftReadiness;
 }
 
+export interface WeeklyCoachDeferredTaskQuestion {
+  id: string;
+  relatedItemId: string | null;
+  relatedFocus: string;
+  question: string;
+}
+
+export interface WeeklyCoachDeferredTaskQuestionInput {
+  relatedItemId: string | null;
+  relatedFocus: string;
+  question: string;
+}
+
 export interface WeeklyCoachSessionDraft {
   draftVersion: 1;
   week: string;
@@ -53,6 +66,8 @@ export interface WeeklyCoachSessionDraft {
   questionReason: string;
   background: WeeklyFocusBackground;
   items: WeeklyCoachDraftItem[];
+  deferredTaskQuestions: WeeklyCoachDeferredTaskQuestion[];
+  protectedDeferredTaskQuestionKeys: string[];
   deletedItems: Array<{ id: string; focusKey: string; focusLabel: string }>;
   focusedItemId: string | null;
   noNewFocus: boolean;
@@ -92,6 +107,7 @@ export interface WeeklyThinkingCoachTurn {
   draftItems: WeeklyCoachDraftItem[];
   deletedFocuses: string[];
   focusedItemId: string | null;
+  deferredTaskQuestions: WeeklyCoachDeferredTaskQuestion[];
 }
 
 const EMPTY_BACKGROUND: WeeklyFocusBackground = {
@@ -109,7 +125,9 @@ const MAX_MESSAGE_ID_LENGTH = 256;
 const MAX_MESSAGE_TEXT_LENGTH = 4_000;
 const MAX_MESSAGE_DETAIL_LENGTH = 1_000;
 const MAX_DELETED_FOCUS_LABEL_LENGTH = 240;
-const DELETION_FOCUS_KEY_PATTERN = /^sha256:[a-f0-9]{64}$/u;
+const MAX_DEFERRED_PER_FOCUS = 5;
+const MAX_UNASSIGNED_DEFERRED = 10;
+const SHA256_KEY_PATTERN = /^sha256:[a-f0-9]{64}$/u;
 const LEGACY_NORMALIZED_SECRET_PATTERN = /(?:(?:apikey|access(?:token)?|auth(?:token)?|appsecret|clientsecret|privatekey|password|passwd|credential|token|secret|bearer).+|^(?:sk[a-z0-9]{8,}|gh[pousr][a-z0-9]{20,}|githubpat[a-z0-9]{20,}|xox[baprs][a-z0-9]{10,}|aiza[a-z0-9]{20,}|akia[a-z0-9]{16}|glpat[a-z0-9]{20,}|npm[a-z0-9]{20,}|whsec[a-z0-9]{20,})$)/iu;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -140,7 +158,7 @@ function focusKey(value: string): string {
 }
 
 function normalizedPersistedFocusKey(value: string): string {
-  return DELETION_FOCUS_KEY_PATTERN.test(value)
+  return SHA256_KEY_PATTERN.test(value)
     ? value
     : focusKey(value);
 }
@@ -230,6 +248,46 @@ function normalizePersistedMessages(value: unknown): WeeklyCoachTranscriptMessag
   return messages.length === 0 ? undefined : messages;
 }
 
+function normalizePersistedDeferredTaskQuestions(
+  value: unknown,
+): WeeklyCoachDeferredTaskQuestion[] | null {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > MAX_LIST_ITEMS) return null;
+  const questions: WeeklyCoachDeferredTaskQuestion[] = [];
+  for (const candidate of value) {
+    if (!isRecord(candidate)) return null;
+    const id = boundedPersistedString(candidate.id);
+    const relatedFocus = boundedPersistedString(candidate.relatedFocus);
+    const question = boundedPersistedString(candidate.question);
+    const relatedItemId = candidate.relatedItemId === null
+      ? null
+      : boundedPersistedString(candidate.relatedItemId);
+    if (
+      id === null
+      || id.trim() === ''
+      || relatedFocus === null
+      || question === null
+      || question.trim() === ''
+      || (relatedItemId !== null && relatedItemId.trim() === '')
+    ) return null;
+    questions.push({
+      id,
+      relatedItemId: relatedItemId?.trim() || null,
+      relatedFocus: safeFocusLabel(relatedFocus),
+      question: redactSecrets(question).trim(),
+    });
+  }
+  return questions;
+}
+
+function normalizePersistedDeferredTaskQuestionKeys(value: unknown): string[] | null {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > MAX_LIST_ITEMS) return null;
+  const keys = value.map(boundedPersistedString);
+  if (keys.some((key) => key === null || !SHA256_KEY_PATTERN.test(key))) return null;
+  return [...new Set(keys as string[])];
+}
+
 function normalizePersistedItem(value: unknown): WeeklyCoachDraftItem | null {
   if (!isRecord(value) || !isRecord(value.fieldSources) || !isRecord(value.suggestions)) {
     return null;
@@ -287,6 +345,12 @@ function normalizePersistedDraft(value: unknown, weekKey: string): WeeklyCoachSe
     ? boundedPersistedList(value.keyAnswers.slice(-8), 8)
     : null;
   const background = normalizePersistedBackground(value.background);
+  const persistedDeferredTaskQuestions = normalizePersistedDeferredTaskQuestions(
+    value.deferredTaskQuestions,
+  );
+  const protectedDeferredTaskQuestionKeys = normalizePersistedDeferredTaskQuestionKeys(
+    value.protectedDeferredTaskQuestionKeys,
+  );
   const messages = normalizePersistedMessages(value.messages);
   const updatedAt = normalizedTimestamp(value.updatedAt);
   if (
@@ -297,6 +361,8 @@ function normalizePersistedDraft(value: unknown, weekKey: string): WeeklyCoachSe
     || questionReason === null
     || keyAnswers === null
     || background === null
+    || persistedDeferredTaskQuestions === null
+    || protectedDeferredTaskQuestionKeys === null
     || updatedAt === null
     || !Array.isArray(value.selectedSources)
     || !Array.isArray(value.items)
@@ -312,6 +378,10 @@ function normalizePersistedDraft(value: unknown, weekKey: string): WeeklyCoachSe
   if (items.some((item) => item === null)) return null;
   const normalizedItems = items as WeeklyCoachDraftItem[];
   if (new Set(normalizedItems.map((item) => item.id)).size !== normalizedItems.length) return null;
+  const deferredTaskQuestions = reconcileDeferredTaskQuestions(
+    persistedDeferredTaskQuestions,
+    normalizedItems,
+  );
 
   const deletedItems: Array<{ id: string; focusKey: string; focusLabel: string }> = [];
   for (const candidate of value.deletedItems.slice(0, MAX_LIST_ITEMS)) {
@@ -322,7 +392,7 @@ function normalizePersistedDraft(value: unknown, weekKey: string): WeeklyCoachSe
       return null;
     }
     const deletedFocusKey = normalizedPersistedFocusKey(persistedFocusKey);
-    const legacyFocusLabel = DELETION_FOCUS_KEY_PATTERN.test(persistedFocusKey)
+    const legacyFocusLabel = SHA256_KEY_PATTERN.test(persistedFocusKey)
       ? '已删除重点'
       : safeLegacyFocusLabel(persistedFocusKey);
     const persistedFocusLabel = Object.hasOwn(candidate, 'focusLabel')
@@ -353,6 +423,8 @@ function normalizePersistedDraft(value: unknown, weekKey: string): WeeklyCoachSe
     questionReason,
     background,
     items: normalizedItems,
+    deferredTaskQuestions,
+    protectedDeferredTaskQuestionKeys,
     deletedItems,
     focusedItemId,
     noNewFocus: value.noNewFocus === true,
@@ -387,6 +459,8 @@ function cloneDraft(draft: WeeklyCoachSessionDraft): WeeklyCoachSessionDraft {
       sources: [...draft.background.sources],
     },
     items: draft.items.map(cloneItem),
+    deferredTaskQuestions: draft.deferredTaskQuestions.map((item) => ({ ...item })),
+    protectedDeferredTaskQuestionKeys: [...draft.protectedDeferredTaskQuestionKeys],
     deletedItems: draft.deletedItems.map((item) => ({ ...item })),
     ...(draft.messages === undefined
       ? {}
@@ -426,6 +500,15 @@ function redactSessionDraft(draft: WeeklyCoachSessionDraft): WeeklyCoachSessionD
     focusKey: normalizedPersistedFocusKey(item.focusKey),
     focusLabel: safeFocusLabel(item.focusLabel),
   }));
+  next.deferredTaskQuestions = next.deferredTaskQuestions.map((item) => ({
+    id: redactSecrets(item.id),
+    relatedItemId: item.relatedItemId === null ? null : redactSecrets(item.relatedItemId),
+    relatedFocus: safeFocusLabel(item.relatedFocus),
+    question: redactSecrets(item.question).trim(),
+  }));
+  next.protectedDeferredTaskQuestionKeys = [...new Set(
+    next.protectedDeferredTaskQuestionKeys.filter((key) => SHA256_KEY_PATTERN.test(key)),
+  )].slice(0, MAX_LIST_ITEMS);
   next.focusedItemId = next.focusedItemId === null
     ? null
     : redactSecrets(next.focusedItemId);
@@ -468,6 +551,8 @@ export function createWeeklyCoachSessionDraft(
     questionReason: '',
     background: { ...EMPTY_BACKGROUND },
     items: [],
+    deferredTaskQuestions: [],
+    protectedDeferredTaskQuestionKeys: [],
     deletedItems: [],
     focusedItemId: null,
     noNewFocus: false,
@@ -533,6 +618,12 @@ export function removeWeeklyCoachDraftItem(
   if (item === undefined) return draft;
   const next = cloneDraft(draft);
   next.items = next.items.filter((candidate) => candidate.id !== itemId);
+  for (const question of next.deferredTaskQuestions) {
+    if (question.relatedItemId === itemId) protectDeferredTaskQuestion(next, question.question);
+  }
+  next.deferredTaskQuestions = next.deferredTaskQuestions.filter(
+    (question) => question.relatedItemId !== itemId,
+  );
   const deletedFocusKey = focusKey(item.focus);
   if (
     deletedFocusKey !== ''
@@ -548,6 +639,153 @@ export function removeWeeklyCoachDraftItem(
   return next;
 }
 
+function normalizedQuestion(value: string): string {
+  return value.trim().toLocaleLowerCase('zh-CN').replace(/[\s\p{P}\p{S}]+/gu, '');
+}
+
+function deferredTaskQuestionKey(value: string): string {
+  const normalized = normalizedQuestion(value);
+  return normalized === ''
+    ? ''
+    : `sha256:${createHash('sha256').update(normalized).digest('hex')}`;
+}
+
+function protectDeferredTaskQuestion(
+  draft: WeeklyCoachSessionDraft,
+  question: string,
+): void {
+  const key = deferredTaskQuestionKey(question);
+  if (key === '' || draft.protectedDeferredTaskQuestionKeys.includes(key)) return;
+  draft.protectedDeferredTaskQuestionKeys = [
+    ...draft.protectedDeferredTaskQuestionKeys,
+    key,
+  ].slice(-MAX_LIST_ITEMS);
+}
+
+function deferredBucketKey(question: WeeklyCoachDeferredTaskQuestion): string {
+  return question.relatedItemId ?? 'unassigned';
+}
+
+function relatedItemForDeferredQuestion(
+  items: WeeklyCoachDraftItem[],
+  question: Pick<WeeklyCoachDeferredTaskQuestion, 'relatedItemId' | 'relatedFocus'>,
+): WeeklyCoachDraftItem | undefined {
+  const relatedById = question.relatedItemId === null
+    ? undefined
+    : items.find((item) => item.id === question.relatedItemId);
+  if (relatedById !== undefined) return relatedById;
+  const focus = normalizedFocus(question.relatedFocus);
+  return focus === ''
+    ? undefined
+    : items.find((item) => normalizedFocus(item.focus) === focus);
+}
+
+function reconcileDeferredTaskQuestions(
+  questions: WeeklyCoachDeferredTaskQuestion[],
+  items: WeeklyCoachDraftItem[],
+): WeeklyCoachDeferredTaskQuestion[] {
+  const reconciled: WeeklyCoachDeferredTaskQuestion[] = [];
+  for (const question of questions) {
+    const relatedItem = relatedItemForDeferredQuestion(items, question);
+    const candidate = {
+      ...question,
+      relatedItemId: relatedItem?.id ?? null,
+      relatedFocus: relatedItem?.focus.trim() || safeFocusLabel(question.relatedFocus),
+    };
+    const bucket = deferredBucketKey(candidate);
+    const bucketItems = reconciled.filter((item) => deferredBucketKey(item) === bucket);
+    if (bucketItems.some((item) => (
+      normalizedQuestion(item.question) === normalizedQuestion(candidate.question)
+    ))) continue;
+    const max = candidate.relatedItemId === null
+      ? MAX_UNASSIGNED_DEFERRED
+      : MAX_DEFERRED_PER_FOCUS;
+    if (bucketItems.length >= max) continue;
+    reconciled.push(candidate);
+  }
+  return reconciled;
+}
+
+export function mergeWeeklyCoachDeferredTaskQuestions(
+  draft: WeeklyCoachSessionDraft,
+  questions: WeeklyCoachDeferredTaskQuestionInput[],
+  options: { nextId: () => string; focusedItemId?: string | null },
+): WeeklyCoachSessionDraft {
+  const next = cloneDraft(draft);
+  next.deferredTaskQuestions = reconcileDeferredTaskQuestions(
+    next.deferredTaskQuestions,
+    next.items,
+  );
+  for (const candidate of questions) {
+    const question = redactSecrets(candidate.question).trim();
+    if (question === '') continue;
+    if (next.protectedDeferredTaskQuestionKeys.includes(deferredTaskQuestionKey(question))) continue;
+    const relatedItem = relatedItemForDeferredQuestion(next.items, candidate);
+    if (
+      options.focusedItemId !== undefined
+      && options.focusedItemId !== null
+      && relatedItem?.id !== options.focusedItemId
+    ) continue;
+    const relatedItemId = relatedItem?.id ?? null;
+    const relatedFocus = relatedItem?.focus.trim()
+      || safeFocusLabel(candidate.relatedFocus);
+    const bucket = relatedItemId ?? 'unassigned';
+    const max = relatedItemId === null ? MAX_UNASSIGNED_DEFERRED : MAX_DEFERRED_PER_FOCUS;
+    const bucketItems = next.deferredTaskQuestions.filter(
+      (item) => deferredBucketKey(item) === bucket,
+    );
+    if (bucketItems.length >= max) continue;
+    const normalized = normalizedQuestion(question);
+    if (bucketItems.some((item) => normalizedQuestion(item.question) === normalized)) continue;
+    next.deferredTaskQuestions.push({
+      id: options.nextId(),
+      relatedItemId,
+      relatedFocus,
+      question,
+    });
+  }
+  return next;
+}
+
+export function editWeeklyCoachDeferredTaskQuestion(
+  draft: WeeklyCoachSessionDraft,
+  questionId: string,
+  value: string,
+  protectedOriginalQuestion?: string,
+): WeeklyCoachSessionDraft {
+  const question = redactSecrets(value).trim();
+  if (question === '') return draft;
+  const current = draft.deferredTaskQuestions.find((item) => item.id === questionId);
+  if (current === undefined) return draft;
+  const next = cloneDraft(draft);
+  protectDeferredTaskQuestion(next, protectedOriginalQuestion ?? current.question);
+  const bucket = deferredBucketKey(current);
+  const normalized = normalizedQuestion(question);
+  const duplicate = next.deferredTaskQuestions.some((item) => (
+    item.id !== questionId
+    && deferredBucketKey(item) === bucket
+    && normalizedQuestion(item.question) === normalized
+  ));
+  next.deferredTaskQuestions = duplicate
+    ? next.deferredTaskQuestions.filter((item) => item.id !== questionId)
+    : next.deferredTaskQuestions.map((item) => (
+      item.id === questionId ? { ...item, question } : item
+    ));
+  return next;
+}
+
+export function removeWeeklyCoachDeferredTaskQuestion(
+  draft: WeeklyCoachSessionDraft,
+  questionId: string,
+): WeeklyCoachSessionDraft {
+  if (!draft.deferredTaskQuestions.some((item) => item.id === questionId)) return draft;
+  const next = cloneDraft(draft);
+  const current = next.deferredTaskQuestions.find((item) => item.id === questionId);
+  if (current !== undefined) protectDeferredTaskQuestion(next, current.question);
+  next.deferredTaskQuestions = next.deferredTaskQuestions.filter((item) => item.id !== questionId);
+  return next;
+}
+
 export function protectRestoredWeeklyCoachDraft(
   draft: WeeklyCoachSessionDraft,
 ): WeeklyCoachSessionDraft {
@@ -559,6 +797,10 @@ export function protectRestoredWeeklyCoachDraft(
     }
     return setReadiness(protectedItem);
   });
+  next.deferredTaskQuestions = reconcileDeferredTaskQuestions(
+    next.deferredTaskQuestions,
+    next.items,
+  );
   return next;
 }
 
@@ -676,6 +918,10 @@ export function weeklyCoachDraftToFocusInput(
   baseInput?: WeeklyFocusInput,
 ): WeeklyFocusInput {
   const safeDraft = redactSessionDraft(draft);
+  const deferredTaskQuestions = reconcileDeferredTaskQuestions(
+    safeDraft.deferredTaskQuestions,
+    safeDraft.items,
+  );
   return {
     conversationTopic: safeDraft.topic,
     selectedSources: [...safeDraft.selectedSources],
@@ -686,6 +932,9 @@ export function weeklyCoachDraftToFocusInput(
       outcome: item.outcome,
       whyThisWeek: item.whyThisWeek,
       evidence: item.evidence,
+      deferredTaskQuestions: deferredTaskQuestions
+        .filter((question) => question.relatedItemId === item.id)
+        .map((question) => question.question),
     })),
     noNewFocus: safeDraft.noNewFocus,
     notDoing: redactStringList(baseInput?.notDoing ?? []),
@@ -701,6 +950,9 @@ export function weeklyCoachDraftToFocusInput(
     linkedGoals: redactStringList(baseInput?.linkedGoals ?? []),
     linkedTasks: redactStringList(baseInput?.linkedTasks ?? []),
     adjustmentNote: redactSecrets(baseInput?.adjustmentNote ?? ''),
+    unassignedDeferredTaskQuestions: deferredTaskQuestions
+      .filter((question) => question.relatedItemId === null)
+      .map((question) => question.question),
   };
 }
 
