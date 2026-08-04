@@ -206,6 +206,58 @@ describe('weekly focus service', () => {
     expect(loaded?.record.input.unassignedDeferredTaskQuestions).toEqual([]);
   });
 
+  it('deduplicates and caps deferred questions when saving a formal weekly record', async () => {
+    const gateway = new MemoryGateway();
+    const linkedQuestions = [
+      ...Array.from({ length: 6 }, (_, index) => `重点问题 ${index + 1}`),
+      '重点问题 1。',
+    ];
+    const unassignedQuestions = [
+      ...Array.from({ length: 11 }, (_, index) => `未关联问题 ${index + 1}`),
+      '未关联问题 1！',
+    ];
+
+    const saved = await saveWeeklyFocusDraft(gateway, () => NOW, input({
+      focuses: [{ ...input().focuses[0]!, deferredTaskQuestions: linkedQuestions }],
+      unassignedDeferredTaskQuestions: unassignedQuestions,
+    }), null, 'Asia/Shanghai');
+
+    expect(saved.record.input.focuses[0]?.deferredTaskQuestions).toEqual(
+      linkedQuestions.slice(0, 5),
+    );
+    expect(saved.record.input.unassignedDeferredTaskQuestions).toEqual(
+      unassignedQuestions.slice(0, 10),
+    );
+  });
+
+  it('deduplicates and caps deferred questions parsed from an existing weekly record', async () => {
+    const gateway = new MemoryGateway();
+    const saved = await saveWeeklyFocusDraft(gateway, () => NOW, input(), null, 'Asia/Shanghai');
+    const data = frontmatter(saved.raw);
+    const focuses = data['本周判断'] as Array<Record<string, unknown>>;
+    focuses[0]!['进入任务后待思考的问题'] = [
+      ...Array.from({ length: 6 }, (_, index) => `重点问题 ${index + 1}`),
+      '重点问题 1。',
+    ];
+    data['其他进入任务后待思考的问题'] = [
+      ...Array.from({ length: 11 }, (_, index) => `未关联问题 ${index + 1}`),
+      '未关联问题 1！',
+    ];
+    gateway.files.set(saved.path, saved.raw.replace(
+      /^---\n[\s\S]*?\n---/u,
+      `---\n${YAML.stringify(data).trimEnd()}\n---`,
+    ));
+
+    const loaded = await loadCurrentWeeklyFocus(gateway, () => NOW, 'Asia/Shanghai');
+
+    expect(loaded?.record.input.focuses[0]?.deferredTaskQuestions).toEqual(
+      Array.from({ length: 5 }, (_, index) => `重点问题 ${index + 1}`),
+    );
+    expect(loaded?.record.input.unassignedDeferredTaskQuestions).toEqual(
+      Array.from({ length: 10 }, (_, index) => `未关联问题 ${index + 1}`),
+    );
+  });
+
   it('confirms zero new focuses only when the user explicitly chooses that outcome', async () => {
     const gateway = new MemoryGateway();
     const noFocus = input({

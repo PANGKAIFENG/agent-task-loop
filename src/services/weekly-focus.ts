@@ -9,6 +9,8 @@ const WEEK_PATTERN = /^\d{4}-W\d{2}$/;
 const MAX_FOCUSES = 3;
 const MAX_FIELD_LENGTH = 4_000;
 const MAX_LIST_ITEMS = 30;
+const MAX_DEFERRED_PER_FOCUS = 5;
+const MAX_UNASSIGNED_DEFERRED = 10;
 const MANAGED_START = '<!-- ATL_WEEKLY_FOCUS_START -->';
 const MANAGED_END = '<!-- ATL_WEEKLY_FOCUS_END -->';
 const WEEKLY_COACH_SOURCE_SET = new Set<string>(WEEKLY_COACH_SOURCES);
@@ -154,6 +156,23 @@ function stringList(value: unknown, name: string): string[] {
   return value.map((item) => boundedString(item, name, false));
 }
 
+function normalizedQuestion(value: string): string {
+  return value.trim().toLocaleLowerCase('zh-CN').replace(/[\s\p{P}\p{S}]+/gu, '');
+}
+
+function deferredQuestionList(value: unknown, name: string, maximum: number): string[] {
+  const seen = new Set<string>();
+  const questions: string[] = [];
+  for (const question of stringList(value, name)) {
+    const normalized = normalizedQuestion(question);
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    questions.push(question);
+    if (questions.length === maximum) break;
+  }
+  return questions;
+}
+
 function sourceList(value: unknown): WeeklyCoachSource[] {
   const sources = stringList(value, '授权范围');
   if (sources.some((source) => !WEEKLY_COACH_SOURCE_SET.has(source))) {
@@ -191,11 +210,12 @@ function normalizeFocus(
     evidence: boundedString(firstString(raw, [
       'evidence', '完成证据', '验证证据',
     ]), '完成证据', !requireComplete),
-    deferredTaskQuestions: stringList(
+    deferredTaskQuestions: deferredQuestionList(
       raw.deferredTaskQuestions
         ?? raw['进入任务后待思考的问题']
         ?? (allowMissingDeferred ? [] : undefined),
       '进入任务后待思考的问题',
+      MAX_DEFERRED_PER_FOCUS,
     ),
   };
 }
@@ -234,9 +254,10 @@ function normalizeInput(value: WeeklyFocusInput, requireComplete: boolean): Week
     linkedGoals: stringList(value.linkedGoals, '关联目标'),
     linkedTasks: stringList(value.linkedTasks, '关联任务'),
     adjustmentNote: boundedString(value.adjustmentNote, '调整说明'),
-    unassignedDeferredTaskQuestions: stringList(
+    unassignedDeferredTaskQuestions: deferredQuestionList(
       value.unassignedDeferredTaskQuestions,
       '其他进入任务后待思考的问题',
+      MAX_UNASSIGNED_DEFERRED,
     ),
   };
 }

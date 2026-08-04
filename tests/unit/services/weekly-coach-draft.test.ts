@@ -257,6 +257,24 @@ describe('weekly coach session draft', () => {
     expect(original.deferredTaskQuestions).toEqual([]);
   });
 
+  it('falls back to normalized focus matching when a merged question has a stale item id', () => {
+    const merged = mergeWeeklyCoachDeferredTaskQuestions(
+      draftWith(completeItem('focus-1')),
+      [{
+        relatedItemId: 'deleted-focus',
+        relatedFocus: ' 发布 插件！ ',
+        question: '确认兼容范围',
+      }],
+      { nextId: () => 'question-1' },
+    );
+
+    expect(merged.deferredTaskQuestions[0]).toMatchObject({
+      relatedItemId: 'focus-1',
+      relatedFocus: '发布插件',
+      question: '确认兼容范围',
+    });
+  });
+
   it('edits and removes deferred questions without changing focus readiness', () => {
     const withQuestion = mergeWeeklyCoachDeferredTaskQuestions(
       draftWith(completeItem('focus-1')),
@@ -306,6 +324,98 @@ describe('weekly coach session draft', () => {
       byWeek: { '2026-W32': legacy },
     });
     expect(normalized.byWeek['2026-W32']?.deferredTaskQuestions).toEqual([]);
+  });
+
+  it('reconciles restored deferred questions without dropping stale or missing associations', () => {
+    const restored = normalizeWeeklyCoachDraftCollection({
+      collectionVersion: 1,
+      byWeek: {
+        '2026-W32': {
+          ...persistedDraft(),
+          deferredTaskQuestions: [{
+            id: 'question-valid',
+            relatedItemId: 'focus-1',
+            relatedFocus: '旧重点名称',
+            question: '保留有效 ID',
+          }, {
+            id: 'question-stale',
+            relatedItemId: 'deleted-focus',
+            relatedFocus: ' 发布 插件！ ',
+            question: '按重点名称重新关联',
+          }, {
+            id: 'question-missing',
+            relatedFocus: '发布插件',
+            question: '补齐缺失 ID',
+          }, {
+            id: 'question-unassigned',
+            relatedItemId: 'unknown-focus',
+            relatedFocus: '其他方向',
+            question: '保留为未关联问题',
+          }],
+        },
+      },
+    });
+
+    expect(restored.byWeek['2026-W32']?.deferredTaskQuestions).toEqual([{
+      id: 'question-valid',
+      relatedItemId: 'focus-1',
+      relatedFocus: '发布插件',
+      question: '保留有效 ID',
+    }, {
+      id: 'question-stale',
+      relatedItemId: 'focus-1',
+      relatedFocus: '发布插件',
+      question: '按重点名称重新关联',
+    }, {
+      id: 'question-missing',
+      relatedItemId: 'focus-1',
+      relatedFocus: '发布插件',
+      question: '补齐缺失 ID',
+    }, {
+      id: 'question-unassigned',
+      relatedItemId: null,
+      relatedFocus: '其他方向',
+      question: '保留为未关联问题',
+    }]);
+  });
+
+  it('deduplicates and caps restored deferred questions within their reconciled buckets', () => {
+    const linked = Array.from({ length: 6 }, (_, index) => ({
+      id: `question-linked-${index + 1}`,
+      relatedItemId: 'deleted-focus',
+      relatedFocus: '发布插件',
+      question: `重点问题 ${index + 1}`,
+    }));
+    const unassigned = Array.from({ length: 11 }, (_, index) => ({
+      id: `question-unassigned-${index + 1}`,
+      relatedItemId: 'unknown-focus',
+      relatedFocus: '其他方向',
+      question: `未关联问题 ${index + 1}`,
+    }));
+    const restored = normalizeWeeklyCoachDraftCollection({
+      collectionVersion: 1,
+      byWeek: {
+        '2026-W32': {
+          ...persistedDraft(),
+          deferredTaskQuestions: [
+            ...linked,
+            { ...linked[0], id: 'question-linked-duplicate', question: '重点问题 1。' },
+            ...unassigned,
+            {
+              ...unassigned[0],
+              id: 'question-unassigned-duplicate',
+              question: '未关联问题 1！',
+            },
+          ],
+        },
+      },
+    });
+    const questions = restored.byWeek['2026-W32']!.deferredTaskQuestions;
+
+    expect(questions.filter((item) => item.relatedItemId === 'focus-1')).toHaveLength(5);
+    expect(questions.filter((item) => item.relatedItemId === null)).toHaveLength(10);
+    expect(questions.map((item) => item.question)).not.toContain('重点问题 1。');
+    expect(questions.map((item) => item.question)).not.toContain('未关联问题 1！');
   });
 
   it('removes questions explicitly linked to a deleted focus', () => {
