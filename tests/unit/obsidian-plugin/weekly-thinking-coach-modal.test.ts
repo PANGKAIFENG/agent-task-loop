@@ -503,6 +503,75 @@ describe('WeeklyThinkingCoachModal', () => {
     expect(modal.contentEl.textContent).not.toContain('接下来只讨论：');
   });
 
+  it('keeps deferred questions from a focused turn scoped to the focused item', async () => {
+    const second = draftItem('focus-2', { focus: '整理安装文档' });
+    const focusedResult: WeeklyCoachResult = {
+      ...coachResult,
+      draftOperations: [],
+      deferredTaskQuestions: [{
+        relatedItemId: 'focus-2',
+        relatedFocus: '整理安装文档',
+        question: '通过 focus-2 ID 越界',
+      }, {
+        relatedItemId: null,
+        relatedFocus: '整理安装文档',
+        question: '通过 focus-2 名称越界',
+      }, {
+        relatedItemId: null,
+        relatedFocus: '验证产品边界是否可复用',
+        question: '定义边界说明模板',
+      }],
+    };
+    const { modal, runCoach, saveSessionDraft } = setup({
+      draft: sessionDraft({ items: [draftItem(), second] }),
+      coach: focusedResult,
+    });
+    await open(modal);
+
+    button(modal, '聚焦讨论').click();
+    sendMessage(modal, '只讨论第一项');
+    await vi.waitFor(() => expect(runCoach).toHaveBeenCalled());
+    button(modal, '保存并离开').click();
+
+    await vi.waitFor(() => expect(saveSessionDraft).toHaveBeenCalledWith(expect.objectContaining({
+      deferredTaskQuestions: [expect.objectContaining({
+        relatedItemId: 'focus-1',
+        question: '定义边界说明模板',
+      })],
+    })));
+  });
+
+  it('rerenders after editing a deferred question into a duplicate', async () => {
+    const { modal } = setup({
+      draft: sessionDraft({
+        deferredTaskQuestions: [{
+          id: 'question-1',
+          relatedItemId: 'focus-1',
+          relatedFocus: '验证产品边界是否可复用',
+          question: '定义兼容范围',
+        }, {
+          id: 'question-2',
+          relatedItemId: 'focus-1',
+          relatedFocus: '验证产品边界是否可复用',
+          question: '确认发布渠道',
+        }],
+      }),
+    });
+    await open(modal);
+
+    const inputs = modal.contentEl.querySelectorAll<HTMLInputElement>(
+      'input[aria-label="编辑进入任务后待思考的问题"]',
+    );
+    inputs[0]!.value = '确认发布渠道';
+    inputs[0]!.dispatchEvent(new window.Event('input', { bubbles: true }));
+
+    const rerenderedInputs = modal.contentEl.querySelectorAll<HTMLInputElement>(
+      'input[aria-label="编辑进入任务后待思考的问题"]',
+    );
+    expect(rerenderedInputs).toHaveLength(1);
+    expect(rerenderedInputs[0]?.value).toBe('确认发布渠道');
+  });
+
   it('keeps a deleted direction removed when AI tries to recreate it', async () => {
     const { modal, runCoach } = setup({ draft: sessionDraft() });
     await open(modal);

@@ -85,6 +85,7 @@ describe('weekly coach session draft', () => {
       background: { facts: [], assumptions: [], gaps: [], sources: [] },
       items: [],
       deferredTaskQuestions: [],
+      protectedDeferredTaskQuestionKeys: [],
       deletedItems: [],
       focusedItemId: null,
       noNewFocus: false,
@@ -275,6 +276,54 @@ describe('weekly coach session draft', () => {
     });
   });
 
+  it('keeps focused turns from adding questions for another item or the unassigned bucket', () => {
+    const original = {
+      ...draftWith(
+        completeItem('focus-1', '发布插件'),
+        completeItem('focus-2', '整理安装文档'),
+      ),
+      focusedItemId: 'focus-1',
+    };
+    let sequence = 0;
+    const merged = mergeWeeklyCoachDeferredTaskQuestions(original, [{
+      relatedItemId: 'focus-2',
+      relatedFocus: '发布插件',
+      question: '通过其他重点 ID 越界',
+    }, {
+      relatedItemId: null,
+      relatedFocus: '整理安装文档',
+      question: '通过其他重点名称越界',
+    }, {
+      relatedItemId: null,
+      relatedFocus: '尚未建立的方向',
+      question: '写入未关联问题',
+    }], { nextId: () => `question-${++sequence}`, focusedItemId: 'focus-1' });
+
+    expect(merged.deferredTaskQuestions).toEqual([]);
+  });
+
+  it('rebinds a focused-turn question when its focus name clearly matches the focused item', () => {
+    const original = {
+      ...draftWith(
+        completeItem('focus-1', '发布插件'),
+        completeItem('focus-2', '整理安装文档'),
+      ),
+      focusedItemId: 'focus-1',
+    };
+    const merged = mergeWeeklyCoachDeferredTaskQuestions(original, [{
+      relatedItemId: 'stale-focus',
+      relatedFocus: ' 发布 插件！ ',
+      question: '确认兼容范围',
+    }], { nextId: () => 'question-1', focusedItemId: 'focus-1' });
+
+    expect(merged.deferredTaskQuestions).toEqual([{
+      id: 'question-1',
+      relatedItemId: 'focus-1',
+      relatedFocus: '发布插件',
+      question: '确认兼容范围',
+    }]);
+  });
+
   it('edits and removes deferred questions without changing focus readiness', () => {
     const withQuestion = mergeWeeklyCoachDeferredTaskQuestions(
       draftWith(completeItem('focus-1')),
@@ -290,6 +339,61 @@ describe('weekly coach session draft', () => {
     expect(edited.deferredTaskQuestions[0]?.question).toBe('确认兼容范围');
     expect(removeWeeklyCoachDeferredTaskQuestion(edited, 'question-1')
       .deferredTaskQuestions).toEqual([]);
+  });
+
+  it('protects an edited original from AI restoration while retaining the replacement', () => {
+    const withQuestion = mergeWeeklyCoachDeferredTaskQuestions(
+      draftWith(completeItem('focus-1')),
+      [{ relatedItemId: 'focus-1', relatedFocus: '发布插件', question: '定义 Skill 的可用标准！' }],
+      { nextId: () => 'question-1' },
+    );
+    const edited = editWeeklyCoachDeferredTaskQuestion(
+      withQuestion,
+      'question-1',
+      '确认 Skill 的适用边界',
+    );
+    const merged = mergeWeeklyCoachDeferredTaskQuestions(edited, [{
+      relatedItemId: 'focus-1',
+      relatedFocus: '发布插件',
+      question: '定义 skill 的可用标准',
+    }, {
+      relatedItemId: 'focus-1',
+      relatedFocus: '发布插件',
+      question: '补充上线回滚方案',
+    }], { nextId: () => 'question-2' });
+
+    expect(edited.protectedDeferredTaskQuestionKeys).toEqual([
+      expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+    ]);
+    expect(JSON.stringify(edited.protectedDeferredTaskQuestionKeys))
+      .not.toContain('定义 Skill 的可用标准');
+    expect(merged.deferredTaskQuestions.map((item) => item.question)).toEqual([
+      '确认 Skill 的适用边界',
+      '补充上线回滚方案',
+    ]);
+  });
+
+  it('protects a deleted original from AI restoration without blocking unrelated questions', () => {
+    const withQuestion = mergeWeeklyCoachDeferredTaskQuestions(
+      draftWith(completeItem('focus-1')),
+      [{ relatedItemId: 'focus-1', relatedFocus: '发布插件', question: '定义兼容范围' }],
+      { nextId: () => 'question-1' },
+    );
+    const removed = removeWeeklyCoachDeferredTaskQuestion(withQuestion, 'question-1');
+    const merged = mergeWeeklyCoachDeferredTaskQuestions(removed, [{
+      relatedItemId: 'focus-1',
+      relatedFocus: '发布插件',
+      question: '定义兼容范围。',
+    }, {
+      relatedItemId: 'focus-1',
+      relatedFocus: '发布插件',
+      question: '确认发布渠道',
+    }], { nextId: () => 'question-2' });
+
+    expect(removed.protectedDeferredTaskQuestionKeys).toEqual([
+      expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+    ]);
+    expect(merged.deferredTaskQuestions.map((item) => item.question)).toEqual(['确认发布渠道']);
   });
 
   it('caps linked questions at five and unassigned questions at ten', () => {
@@ -319,11 +423,13 @@ describe('weekly coach session draft', () => {
   it('restores legacy version-one drafts with an empty deferred list', () => {
     const legacy = structuredClone(persistedDraft()) as unknown as Record<string, unknown>;
     delete legacy.deferredTaskQuestions;
+    delete legacy.protectedDeferredTaskQuestionKeys;
     const normalized = normalizeWeeklyCoachDraftCollection({
       collectionVersion: 1,
       byWeek: { '2026-W32': legacy },
     });
     expect(normalized.byWeek['2026-W32']?.deferredTaskQuestions).toEqual([]);
+    expect(normalized.byWeek['2026-W32']?.protectedDeferredTaskQuestionKeys).toEqual([]);
   });
 
   it('reconciles restored deferred questions without dropping stale or missing associations', () => {
@@ -608,6 +714,33 @@ describe('weekly coach session draft', () => {
     const removed = removeWeeklyCoachSessionDraft(stored, '2026-W32');
     expect(removed.byWeek).toEqual({});
     expect(stored.byWeek['2026-W32']).toEqual(draft);
+  });
+
+  it('persists deferred-question protection tombstones without raw sensitive text', () => {
+    const secret = 'api_key=weekly-coach-private-value';
+    const draft = {
+      ...persistedDraft(),
+      deferredTaskQuestions: [{
+        id: 'question-1',
+        relatedItemId: 'focus-1',
+        relatedFocus: '发布插件',
+        question: secret,
+      }],
+    };
+    const protectedDraft = removeWeeklyCoachDeferredTaskQuestion(draft, 'question-1');
+    const stored = putWeeklyCoachSessionDraft(
+      emptyWeeklyCoachDraftCollection(),
+      protectedDraft,
+    );
+    const restored = getWeeklyCoachSessionDraft(stored, '2026-W32');
+
+    expect(restored?.protectedDeferredTaskQuestionKeys).toEqual(
+      protectedDraft.protectedDeferredTaskQuestionKeys,
+    );
+    expect(restored?.protectedDeferredTaskQuestionKeys).toEqual([
+      expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+    ]);
+    expect(JSON.stringify(stored)).not.toContain(secret);
   });
 
   it('rejects an oversized draft without dropping the previously saved week', () => {

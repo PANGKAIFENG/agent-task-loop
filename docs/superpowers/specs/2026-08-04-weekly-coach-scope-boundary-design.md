@@ -161,6 +161,7 @@ interface WeeklyCoachDeferredTaskQuestion {
 interface WeeklyCoachSessionDraft {
   // 现有字段保持不变
   deferredTaskQuestions: WeeklyCoachDeferredTaskQuestion[];
+  protectedDeferredTaskQuestionKeys: string[];
 }
 ```
 
@@ -169,15 +170,17 @@ interface WeeklyCoachSessionDraft {
 - 优先使用有效的 `relatedItemId` 关联现有重点。
 - 没有 ID 时，在应用本轮草稿操作后按标准化的 `relatedFocus` 匹配重点。
 - 无法匹配时保留为“待关联问题”，不丢弃。
+- 当 `focusedItemId` 有值时，本轮只接受可关联到该重点的问题；指向其他重点或无法关联的问题均不合并，按名称明确匹配当前重点的问题可重新绑定。
 - 同一重点下按标准化问题文本去重。
 - 每项重点最多保留 5 个问题；未关联问题最多保留 10 个。
-- 用户可通过服务层编辑或删除问题。
+- 用户可通过服务层编辑或删除问题；服务层把旧问题的标准化文本写为 SHA-256 保护键，不保存原始文本，后续模型结果不得恢复受保护的问题。
 - 删除重点时，同时删除明确关联到该重点的问题；未关联问题不受影响。
 
 ### 7.2 向后兼容
 
 - 继续接受 `draftVersion: 1` 的既有草稿。
 - 旧草稿缺少 `deferredTaskQuestions` 时规范化为空数组。
+- 旧草稿缺少 `protectedDeferredTaskQuestionKeys` 时规范化为空数组；已有值只接受 `sha256:<64 位十六进制>` 格式。
 - 现有消息恢复、字段归属、删除保护和秘密脱敏逻辑保持不变。
 - 新字段执行与现有草稿相同的长度限制、数量限制和秘密脱敏。
 - 继续对话时，Prompt 必须包含已有延后问题，并明确标记为“已延后，不得再次追问”。

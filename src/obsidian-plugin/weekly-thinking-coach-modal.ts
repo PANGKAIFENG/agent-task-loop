@@ -91,6 +91,7 @@ function cloneSession(draft: WeeklyCoachSessionDraft): WeeklyCoachSessionDraft {
       suggestions: { ...item.suggestions },
     })),
     deferredTaskQuestions: draft.deferredTaskQuestions.map((item) => ({ ...item })),
+    protectedDeferredTaskQuestionKeys: [...draft.protectedDeferredTaskQuestionKeys],
     deletedItems: draft.deletedItems.map((item) => ({ ...item })),
     ...(draft.messages === undefined
       ? {}
@@ -643,12 +644,18 @@ export class WeeklyThinkingCoachModal extends Modal {
       input.disabled = this.persisting;
       input.addEventListener('input', () => {
         if (this.persisting) return;
-        this.session = editWeeklyCoachDeferredTaskQuestion(
+        const updated = editWeeklyCoachDeferredTaskQuestion(
           this.session,
           question.id,
           input.value,
+          question.question,
         );
+        const removedAsDuplicate = !updated.deferredTaskQuestions.some(
+          (candidate) => candidate.id === question.id,
+        );
+        this.session = updated;
         this.changed();
+        if (removedAsDuplicate) this.render();
       });
       this.appendIconButton(row, '删除进入任务后待思考的问题', 'trash-2', () => {
         this.session = removeWeeklyCoachDeferredTaskQuestion(this.session, question.id);
@@ -827,7 +834,10 @@ export class WeeklyThinkingCoachModal extends Modal {
       const withDeferred = mergeWeeklyCoachDeferredTaskQuestions(
         merged.draft,
         result.deferredTaskQuestions,
-        { nextId: this.dependencies.createId },
+        {
+          nextId: this.dependencies.createId,
+          focusedItemId: this.session.focusedItemId,
+        },
       );
       this.session = {
         ...withDeferred,
