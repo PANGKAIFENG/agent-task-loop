@@ -67,6 +67,7 @@ function emptyInput(overrides: Partial<WeeklyFocusInput> = {}): WeeklyFocusInput
     linkedGoals: [],
     linkedTasks: [],
     adjustmentNote: '',
+    unassignedDeferredTaskQuestions: [],
     ...overrides,
   };
 }
@@ -81,6 +82,7 @@ function weeklyDocument(status: '草稿' | '已确认' = '已确认'): WeeklyFoc
       outcome: '团队使用同一份边界说明',
       whyThisWeek: '本周有两个真实流程可验证',
       evidence: '两个流程负责人确认采用',
+      deferredTaskQuestions: [],
     }],
   });
   return {

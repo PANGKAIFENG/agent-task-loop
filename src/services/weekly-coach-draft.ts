@@ -829,6 +829,9 @@ export function weeklyCoachDraftToFocusInput(
       outcome: item.outcome,
       whyThisWeek: item.whyThisWeek,
       evidence: item.evidence,
+      deferredTaskQuestions: safeDraft.deferredTaskQuestions
+        .filter((question) => question.relatedItemId === item.id)
+        .map((question) => question.question),
     })),
     noNewFocus: safeDraft.noNewFocus,
     notDoing: redactStringList(baseInput?.notDoing ?? []),
@@ -844,6 +847,9 @@ export function weeklyCoachDraftToFocusInput(
     linkedGoals: redactStringList(baseInput?.linkedGoals ?? []),
     linkedTasks: redactStringList(baseInput?.linkedTasks ?? []),
     adjustmentNote: redactSecrets(baseInput?.adjustmentNote ?? ''),
+    unassignedDeferredTaskQuestions: safeDraft.deferredTaskQuestions
+      .filter((question) => question.relatedItemId === null)
+      .map((question) => question.question),
   };
 }
 

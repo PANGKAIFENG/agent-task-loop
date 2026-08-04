@@ -416,6 +416,17 @@ describe('weekly coach session draft', () => {
         gaps: ['缺少独立安装人。'],
         sources: ['02_Projects/ATL.md'],
       },
+      deferredTaskQuestions: [{
+        id: 'question-1',
+        relatedItemId: 'focus-1',
+        relatedFocus: '发布插件',
+        question: '确认插件兼容范围',
+      }, {
+        id: 'question-2',
+        relatedItemId: null,
+        relatedFocus: '待关联重点',
+        question: '确认任务承载位置',
+      }],
     };
 
     expect(weeklyCoachDraftToFocusInput(source)).toMatchObject({
@@ -428,7 +439,9 @@ describe('weekly coach session draft', () => {
         outcome: '用户可以完成安装',
         whyThisWeek: '核心交互已经具备',
         evidence: '两位用户独立安装成功',
+        deferredTaskQuestions: ['确认插件兼容范围'],
       }],
+      unassignedDeferredTaskQuestions: ['确认任务承载位置'],
       keyAnswers: ['希望用户不打开终端。'],
       noNewFocus: false,
     });
@@ -460,6 +473,12 @@ describe('weekly coach session draft', () => {
         gaps: [secrets[2]!],
         sources: [secrets[3]!],
       },
+      deferredTaskQuestions: [{
+        id: 'question-1',
+        relatedItemId: 'focus-1',
+        relatedFocus: secrets[0]!,
+        question: secrets[3]!,
+      }],
     };
 
     const serialized = JSON.stringify(weeklyCoachDraftToFocusInput(sensitive));

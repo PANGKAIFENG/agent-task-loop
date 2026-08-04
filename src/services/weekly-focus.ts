@@ -21,6 +21,7 @@ export interface WeeklyFocusItem {
   outcome: string;
   whyThisWeek: string;
   evidence: string;
+  deferredTaskQuestions: string[];
 }
 
 export interface WeeklyFocusBackground {
@@ -45,6 +46,7 @@ export interface WeeklyFocusInput {
   linkedGoals: string[];
   linkedTasks: string[];
   adjustmentNote: string;
+  unassignedDeferredTaskQuestions: string[];
 }
 
 export interface WeeklyFocusRecord {
@@ -167,7 +169,11 @@ function firstString(raw: Record<string, unknown>, keys: string[]): unknown {
   return '';
 }
 
-function normalizeFocus(value: unknown, requireComplete: boolean): WeeklyFocusItem {
+function normalizeFocus(
+  value: unknown,
+  requireComplete: boolean,
+  allowMissingDeferred = false,
+): WeeklyFocusItem {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('本周判断格式无效');
   }
@@ -185,6 +191,12 @@ function normalizeFocus(value: unknown, requireComplete: boolean): WeeklyFocusIt
     evidence: boundedString(firstString(raw, [
       'evidence', '完成证据', '验证证据',
     ]), '完成证据', !requireComplete),
+    deferredTaskQuestions: stringList(
+      raw.deferredTaskQuestions
+        ?? raw['进入任务后待思考的问题']
+        ?? (allowMissingDeferred ? [] : undefined),
+      '进入任务后待思考的问题',
+    ),
   };
 }
 
@@ -222,15 +234,20 @@ function normalizeInput(value: WeeklyFocusInput, requireComplete: boolean): Week
     linkedGoals: stringList(value.linkedGoals, '关联目标'),
     linkedTasks: stringList(value.linkedTasks, '关联任务'),
     adjustmentNote: boundedString(value.adjustmentNote, '调整说明'),
+    unassignedDeferredTaskQuestions: stringList(
+      value.unassignedDeferredTaskQuestions,
+      '其他进入任务后待思考的问题',
+    ),
   };
 }
 
-function visibleFocus(focus: WeeklyFocusItem): Record<string, string> {
+function visibleFocus(focus: WeeklyFocusItem): Record<string, string | string[]> {
   return {
     重点事项: focus.focus,
     预期结果: focus.outcome,
     为什么是本周: focus.whyThisWeek,
     完成证据: focus.evidence,
+    进入任务后待思考的问题: focus.deferredTaskQuestions,
   };
 }
 
@@ -251,17 +268,28 @@ function renderFocuses(input: WeeklyFocusInput): string {
   if (input.noNewFocus && input.focuses.length === 0) {
     return '本周暂不新增重点，先完成既有承诺。';
   }
-  return input.focuses.map((focus, index) => [
-    `### ${index + 1}. ${focus.focus || '待补充'}`,
-    '',
-    `**重点事项**：${focus.focus || '待补充'}`,
-    '',
-    `**预期结果**：${focus.outcome || '待补充'}`,
-    '',
-    `**为什么是本周**：${focus.whyThisWeek || '待补充'}`,
-    '',
-    `**完成证据**：${focus.evidence || '待补充'}`,
-  ].join('\n')).join('\n\n');
+  return input.focuses.map((focus, index) => {
+    const lines = [
+      `### ${index + 1}. ${focus.focus || '待补充'}`,
+      '',
+      `**重点事项**：${focus.focus || '待补充'}`,
+      '',
+      `**预期结果**：${focus.outcome || '待补充'}`,
+      '',
+      `**为什么是本周**：${focus.whyThisWeek || '待补充'}`,
+      '',
+      `**完成证据**：${focus.evidence || '待补充'}`,
+    ];
+    if (focus.deferredTaskQuestions.length > 0) {
+      lines.push(
+        '',
+        '#### 进入任务后待思考的问题',
+        '',
+        bulletList(focus.deferredTaskQuestions),
+      );
+    }
+    return lines.join('\n');
+  }).join('\n\n');
 }
 
 function renderManagedBody(record: WeeklyFocusRecord): string {
@@ -275,6 +303,12 @@ function renderManagedBody(record: WeeklyFocusRecord): string {
     '## 本周重点',
     '',
     renderFocuses(input),
+    ...(input.unassignedDeferredTaskQuestions.length === 0 ? [] : [
+      '',
+      '## 其他进入任务后待思考的问题',
+      '',
+      bulletList(input.unassignedDeferredTaskQuestions),
+    ]),
     '',
     '## 当前教练上下文',
     '',
@@ -351,6 +385,7 @@ function serialize(record: WeeklyFocusRecord, previousRaw: string | null): strin
     复盘状态: record.reviewStatus,
     更新时间: record.updatedAt,
     本周判断: record.input.focuses.map(visibleFocus),
+    其他进入任务后待思考的问题: record.input.unassignedDeferredTaskQuestions,
     本周暂不新增重点: record.input.noNewFocus,
     本周不做: record.input.notDoing,
     AI背景: visibleBackground(record.input.background),
@@ -405,7 +440,11 @@ function recordFromRaw(raw: string, expectedWeek: string): WeeklyFocusRecord {
     selectedSources: sourceList(data['授权范围'] ?? []),
     currentQuestion: boundedString(data['当前问题'] ?? '', '当前问题'),
     coachSummary: boundedString(data['教练摘要'] ?? '', '教练摘要'),
-    focuses: visibleFocuses.map((focus) => normalizeFocus(focus, status === '已确认')),
+    focuses: visibleFocuses.map((focus) => normalizeFocus(
+      focus,
+      status === '已确认',
+      true,
+    )),
     noNewFocus: data['本周暂不新增重点'] === true,
     notDoing: stringList(data['本周不做'] ?? [], '本周不做'),
     background: normalizeBackground(background ?? {}),
@@ -415,6 +454,10 @@ function recordFromRaw(raw: string, expectedWeek: string): WeeklyFocusRecord {
     linkedGoals: stringList(data['关联目标'] ?? [], '关联目标'),
     linkedTasks: stringList(data['关联任务'] ?? [], '关联任务'),
     adjustmentNote: boundedString(data['调整说明'] ?? '', '调整说明'),
+    unassignedDeferredTaskQuestions: stringList(
+      data['其他进入任务后待思考的问题'] ?? [],
+      '其他进入任务后待思考的问题',
+    ),
   }, status === '已确认');
   return {
     type: '周度重点',

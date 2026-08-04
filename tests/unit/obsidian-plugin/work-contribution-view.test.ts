@@ -41,6 +41,7 @@ function weeklyFocus(status: '草稿' | '已确认'): WeeklyFocusDocument {
           outcome: '形成团队可复用的边界说明',
           whyThisWeek: '周五前完成验证',
           evidence: '两个流程使用同一份说明',
+          deferredTaskQuestions: [],
         }],
         noNewFocus: false,
         notDoing: ['不新增 Agent 名称'],
@@ -51,6 +52,7 @@ function weeklyFocus(status: '草稿' | '已确认'): WeeklyFocusDocument {
         linkedGoals: [],
         linkedTasks: [],
         adjustmentNote: '',
+        unassignedDeferredTaskQuestions: [],
       },
     },
   };
