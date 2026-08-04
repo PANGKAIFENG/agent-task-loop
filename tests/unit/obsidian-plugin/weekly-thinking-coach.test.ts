@@ -45,6 +45,7 @@ const input: WeeklyCoachTurnInput = {
   draftItems: [draftItem],
   deletedFocuses: ['不再讨论命名'],
   focusedItemId: 'focus-1',
+  deferredTaskQuestions: [],
   context,
 };
 
@@ -53,6 +54,8 @@ function validOutput(overrides: Record<string, unknown> = {}): Record<string, un
     assistantMessage: '先不要急着列任务。你真正要验证的是边界图是否会被团队使用。',
     nextQuestion: '如果周五只看到一个变化，什么变化最能证明这件事值得做？',
     questionReason: '这个答案会决定预期结果和完成证据。',
+    nextQuestionDimension: '周级结果',
+    deferredTaskQuestions: [],
     background: {
       facts: [' 产品边界讨论反复出现。 ', '产品边界讨论反复出现。'],
       assumptions: ['边界图可能减少重复讨论。'],
@@ -124,6 +127,7 @@ describe('runWeeklyThinkingCoach', () => {
     const result = await runWeeklyThinkingCoach(executor(validOutput({
       nextQuestion: null,
       questionReason: null,
+      nextQuestionDimension: null,
       draftOperations: [],
       readiness: '可确认',
     })), input);
@@ -179,6 +183,55 @@ describe('runWeeklyThinkingCoach', () => {
       })),
       topThree: ['不允许的字段'],
     })), input)).rejects.toThrow();
+  });
+
+  it('restricts follow-up questions to weekly decision dimensions', async () => {
+    const fake = executor(validOutput({
+      nextQuestion: '如果本周投入它，需要延后什么？',
+      questionReason: '需要确认机会成本。',
+      nextQuestionDimension: '机会成本',
+    }));
+
+    const result = await runWeeklyThinkingCoach(fake, input);
+    expect(result.nextQuestionDimension).toBe('机会成本');
+
+    const execution = fake.execute.mock.calls[0]?.[0] as ClaudeStructuredInput<unknown>;
+    expect(execution.prompt).toContain('目标关联、本周时机、周级结果、结果价值、机会成本、投入容量');
+    expect(execution.prompt).toContain('什么叫可用的 Skill');
+    expect(execution.prompt).toContain('进入任务后待思考的问题');
+    expect(execution.prompt).toContain('不得再次追问');
+  });
+
+  it('rejects a question without an allowed weekly dimension', async () => {
+    await expect(runWeeklyThinkingCoach(executor(validOutput({
+      nextQuestion: '什么叫可用的 Skill？',
+      questionReason: '需要定义任务标准。',
+      nextQuestionDimension: '任务执行',
+    })), input)).rejects.toThrow();
+  });
+
+  it('requires the question fields and dimension to be null together', async () => {
+    await expect(runWeeklyThinkingCoach(executor(validOutput({
+      nextQuestion: null,
+      questionReason: null,
+      nextQuestionDimension: '周级结果',
+    })), input)).rejects.toThrow();
+  });
+
+  it('rejects an exact re-ask of a deferred task question', async () => {
+    await expect(runWeeklyThinkingCoach(executor(validOutput({
+      nextQuestion: '什么叫可用的 Skill？',
+      questionReason: '需要继续确认。',
+      nextQuestionDimension: '周级结果',
+    })), {
+      ...input,
+      deferredTaskQuestions: [{
+        id: 'question-1',
+        relatedItemId: 'focus-1',
+        relatedFocus: '验证 StyleWork 产品边界是否可复用',
+        question: '什么叫可用的 Skill',
+      }],
+    })).rejects.toThrow('已延后的任务级问题不得再次追问');
   });
 
   it('requires create operations to carry evidence for at least three visible fields', async () => {

@@ -721,6 +721,7 @@ export class WeeklyThinkingCoachModal extends Modal {
       })),
       deletedFocuses: this.session.deletedItems.map((item) => item.focusLabel),
       focusedItemId: this.session.focusedItemId,
+      deferredTaskQuestions: [],
     };
 
     try {

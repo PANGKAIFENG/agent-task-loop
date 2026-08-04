@@ -134,6 +134,8 @@ const coachResult: WeeklyCoachResult = {
   assistantMessage: '先不要急着列任务。你真正要验证的是边界图是否会被使用。',
   nextQuestion: '如果周五只看到一个变化，什么变化最能证明这件事值得做？',
   questionReason: '这个答案会决定预期结果和完成证据。',
+  nextQuestionDimension: '周级结果',
+  deferredTaskQuestions: [],
   background: {
     facts: ['边界问题一周内重复出现。'],
     assumptions: ['边界图可能减少重复讨论。'],

@@ -41,6 +41,19 @@ export interface WeeklyCoachDraftItem {
   readiness: WeeklyCoachDraftReadiness;
 }
 
+export interface WeeklyCoachDeferredTaskQuestion {
+  id: string;
+  relatedItemId: string | null;
+  relatedFocus: string;
+  question: string;
+}
+
+export interface WeeklyCoachDeferredTaskQuestionInput {
+  relatedItemId: string | null;
+  relatedFocus: string;
+  question: string;
+}
+
 export interface WeeklyCoachSessionDraft {
   draftVersion: 1;
   week: string;
@@ -92,6 +105,7 @@ export interface WeeklyThinkingCoachTurn {
   draftItems: WeeklyCoachDraftItem[];
   deletedFocuses: string[];
   focusedItemId: string | null;
+  deferredTaskQuestions: WeeklyCoachDeferredTaskQuestion[];
 }
 
 const EMPTY_BACKGROUND: WeeklyFocusBackground = {

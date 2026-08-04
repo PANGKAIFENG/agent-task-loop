@@ -7,6 +7,8 @@ import type {
 import type { WeeklyCoachContext } from '../services/weekly-coach-context.js';
 import {
   WEEKLY_COACH_DRAFT_FIELDS,
+  type WeeklyCoachDeferredTaskQuestion,
+  type WeeklyCoachDeferredTaskQuestionInput,
   type WeeklyCoachDraftItem,
   type WeeklyCoachDraftOperation,
 } from '../services/weekly-coach-draft.js';
@@ -15,6 +17,24 @@ import { redactSecrets } from '../security/redact-secrets.js';
 
 const text = z.string().trim().min(1).max(4_000);
 const textList = z.array(text).max(20);
+
+export const WEEKLY_COACH_QUESTION_DIMENSIONS = [
+  '目标关联',
+  '本周时机',
+  '周级结果',
+  '结果价值',
+  '机会成本',
+  '投入容量',
+] as const;
+
+export type WeeklyCoachQuestionDimension =
+  typeof WEEKLY_COACH_QUESTION_DIMENSIONS[number];
+
+const deferredTaskQuestionSchema = z.object({
+  relatedItemId: text.nullable(),
+  relatedFocus: text,
+  question: text,
+}).strict();
 
 const backgroundSchema = z.object({
   facts: textList,
@@ -65,16 +85,25 @@ export const weeklyCoachResultSchema = z.object({
   assistantMessage: text,
   nextQuestion: text.nullable(),
   questionReason: text.nullable(),
+  nextQuestionDimension: z.enum(WEEKLY_COACH_QUESTION_DIMENSIONS).nullable(),
+  deferredTaskQuestions: z.array(deferredTaskQuestionSchema).max(3),
   background: backgroundSchema,
   draftOperations: z.array(operationSchema).max(3),
   sessionSummary: text,
   readiness: z.enum(['继续澄清', '可确认']),
 }).strict().superRefine((result, context) => {
-  if ((result.nextQuestion === null) !== (result.questionReason === null)) {
+  const questionFields = [
+    result.nextQuestion,
+    result.questionReason,
+    result.nextQuestionDimension,
+  ];
+  const allNull = questionFields.every((value) => value === null);
+  const allPresent = questionFields.every((value) => value !== null);
+  if (!allNull && !allPresent) {
     context.addIssue({
       code: 'custom',
-      path: ['questionReason'],
-      message: '问题与提问原因必须同时存在或同时为空',
+      path: ['nextQuestionDimension'],
+      message: '问题、提问原因与问题维度必须同时存在或同时为空',
     });
   }
 });
@@ -85,6 +114,8 @@ export interface WeeklyCoachResult {
   assistantMessage: string;
   nextQuestion: string | null;
   questionReason: string | null;
+  nextQuestionDimension: WeeklyCoachQuestionDimension | null;
+  deferredTaskQuestions: WeeklyCoachDeferredTaskQuestionInput[];
   background: WeeklyFocusBackground;
   draftOperations: WeeklyCoachDraftOperation[];
   sessionSummary: string;
@@ -99,6 +130,7 @@ export interface WeeklyCoachTurnInput {
   draftItems: WeeklyCoachDraftItem[];
   deletedFocuses: string[];
   focusedItemId: string | null;
+  deferredTaskQuestions: WeeklyCoachDeferredTaskQuestion[];
   context: WeeklyCoachContext;
 }
 
@@ -130,6 +162,8 @@ const weeklyCoachJsonSchema = {
     'assistantMessage',
     'nextQuestion',
     'questionReason',
+    'nextQuestionDimension',
+    'deferredTaskQuestions',
     'background',
     'draftOperations',
     'sessionSummary',
@@ -139,6 +173,26 @@ const weeklyCoachJsonSchema = {
     assistantMessage: { type: 'string', minLength: 1, maxLength: 4_000 },
     nextQuestion: nullableTextSchema,
     questionReason: nullableTextSchema,
+    nextQuestionDimension: {
+      anyOf: [
+        { type: 'string', enum: WEEKLY_COACH_QUESTION_DIMENSIONS },
+        { type: 'null' },
+      ],
+    },
+    deferredTaskQuestions: {
+      type: 'array',
+      maxItems: 3,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['relatedItemId', 'relatedFocus', 'question'],
+        properties: {
+          relatedItemId: nullableTextSchema,
+          relatedFocus: { type: 'string', minLength: 1, maxLength: 4_000 },
+          question: { type: 'string', minLength: 1, maxLength: 4_000 },
+        },
+      },
+    },
     background: {
       type: 'object',
       additionalProperties: false,
@@ -205,6 +259,12 @@ function normalize(
     assistantMessage: result.assistantMessage.trim(),
     nextQuestion: result.nextQuestion?.trim() ?? null,
     questionReason: result.questionReason?.trim() ?? null,
+    nextQuestionDimension: result.nextQuestionDimension,
+    deferredTaskQuestions: result.deferredTaskQuestions.map((item) => ({
+      relatedItemId: item.relatedItemId?.trim() ?? null,
+      relatedFocus: item.relatedFocus.trim(),
+      question: item.question.trim(),
+    })),
     background: {
       facts: unique(result.background.facts),
       assumptions: unique(result.background.assumptions),
@@ -238,6 +298,35 @@ function draftForPrompt(input: WeeklyCoachTurnInput): string {
   ].join('\n')).join('\n');
 }
 
+function deferredQuestionsForPrompt(input: WeeklyCoachTurnInput): string {
+  if (input.deferredTaskQuestions.length === 0) {
+    return '当前没有已延后的任务级问题。';
+  }
+  return input.deferredTaskQuestions.map((item) => (
+    `- ${item.relatedFocus || '待关联'}：${item.question}`
+  )).join('\n');
+}
+
+function normalizedQuestion(value: string): string {
+  return value.trim().toLocaleLowerCase('zh-CN').replace(/[\s\p{P}\p{S}]+/gu, '');
+}
+
+function assertQuestionWasNotDeferred(
+  result: WeeklyCoachRawResult,
+  existing: WeeklyCoachDeferredTaskQuestion[],
+): void {
+  if (result.nextQuestion === null) return;
+  const nextQuestion = normalizedQuestion(result.nextQuestion);
+  const blocked = [...existing, ...result.deferredTaskQuestions]
+    .some((item) => normalizedQuestion(item.question) === nextQuestion);
+  if (!blocked) return;
+  throw new z.ZodError([{
+    code: 'custom',
+    path: ['nextQuestion'],
+    message: '已延后的任务级问题不得再次追问',
+  }]);
+}
+
 function promptFor(input: WeeklyCoachTurnInput): string {
   const readFailureNotice = input.context.readFailures.length === 0
     ? '授权资料均可读取。'
@@ -262,6 +351,13 @@ function promptFor(input: WeeklyCoachTurnInput): string {
     '你是 ATL 本周思考教练。你的职责是通过对话启发用户形成自己的判断，不是替用户安排任务。',
     '不能替用户决定 Top 3，不能创建或修改任务，不能触发 Agent、执行工具、读取文件或访问网络。',
     '每轮最多提出一个当前最有价值的问题；信息充分时 nextQuestion 可以为 null。',
+    '你的对话目标只限于本周投入判断：本周是否值得做、为什么现在做、期望形成什么周级结果、与其他承诺如何取舍、是否有足够时间和资源。',
+    '下一问题只能属于：目标关联、本周时机、周级结果、结果价值、机会成本、投入容量。',
+    '领域定义、具体方案、详细验收标准、执行步骤、任务拆解，以及需要任务内调研后才能得出的结论，都是任务级问题。',
+    '发现任务级问题时，把它写入 deferredTaskQuestions，说明已留到任务阶段处理，不得在 assistantMessage 或 nextQuestion 中继续追问。',
+    'assistantMessage 只能复述、解释或提示已记录内容；所有需要用户回答的问题只能放在唯一的 nextQuestion 中。',
+    '已在“进入任务后待思考的问题”中的内容不得再次追问。',
+    '例如“什么叫可用的 Skill”“应该用哪些维度筛选 Skill”必须延后；“为什么必须本周完成”“本周投入它要延后什么”可以追问。',
     '不得为了凑满三项创造方向。只有至少三个可见字段已有依据时，才能 create 新草稿项。',
     '只能补充未锁定字段。锁定字段如有不同建议，使用 suggest_replace，不能 update 覆盖。',
     '聚焦讨论时只能操作指定 itemId；不得删除草稿项、创建任务、修改任务或触发 Agent。',
@@ -277,6 +373,8 @@ function promptFor(input: WeeklyCoachTurnInput): string {
     `当前聚焦 itemId：${input.focusedItemId ?? '无'}`,
     '当前草稿：',
     draftForPrompt(input),
+    '进入任务后待思考的问题：',
+    deferredQuestionsForPrompt(input),
     capacityNotice,
     truncationNotice,
     readFailureNotice,
@@ -301,6 +399,7 @@ export async function runWeeklyThinkingCoach(
     ...(control?.onProgress === undefined ? {} : { onProgress: control.onProgress }),
   });
   const parsed = weeklyCoachResultSchema.parse(raw);
+  assertQuestionWasNotDeferred(parsed, input.deferredTaskQuestions);
   return normalize(
     parsed,
     new Set(input.context.documents.map(({ path }) => redactSecrets(path))),
