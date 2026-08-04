@@ -8,11 +8,14 @@ import {
   emptyWeeklyCoachDraftCollection,
   getWeeklyCoachSessionDraft,
   mergeWeeklyCoachDraftOperations,
+  mergeWeeklyCoachDeferredTaskQuestions,
   normalizeWeeklyCoachDraftCollection,
   protectRestoredWeeklyCoachDraft,
   putWeeklyCoachSessionDraft,
   removeWeeklyCoachDraftItem,
+  removeWeeklyCoachDeferredTaskQuestion,
   removeWeeklyCoachSessionDraft,
+  editWeeklyCoachDeferredTaskQuestion,
   validateWeeklyCoachSessionDraft,
   weeklyCoachDraftToFocusInput,
   type WeeklyCoachDraftItem,
@@ -81,6 +84,7 @@ describe('weekly coach session draft', () => {
       questionReason: '',
       background: { facts: [], assumptions: [], gaps: [], sources: [] },
       items: [],
+      deferredTaskQuestions: [],
       deletedItems: [],
       focusedItemId: null,
       noNewFocus: false,
@@ -217,6 +221,104 @@ describe('weekly coach session draft', () => {
     expect((removed.deletedItems[0] as unknown as Record<string, unknown>).focusLabel)
       .toBe('发布插件！');
     expect(recreated.items).toHaveLength(0);
+  });
+
+  it('merges, associates, and deduplicates deferred task questions', () => {
+    const original = draftWith(completeItem('focus-1', '筛选本周要交付的 Skill'));
+    let sequence = 0;
+    const merged = mergeWeeklyCoachDeferredTaskQuestions(original, [
+      {
+        relatedItemId: 'focus-1',
+        relatedFocus: '筛选本周要交付的 Skill',
+        question: '定义 Skill 的可用标准',
+      },
+      {
+        relatedItemId: null,
+        relatedFocus: '筛选本周要交付的 Skill',
+        question: '定义 Skill 的可用标准。',
+      },
+      { relatedItemId: null, relatedFocus: '其他方向', question: '确认执行工具' },
+    ], { nextId: () => `question-${++sequence}` });
+
+    expect(merged.deferredTaskQuestions).toEqual([
+      {
+        id: 'question-1',
+        relatedItemId: 'focus-1',
+        relatedFocus: '筛选本周要交付的 Skill',
+        question: '定义 Skill 的可用标准',
+      },
+      {
+        id: 'question-2',
+        relatedItemId: null,
+        relatedFocus: '其他方向',
+        question: '确认执行工具',
+      },
+    ]);
+    expect(original.deferredTaskQuestions).toEqual([]);
+  });
+
+  it('edits and removes deferred questions without changing focus readiness', () => {
+    const withQuestion = mergeWeeklyCoachDeferredTaskQuestions(
+      draftWith(completeItem('focus-1')),
+      [{ relatedItemId: 'focus-1', relatedFocus: '发布插件', question: '定义兼容范围' }],
+      { nextId: () => 'question-1' },
+    );
+    const edited = editWeeklyCoachDeferredTaskQuestion(
+      withQuestion,
+      'question-1',
+      '确认兼容范围',
+    );
+    expect(edited.items[0]?.readiness).toBe('可确认');
+    expect(edited.deferredTaskQuestions[0]?.question).toBe('确认兼容范围');
+    expect(removeWeeklyCoachDeferredTaskQuestion(edited, 'question-1')
+      .deferredTaskQuestions).toEqual([]);
+  });
+
+  it('caps linked questions at five and unassigned questions at ten', () => {
+    const draft = draftWith(completeItem('focus-1'));
+    const questions = [
+      ...Array.from({ length: 6 }, (_, index) => ({
+        relatedItemId: 'focus-1',
+        relatedFocus: '发布插件',
+        question: `重点问题 ${index + 1}`,
+      })),
+      ...Array.from({ length: 11 }, (_, index) => ({
+        relatedItemId: null,
+        relatedFocus: `未关联 ${index + 1}`,
+        question: `未关联问题 ${index + 1}`,
+      })),
+    ];
+    let id = 0;
+    const merged = mergeWeeklyCoachDeferredTaskQuestions(draft, questions, {
+      nextId: () => `question-${++id}`,
+    });
+    expect(merged.deferredTaskQuestions.filter((item) => item.relatedItemId === 'focus-1'))
+      .toHaveLength(5);
+    expect(merged.deferredTaskQuestions.filter((item) => item.relatedItemId === null))
+      .toHaveLength(10);
+  });
+
+  it('restores legacy version-one drafts with an empty deferred list', () => {
+    const legacy = structuredClone(persistedDraft()) as unknown as Record<string, unknown>;
+    delete legacy.deferredTaskQuestions;
+    const normalized = normalizeWeeklyCoachDraftCollection({
+      collectionVersion: 1,
+      byWeek: { '2026-W32': legacy },
+    });
+    expect(normalized.byWeek['2026-W32']?.deferredTaskQuestions).toEqual([]);
+  });
+
+  it('removes questions explicitly linked to a deleted focus', () => {
+    const draft = {
+      ...draftWith(completeItem('focus-1')),
+      deferredTaskQuestions: [{
+        id: 'question-1',
+        relatedItemId: 'focus-1',
+        relatedFocus: '发布插件',
+        question: '定义兼容范围',
+      }],
+    };
+    expect(removeWeeklyCoachDraftItem(draft, 'focus-1').deferredTaskQuestions).toEqual([]);
   });
 
   it('does not persist credential content in deletion tombstones', () => {
