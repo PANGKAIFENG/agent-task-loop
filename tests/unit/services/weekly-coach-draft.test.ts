@@ -420,6 +420,40 @@ describe('weekly coach session draft', () => {
     expect(serialized).toContain('[REDACTED]');
   });
 
+  it('persists only the latest forty bounded and redacted conversation messages', () => {
+    const messages = Array.from({ length: 45 }, (_, index) => ({
+      id: `message-${index + 1}`,
+      role: index % 2 === 0 ? 'user' as const : 'assistant' as const,
+      text: index === 44
+        ? `最后一条包含 api_key=weekly-coach-private-value ${'结论'.repeat(2_100)}`
+        : `第 ${index + 1} 条对话`,
+      question: index === 43 ? '本周真正要验证什么？' : undefined,
+      questionReason: index === 43 ? '这个答案会影响优先级。' : undefined,
+    }));
+    const draft = {
+      ...persistedDraft(),
+      messages,
+      sourceDocuments: [{ path: 'private.md', content: '原始授权资料不得保存' }],
+    } as WeeklyCoachSessionDraft & {
+      messages: typeof messages;
+      sourceDocuments: Array<{ path: string; content: string }>;
+    };
+
+    const saved = putWeeklyCoachSessionDraft(
+      emptyWeeklyCoachDraftCollection(),
+      draft,
+    ).byWeek['2026-W32'] as unknown as Record<string, unknown>;
+    const restoredMessages = saved.messages as Array<Record<string, unknown>>;
+    const serialized = JSON.stringify(saved);
+
+    expect(restoredMessages).toHaveLength(40);
+    expect(restoredMessages[0]?.id).toBe('message-6');
+    expect((restoredMessages.at(-1)?.text as string).length).toBeLessThanOrEqual(4_000);
+    expect(serialized).not.toContain('weekly-coach-private-value');
+    expect(serialized).toContain('[REDACTED]');
+    expect(saved).not.toHaveProperty('sourceDocuments');
+  });
+
   it('normalizes only the latest twelve bounded session drafts', () => {
     const oversized = 'x'.repeat(4_001);
     const byWeek: Record<string, unknown> = Object.fromEntries(Array.from(

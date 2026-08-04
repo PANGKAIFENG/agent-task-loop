@@ -8,13 +8,13 @@ import versions from '../../versions.json' with { type: 'json' };
 
 describe('ATL_VERSION', () => {
   it('reports the current release version', () => {
-    expect(ATL_VERSION).toBe('0.8.0');
+    expect(ATL_VERSION).toBe('0.8.1');
   });
 
   it('matches every release manifest', () => {
     expect(ATL_VERSION).toBe(packageJson.version);
-    expect(rootManifest.version).toBe('0.8.0');
-    expect(pluginManifest.version).toBe('0.8.0');
-    expect(versions['0.8.0']).toBe('1.11.4');
+    expect(rootManifest.version).toBe('0.8.1');
+    expect(pluginManifest.version).toBe('0.8.1');
+    expect(versions['0.8.1']).toBe('1.11.4');
   });
 });

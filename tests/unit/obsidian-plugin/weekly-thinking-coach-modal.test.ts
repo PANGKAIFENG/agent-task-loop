@@ -280,6 +280,22 @@ describe('WeeklyThinkingCoachModal', () => {
     )?.checked).toBe(false);
     expect(button(modal, '发送').title).toBe('发送');
     expect(button(modal, '人工添加重点').title).toBe('人工添加重点');
+    const sourceList = modal.contentEl.querySelector<HTMLElement>('.atl-weekly-coach-source-list')!;
+    expect(sourceList.hidden).toBe(true);
+    button(modal, '调整资料').click();
+    expect(sourceList.hidden).toBe(false);
+  });
+
+  it('keeps the modal open when the backdrop is clicked', async () => {
+    const { modal } = setup();
+    await open(modal);
+    const close = vi.spyOn(modal, 'close');
+    modal.containerEl.addEventListener('click', () => modal.close());
+
+    modal.containerEl.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+
+    expect(close).not.toHaveBeenCalled();
+    expect(modal.contentEl.textContent).toContain('本周思考教练');
   });
 
   it('does not claim a model connection when configuration is invalid', async () => {
@@ -308,6 +324,18 @@ describe('WeeklyThinkingCoachModal', () => {
       draftItems: [],
       focusedItemId: null,
     }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
+  });
+
+  it('replaces the composer send action with stop while AI is running', async () => {
+    const pending = new Promise<WeeklyCoachResult>(() => undefined);
+    const { modal } = setup({ coachOperation: async () => pending });
+    await open(modal);
+
+    sendMessage(modal, '等待模型');
+
+    expect(() => button(modal, '发送')).toThrow('Missing button: 发送');
+    expect(button(modal, '停止等待').dataset.icon).toBe('square');
+    modal.close();
   });
 
   it('renders partial cards and accessible add and delete icon actions', async () => {
@@ -457,6 +485,9 @@ describe('WeeklyThinkingCoachModal', () => {
 
     await vi.waitFor(() => expect(saveSessionDraft).toHaveBeenCalledWith(expect.objectContaining({
       keyAnswers: ['还在等待的输入'],
+      messages: expect.arrayContaining([
+        expect.objectContaining({ role: 'user', text: '还在等待的输入' }),
+      ]),
     })));
     expect(control?.signal.aborted).toBe(true);
     await vi.waitFor(() => {
@@ -500,6 +531,79 @@ describe('WeeklyThinkingCoachModal', () => {
       selectedSources: ['目标', '任务'],
       previousSummary: null,
     });
+  });
+
+  it('restores the persisted conversation transcript before falling back to structured progress', async () => {
+    const restored = sessionDraft({
+      messages: [{
+        id: 'message-user-1',
+        role: 'user',
+        text: '上次我决定先验证真实流程。',
+      }, {
+        id: 'message-ai-1',
+        role: 'assistant',
+        text: '那本周要观察什么变化？',
+        question: '什么证据会让你愿意继续投入？',
+        questionReason: '需要把投入和结果连起来。',
+      }],
+    } as WeeklyCoachSessionDraft & {
+      messages: Array<Record<string, string>>;
+    });
+    const { modal } = setup({ draft: restored });
+
+    await open(modal);
+
+    expect(modal.contentEl.textContent).toContain('上次我决定先验证真实流程。');
+    expect(modal.contentEl.textContent).toContain('什么证据会让你愿意继续投入？');
+    expect(modal.contentEl.textContent).not.toContain('上次进展');
+  });
+
+  it('keeps the conversation container and manual scroll position during elapsed updates', async () => {
+    vi.useFakeTimers();
+    try {
+      const pending = new Promise<WeeklyCoachResult>(() => undefined);
+      const { modal } = setup({ coachOperation: async () => pending });
+      await open(modal);
+      sendMessage(modal, '等待期间我要阅读历史');
+      const conversation = modal.contentEl.querySelector<HTMLElement>(
+        '.atl-weekly-coach-conversation',
+      )!;
+      Object.defineProperty(conversation, 'scrollHeight', { configurable: true, value: 1_200 });
+      Object.defineProperty(conversation, 'clientHeight', { configurable: true, value: 400 });
+      conversation.scrollTop = 120;
+      conversation.dispatchEvent(new window.Event('scroll'));
+
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(modal.contentEl.querySelector('.atl-weekly-coach-conversation')).toBe(conversation);
+      expect(conversation.scrollTop).toBe(120);
+      modal.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows an explicit return-to-latest action after the user reads history', async () => {
+    const pending = new Promise<WeeklyCoachResult>(() => undefined);
+    const { modal, runCoach } = setup({ coachOperation: async (_turn, control) => {
+      control.onProgress({ stage: 'model_started' });
+      return pending;
+    } });
+    await open(modal);
+    sendMessage(modal, '先读历史');
+    const conversation = modal.contentEl.querySelector<HTMLElement>(
+      '.atl-weekly-coach-conversation',
+    )!;
+    Object.defineProperty(conversation, 'scrollHeight', { configurable: true, value: 1_200 });
+    Object.defineProperty(conversation, 'clientHeight', { configurable: true, value: 400 });
+    conversation.scrollTop = 100;
+    conversation.dispatchEvent(new window.Event('scroll'));
+    runCoach.mock.calls[0]?.[1].onProgress({ stage: 'parsing' });
+
+    expect(button(modal, '回到最新消息').dataset.icon).toBe('arrow-down');
+    button(modal, '回到最新消息').click();
+    expect(conversation.scrollTop).toBe(1_200);
+    modal.close();
   });
 
   it('restores the plugin draft with a warning when the formal weekly record cannot be read', async () => {

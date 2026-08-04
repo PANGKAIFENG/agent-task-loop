@@ -16,6 +16,7 @@ import {
   type WeeklyCoachDraftField,
   type WeeklyCoachDraftValidationIssue,
   type WeeklyCoachSessionDraft,
+  type WeeklyCoachTranscriptMessage,
   type WeeklyThinkingCoachTurn,
 } from '../services/weekly-coach-draft.js';
 import type {
@@ -33,6 +34,8 @@ const SENSITIVE_SOURCES = new Set<WeeklyCoachSource>(['笔记同步助手', '每
 const AUTOSAVE_DELAY_MS = 800;
 const COACH_TIMEOUT_SECONDS = 180;
 const SLOW_RESPONSE_SECONDS = 45;
+const AUTO_FOLLOW_THRESHOLD_PX = 100;
+const MAX_SESSION_MESSAGES = 40;
 
 const FIELD_LABELS: Record<WeeklyCoachDraftField, string> = {
   focus: '重点事项',
@@ -41,13 +44,7 @@ const FIELD_LABELS: Record<WeeklyCoachDraftField, string> = {
   evidence: '完成证据',
 };
 
-type CoachMessage = {
-  id: string;
-  role: 'assistant' | 'user' | 'system';
-  text: string;
-  question?: string;
-  questionReason?: string;
-};
+type CoachMessage = WeeklyCoachTranscriptMessage;
 
 type SaveStatus = '未保存' | '正在暂存' | '刚刚暂存' | '暂存失败' | '正式记录已确认';
 type CoachFailure = 'timeout' | 'unavailable' | 'invalid' | 'cancelled' | null;
@@ -91,6 +88,9 @@ function cloneSession(draft: WeeklyCoachSessionDraft): WeeklyCoachSessionDraft {
       suggestions: { ...item.suggestions },
     })),
     deletedItems: draft.deletedItems.map((item) => ({ ...item })),
+    ...(draft.messages === undefined
+      ? {}
+      : { messages: draft.messages.map((message) => ({ ...message })) }),
   };
 }
 
@@ -166,6 +166,14 @@ export class WeeklyThinkingCoachModal extends Modal {
   private elapsedTimer: ReturnType<typeof setInterval> | null = null;
   private deadlineTimer: ReturnType<typeof setTimeout> | null = null;
   private error = '';
+  private sourcesExpanded = false;
+  private conversationScrollTop = 0;
+  private conversationAutoFollow = true;
+  private readonly preventBackdropDismissal = (event: MouseEvent): void => {
+    if (event.target !== this.containerEl) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  };
 
   constructor(
     app: App,
@@ -184,6 +192,8 @@ export class WeeklyThinkingCoachModal extends Modal {
     this.skipCloseSave = false;
     this.modalEl.classList.add('atl-weekly-coach-modal');
     this.contentEl.classList.add('atl-weekly-coach-content');
+    this.containerEl.addEventListener('mousedown', this.preventBackdropDismissal, true);
+    this.containerEl.addEventListener('click', this.preventBackdropDismissal, true);
     this.render();
     void this.load();
   }
@@ -192,6 +202,8 @@ export class WeeklyThinkingCoachModal extends Modal {
     this.closed = true;
     this.abortActiveCoach();
     this.clearAutosaveTimer();
+    this.containerEl.removeEventListener('mousedown', this.preventBackdropDismissal, true);
+    this.containerEl.removeEventListener('click', this.preventBackdropDismissal, true);
     if (!this.skipCloseSave && !this.isConfirmed() && this.dirty) {
       void this.persistSessionDraft().catch(() => {
         this.dependencies.notify('草稿自动保存失败，请重新打开本周思考后手动保存。');
@@ -269,11 +281,13 @@ export class WeeklyThinkingCoachModal extends Modal {
         !SENSITIVE_SOURCES.has(source)
       )),
     });
-    this.messages = [{
-      id: this.dependencies.createId(),
-      role: 'assistant',
-      text: this.restoredProgressMessage(),
-    }];
+    this.messages = restored.messages === undefined || restored.messages.length === 0
+      ? [{
+        id: this.dependencies.createId(),
+        role: 'assistant',
+        text: this.restoredProgressMessage(),
+      }]
+      : restored.messages.map((message) => ({ ...message }));
   }
 
   private restoredProgressMessage(): string {
@@ -287,6 +301,7 @@ export class WeeklyThinkingCoachModal extends Modal {
   }
 
   private render(): void {
+    this.captureConversationScroll();
     this.contentEl.empty();
     this.modalEl.classList.toggle('atl-weekly-coach-modal--busy', this.busy || this.persisting);
     if (this.loading) {
@@ -298,8 +313,14 @@ export class WeeklyThinkingCoachModal extends Modal {
     }
 
     this.renderHeader();
-    const main = this.contentEl.createDiv({ cls: 'atl-weekly-coach-main' });
-    this.renderConversation(main.createDiv({ cls: 'atl-weekly-coach-conversation' }));
+    const main = this.contentEl.createDiv({
+      cls: `atl-weekly-coach-main ${this.session.items.length === 0
+        ? 'is-empty-draft'
+        : 'has-draft-items'}`,
+    });
+    const conversation = main.createDiv({ cls: 'atl-weekly-coach-conversation' });
+    this.renderConversation(conversation);
+    this.attachConversationScroll(conversation);
     this.renderDraftPanel(main.createDiv({ cls: 'atl-weekly-coach-draft-panel' }));
     this.renderFooter();
   }
@@ -351,9 +372,19 @@ export class WeeklyThinkingCoachModal extends Modal {
   private renderSources(container: HTMLElement): void {
     const section = container.createDiv({ cls: 'atl-weekly-coach-sources' });
     const heading = section.createDiv({ cls: 'atl-weekly-coach-section-heading' });
-    heading.createEl('strong', { text: '本次授权资料' });
-    heading.createEl('small', { text: '敏感资料每次单独授权' });
+    heading.createEl('strong', { text: '本次上下文' });
+    const summary = heading.createEl('small', {
+      cls: 'atl-weekly-coach-source-summary',
+      text: this.sourceSummary(),
+    });
     const list = section.createDiv({ cls: 'atl-weekly-coach-source-list' });
+    list.hidden = !this.sourcesExpanded;
+    const adjust = this.appendIconButton(heading, '调整资料', 'sliders-horizontal', () => {
+      this.sourcesExpanded = !this.sourcesExpanded;
+      list.hidden = !this.sourcesExpanded;
+      adjust.setAttribute('aria-expanded', String(this.sourcesExpanded));
+    });
+    adjust.setAttribute('aria-expanded', String(this.sourcesExpanded));
     for (const source of WEEKLY_COACH_SOURCES) {
       const label = list.createEl('label', { cls: 'atl-weekly-coach-source' });
       const checkbox = label.createEl('input', { type: 'checkbox' });
@@ -368,6 +399,7 @@ export class WeeklyThinkingCoachModal extends Modal {
             ? [...new Set([...this.session.selectedSources, source])]
             : this.session.selectedSources.filter((candidate) => candidate !== source),
         };
+        summary.textContent = this.sourceSummary();
         this.changed();
       });
       label.createEl('span', { text: source });
@@ -406,14 +438,24 @@ export class WeeklyThinkingCoachModal extends Modal {
     textarea.rows = 3;
     textarea.value = this.session.pendingInput;
     textarea.disabled = this.persisting;
+    const action = this.busy
+      ? this.appendIconButton(composer, '停止等待', 'square', () => this.stopCoach())
+      : this.appendIconButton(composer, '发送', 'send', () => { void this.send(); });
+    action.disabled = this.persisting || (!this.busy && this.session.pendingInput.trim() === '');
     textarea.addEventListener('input', () => {
       if (this.persisting) return;
       this.session = { ...this.session, pendingInput: textarea.value };
-      send.disabled = this.busy || this.persisting || textarea.value.trim() === '';
+      if (!this.busy) action.disabled = textarea.value.trim() === '';
       this.changed();
     });
-    const send = this.appendIconButton(composer, '发送', 'send', () => { void this.send(); });
-    send.disabled = this.busy || this.persisting || this.session.pendingInput.trim() === '';
+    const jumpToLatest = this.appendIconButton(
+      composer,
+      '回到最新消息',
+      'arrow-down',
+      () => this.scrollConversationToLatest(container),
+    );
+    jumpToLatest.classList.add('atl-weekly-coach-scroll-latest');
+    jumpToLatest.hidden = this.conversationAutoFollow;
     composer.createEl('small', {
       text: 'AI 会继续追问，或把已经足够清楚的内容整理到右侧草稿。',
     });
@@ -421,19 +463,11 @@ export class WeeklyThinkingCoachModal extends Modal {
 
   private renderProgress(container: HTMLElement): void {
     const progress = container.createDiv({ cls: 'atl-weekly-coach-progress' });
-    progress.createEl('strong', { text: this.progressLabel() });
-    const statistics = this.contextStatistics();
-    if (statistics !== '') progress.createEl('span', { text: statistics });
-    progress.createEl('span', {
-      text: `${this.formatElapsed(this.elapsedSeconds)} / 最长 03:00`,
-    });
-    if (this.elapsedSeconds >= SLOW_RESPONSE_SECONDS) {
-      progress.createEl('small', {
-        cls: 'atl-weekly-coach-slow-notice',
-        text: '响应比平时慢，你可以继续等待，也可以停止后人工整理。',
-      });
-    }
-    this.appendTextButton(progress, '停止等待', () => this.stopCoach());
+    progress.createEl('strong', { cls: 'atl-weekly-coach-progress-label' });
+    progress.createEl('span', { cls: 'atl-weekly-coach-progress-statistics' });
+    progress.createEl('span', { cls: 'atl-weekly-coach-progress-elapsed' });
+    progress.createEl('small', { cls: 'atl-weekly-coach-slow-notice' });
+    this.updateProgressDisplay();
   }
 
   private renderDraftPanel(container: HTMLElement): void {
@@ -695,7 +729,7 @@ export class WeeklyThinkingCoachModal extends Modal {
         onProgress: (progress) => {
           if (this.coachAbortController !== controller || this.closed) return;
           this.coachProgress = progress;
-          this.render();
+          this.updateProgressDisplay();
         },
       });
       if (this.coachAbortController !== controller || controller.signal.aborted || this.closed) return;
@@ -824,7 +858,11 @@ export class WeeklyThinkingCoachModal extends Modal {
   }
 
   private changed(): void {
-    this.session = { ...this.session, updatedAt: this.dependencies.now().toISOString() };
+    this.session = {
+      ...this.session,
+      messages: this.messages.slice(-MAX_SESSION_MESSAGES).map((message) => ({ ...message })),
+      updatedAt: this.dependencies.now().toISOString(),
+    };
     this.dirty = true;
     this.mutationVersion += 1;
     this.saveStatus = '未保存';
@@ -878,7 +916,7 @@ export class WeeklyThinkingCoachModal extends Modal {
     this.elapsedTimer = setInterval(() => {
       if (this.coachAbortController !== controller || this.closed) return;
       this.elapsedSeconds = Math.min(this.elapsedSeconds + 1, COACH_TIMEOUT_SECONDS);
-      this.render();
+      this.updateProgressDisplay();
     }, 1_000);
     this.deadlineTimer = setTimeout(() => this.timeoutCoach(controller), COACH_TIMEOUT_SECONDS * 1_000);
   }
@@ -933,6 +971,79 @@ export class WeeklyThinkingCoachModal extends Modal {
     const minutes = Math.floor(seconds / 60).toString().padStart(2, '0');
     const remaining = (seconds % 60).toString().padStart(2, '0');
     return `${minutes}:${remaining}`;
+  }
+
+  private updateProgressDisplay(): void {
+    const progress = this.contentEl.querySelector<HTMLElement>('.atl-weekly-coach-progress');
+    if (progress === null) return;
+    const label = progress.querySelector<HTMLElement>('.atl-weekly-coach-progress-label');
+    const statistics = progress.querySelector<HTMLElement>('.atl-weekly-coach-progress-statistics');
+    const elapsed = progress.querySelector<HTMLElement>('.atl-weekly-coach-progress-elapsed');
+    const slowNotice = progress.querySelector<HTMLElement>('.atl-weekly-coach-slow-notice');
+    if (label !== null) label.textContent = this.progressLabel();
+    if (statistics !== null) {
+      statistics.textContent = this.contextStatistics();
+      statistics.hidden = statistics.textContent === '';
+    }
+    if (elapsed !== null) {
+      elapsed.textContent = `${this.formatElapsed(this.elapsedSeconds)} / 最长 03:00`;
+    }
+    if (slowNotice !== null) {
+      const isSlow = this.elapsedSeconds >= SLOW_RESPONSE_SECONDS;
+      slowNotice.hidden = !isSlow;
+      slowNotice.textContent = isSlow
+        ? '响应比平时慢，你可以继续等待，也可以停止后人工整理。'
+        : '';
+    }
+  }
+
+  private sourceSummary(): string {
+    const count = this.session.selectedSources.length;
+    return `${count === 0 ? '未选择资料' : `已选 ${count} 类`} · 敏感资料单次授权`;
+  }
+
+  private captureConversationScroll(): void {
+    const conversation = this.contentEl.querySelector<HTMLElement>(
+      '.atl-weekly-coach-conversation',
+    );
+    if (conversation === null) return;
+    this.conversationScrollTop = conversation.scrollTop;
+    const distanceFromBottom = conversation.scrollHeight
+      - conversation.clientHeight
+      - conversation.scrollTop;
+    this.conversationAutoFollow = distanceFromBottom <= AUTO_FOLLOW_THRESHOLD_PX;
+  }
+
+  private attachConversationScroll(conversation: HTMLElement): void {
+    conversation.scrollTop = this.conversationAutoFollow
+      ? conversation.scrollHeight
+      : this.conversationScrollTop;
+    const updateScrollState = (): void => {
+      this.conversationScrollTop = conversation.scrollTop;
+      const distanceFromBottom = conversation.scrollHeight
+        - conversation.clientHeight
+        - conversation.scrollTop;
+      this.conversationAutoFollow = distanceFromBottom <= AUTO_FOLLOW_THRESHOLD_PX;
+      const action = conversation.querySelector<HTMLButtonElement>(
+        '.atl-weekly-coach-scroll-latest',
+      );
+      if (action !== null) action.hidden = this.conversationAutoFollow;
+    };
+    conversation.addEventListener('scroll', updateScrollState, { passive: true });
+    const action = conversation.querySelector<HTMLButtonElement>(
+      '.atl-weekly-coach-scroll-latest',
+    );
+    if (action !== null) action.hidden = this.conversationAutoFollow;
+  }
+
+  private scrollConversationToLatest(conversation: HTMLElement): void {
+    this.conversationAutoFollow = true;
+    conversation.scrollTop = conversation.scrollHeight;
+    this.conversationScrollTop = conversation.scrollTop;
+    const action = conversation.querySelector<HTMLButtonElement>(
+      '.atl-weekly-coach-scroll-latest',
+    );
+    if (action !== null) action.hidden = true;
   }
 
   private canReusePreviousSummary(): boolean {

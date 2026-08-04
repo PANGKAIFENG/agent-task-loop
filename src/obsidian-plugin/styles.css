@@ -2510,6 +2510,14 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
   min-height: 0;
 }
 
+.atl-weekly-coach-main.is-empty-draft {
+  grid-template-columns: minmax(0, 1fr) minmax(240px, .62fr);
+}
+
+.atl-weekly-coach-main.has-draft-items {
+  grid-template-columns: minmax(0, 1.35fr) minmax(300px, .85fr);
+}
+
 .atl-weekly-coach-conversation,
 .atl-weekly-coach-draft-panel {
   min-width: 0;
@@ -2530,6 +2538,10 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
   padding: 18px;
 }
 
+.atl-weekly-coach-main.is-empty-draft .atl-weekly-coach-draft-panel {
+  background: var(--background-primary-alt);
+}
+
 .atl-weekly-coach-sources {
   border-bottom: 1px solid var(--background-modifier-border);
   padding-bottom: 14px;
@@ -2547,8 +2559,9 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
 }
 
 .atl-weekly-coach-section-heading {
+  display: grid;
   gap: 10px;
-  justify-content: space-between;
+  grid-template-columns: auto minmax(0, 1fr) auto;
 }
 
 .atl-weekly-coach-section-heading strong,
@@ -2559,6 +2572,9 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
 .atl-weekly-coach-section-heading small {
   color: var(--text-faint);
   font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .atl-weekly-coach-source-list {
@@ -2677,11 +2693,16 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
 
 .atl-weekly-coach-composer {
   align-items: end;
+  background: var(--background-primary);
   border-top: 1px solid var(--background-modifier-border);
+  bottom: 0;
   display: grid;
   gap: 8px;
   grid-template-columns: minmax(0, 1fr) 36px;
-  padding-top: 14px;
+  margin: 0 -2px -2px;
+  padding: 14px 2px 2px;
+  position: sticky;
+  z-index: 3;
 }
 
 .atl-weekly-coach-composer textarea {
@@ -2691,10 +2712,10 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
   font-family: inherit;
   font-size: 12px;
   line-height: 1.5;
-  max-height: 144px;
-  min-height: 72px;
+  max-height: 120px;
+  min-height: 64px;
   padding: 9px 10px;
-  resize: vertical;
+  resize: none;
   width: 100%;
 }
 
@@ -2710,19 +2731,26 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
   grid-column: 1 / -1;
 }
 
+.atl-weekly-coach-scroll-latest {
+  position: absolute;
+  right: 4px;
+  top: -38px;
+}
+
 .atl-weekly-coach-progress {
-  background: rgba(0, 168, 198, .07);
-  border-left: 3px solid #00a8c6;
-  border-radius: 4px;
+  align-items: center;
+  background: transparent;
+  color: var(--text-muted);
   display: grid;
   font-size: 10px;
-  gap: 4px;
-  padding: 10px 12px;
+  gap: 6px 9px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  padding: 3px 2px;
 }
 
 .atl-weekly-coach-progress > strong {
-  color: var(--text-normal);
-  font-size: 11px;
+  color: #00a8c6;
+  font-size: 10px;
 }
 
 .atl-weekly-coach-progress > span {
@@ -2730,14 +2758,10 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
   font-variant-numeric: tabular-nums;
 }
 
-.atl-weekly-coach-progress > button {
-  justify-self: start;
-  margin-top: 4px;
-}
-
 .atl-weekly-coach-slow-notice {
   color: #d97706;
   font-size: 10px;
+  grid-column: 1 / -1;
   line-height: 1.5;
 }
 
@@ -3021,7 +3045,9 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
     display: none;
   }
 
-  .atl-weekly-coach-main {
+  .atl-weekly-coach-main,
+  .atl-weekly-coach-main.is-empty-draft,
+  .atl-weekly-coach-main.has-draft-items {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(300px, 1fr) minmax(240px, 1fr);
   }

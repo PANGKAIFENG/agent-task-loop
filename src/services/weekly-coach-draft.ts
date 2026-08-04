@@ -20,6 +20,15 @@ export const WEEKLY_COACH_DRAFT_FIELDS = [
 export type WeeklyCoachDraftField = typeof WEEKLY_COACH_DRAFT_FIELDS[number];
 export type WeeklyCoachDraftFieldSource = 'ai' | 'user';
 export type WeeklyCoachDraftReadiness = '仍需确认' | '可确认';
+export type WeeklyCoachTranscriptRole = 'assistant' | 'user' | 'system';
+
+export interface WeeklyCoachTranscriptMessage {
+  id: string;
+  role: WeeklyCoachTranscriptRole;
+  text: string;
+  question?: string;
+  questionReason?: string;
+}
 
 export interface WeeklyCoachDraftItem {
   id: string;
@@ -48,6 +57,7 @@ export interface WeeklyCoachSessionDraft {
   focusedItemId: string | null;
   noNewFocus: boolean;
   updatedAt: string;
+  messages?: WeeklyCoachTranscriptMessage[];
 }
 
 export interface WeeklyCoachDraftCollection {
@@ -94,6 +104,10 @@ const EMPTY_BACKGROUND: WeeklyFocusBackground = {
 const MAX_PERSISTED_WEEKS = 12;
 const MAX_FIELD_LENGTH = 4_000;
 const MAX_LIST_ITEMS = 30;
+const MAX_PERSISTED_MESSAGES = 40;
+const MAX_MESSAGE_ID_LENGTH = 256;
+const MAX_MESSAGE_TEXT_LENGTH = 4_000;
+const MAX_MESSAGE_DETAIL_LENGTH = 1_000;
 const MAX_DELETED_FOCUS_LABEL_LENGTH = 240;
 const DELETION_FOCUS_KEY_PATTERN = /^sha256:[a-f0-9]{64}$/u;
 const LEGACY_NORMALIZED_SECRET_PATTERN = /(?:(?:apikey|access(?:token)?|auth(?:token)?|appsecret|clientsecret|privatekey|password|passwd|credential|token|secret|bearer).+|^(?:sk[a-z0-9]{8,}|gh[pousr][a-z0-9]{20,}|githubpat[a-z0-9]{20,}|xox[baprs][a-z0-9]{10,}|aiza[a-z0-9]{20,}|akia[a-z0-9]{16}|glpat[a-z0-9]{20,}|npm[a-z0-9]{20,}|whsec[a-z0-9]{20,})$)/iu;
@@ -176,6 +190,46 @@ function normalizePersistedBackground(value: unknown): WeeklyFocusBackground | n
     : null;
 }
 
+function safeTranscriptString(value: unknown, maximum: number): string | null {
+  if (typeof value !== 'string') return null;
+  return redactSecrets(value).slice(0, maximum);
+}
+
+function normalizePersistedMessage(value: unknown): WeeklyCoachTranscriptMessage | null {
+  if (!isRecord(value)) return null;
+  const id = safeTranscriptString(value.id, MAX_MESSAGE_ID_LENGTH);
+  const text = safeTranscriptString(value.text, MAX_MESSAGE_TEXT_LENGTH);
+  if (
+    id === null
+    || id.trim() === ''
+    || text === null
+    || (value.role !== 'assistant' && value.role !== 'user' && value.role !== 'system')
+  ) return null;
+  const question = value.question === undefined
+    ? undefined
+    : safeTranscriptString(value.question, MAX_MESSAGE_DETAIL_LENGTH);
+  const questionReason = value.questionReason === undefined
+    ? undefined
+    : safeTranscriptString(value.questionReason, MAX_MESSAGE_DETAIL_LENGTH);
+  if (question === null || questionReason === null) return null;
+  return {
+    id,
+    role: value.role,
+    text,
+    ...(question === undefined ? {} : { question }),
+    ...(questionReason === undefined ? {} : { questionReason }),
+  };
+}
+
+function normalizePersistedMessages(value: unknown): WeeklyCoachTranscriptMessage[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const messages = value
+    .slice(-MAX_PERSISTED_MESSAGES)
+    .map(normalizePersistedMessage)
+    .filter((message): message is WeeklyCoachTranscriptMessage => message !== null);
+  return messages.length === 0 ? undefined : messages;
+}
+
 function normalizePersistedItem(value: unknown): WeeklyCoachDraftItem | null {
   if (!isRecord(value) || !isRecord(value.fieldSources) || !isRecord(value.suggestions)) {
     return null;
@@ -233,6 +287,7 @@ function normalizePersistedDraft(value: unknown, weekKey: string): WeeklyCoachSe
     ? boundedPersistedList(value.keyAnswers.slice(-8), 8)
     : null;
   const background = normalizePersistedBackground(value.background);
+  const messages = normalizePersistedMessages(value.messages);
   const updatedAt = normalizedTimestamp(value.updatedAt);
   if (
     topic === null
@@ -302,6 +357,7 @@ function normalizePersistedDraft(value: unknown, weekKey: string): WeeklyCoachSe
     focusedItemId,
     noNewFocus: value.noNewFocus === true,
     updatedAt,
+    ...(messages === undefined ? {} : { messages }),
   };
 }
 
@@ -332,6 +388,9 @@ function cloneDraft(draft: WeeklyCoachSessionDraft): WeeklyCoachSessionDraft {
     },
     items: draft.items.map(cloneItem),
     deletedItems: draft.deletedItems.map((item) => ({ ...item })),
+    ...(draft.messages === undefined
+      ? {}
+      : { messages: draft.messages.map((message) => ({ ...message })) }),
   };
 }
 
@@ -370,6 +429,22 @@ function redactSessionDraft(draft: WeeklyCoachSessionDraft): WeeklyCoachSessionD
   next.focusedItemId = next.focusedItemId === null
     ? null
     : redactSecrets(next.focusedItemId);
+  if (next.messages !== undefined) {
+    next.messages = next.messages.map((message) => ({
+      ...message,
+      id: redactSecrets(message.id).slice(0, MAX_MESSAGE_ID_LENGTH),
+      text: redactSecrets(message.text).slice(0, MAX_MESSAGE_TEXT_LENGTH),
+      ...(message.question === undefined
+        ? {}
+        : { question: redactSecrets(message.question).slice(0, MAX_MESSAGE_DETAIL_LENGTH) }),
+      ...(message.questionReason === undefined
+        ? {}
+        : {
+          questionReason: redactSecrets(message.questionReason)
+            .slice(0, MAX_MESSAGE_DETAIL_LENGTH),
+        }),
+    })).slice(-MAX_PERSISTED_MESSAGES);
+  }
   return next;
 }
 
