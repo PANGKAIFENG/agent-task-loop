@@ -7,10 +7,13 @@ import {
   acceptWeeklyCoachSuggestion,
   createManualWeeklyCoachDraftItem,
   createWeeklyCoachSessionDraft,
+  editWeeklyCoachDeferredTaskQuestion,
   editWeeklyCoachDraftField,
+  mergeWeeklyCoachDeferredTaskQuestions,
   mergeWeeklyCoachDraftOperations,
   protectRestoredWeeklyCoachDraft,
   removeWeeklyCoachDraftItem,
+  removeWeeklyCoachDeferredTaskQuestion,
   validateWeeklyCoachSessionDraft,
   weeklyCoachDraftToFocusInput,
   type WeeklyCoachDraftField,
@@ -87,6 +90,7 @@ function cloneSession(draft: WeeklyCoachSessionDraft): WeeklyCoachSessionDraft {
       fieldSources: { ...item.fieldSources },
       suggestions: { ...item.suggestions },
     })),
+    deferredTaskQuestions: draft.deferredTaskQuestions.map((item) => ({ ...item })),
     deletedItems: draft.deletedItems.map((item) => ({ ...item })),
     ...(draft.messages === undefined
       ? {}
@@ -99,6 +103,17 @@ function sessionFromRecord(
   createId: () => string,
 ): WeeklyCoachSessionDraft {
   const input = record.record.input;
+  const restoredItems = input.focuses.map((focus) => {
+    const item = {
+      ...createManualWeeklyCoachDraftItem(createId()),
+      focus: focus.focus,
+      outcome: focus.outcome,
+      whyThisWeek: focus.whyThisWeek,
+      evidence: focus.evidence,
+      readiness: '可确认' as const,
+    };
+    return { item, questions: focus.deferredTaskQuestions };
+  });
   return protectRestoredWeeklyCoachDraft({
     ...createWeeklyCoachSessionDraft(record.record.week, record.record.updatedAt),
     topic: input.conversationTopic,
@@ -112,11 +127,21 @@ function sessionFromRecord(
       gaps: [...input.background.gaps],
       sources: [...input.background.sources],
     },
-    items: input.focuses.map((focus) => ({
-      ...createManualWeeklyCoachDraftItem(createId()),
-      ...focus,
-      readiness: '可确认' as const,
-    })),
+    items: restoredItems.map(({ item }) => item),
+    deferredTaskQuestions: [
+      ...restoredItems.flatMap(({ item, questions }) => questions.map((question) => ({
+        id: createId(),
+        relatedItemId: item.id,
+        relatedFocus: item.focus,
+        question,
+      }))),
+      ...input.unassignedDeferredTaskQuestions.map((question) => ({
+        id: createId(),
+        relatedItemId: null,
+        relatedFocus: '待关联重点',
+        question,
+      })),
+    ],
     noNewFocus: input.noNewFocus,
   });
 }
@@ -457,7 +482,7 @@ export class WeeklyThinkingCoachModal extends Modal {
     jumpToLatest.classList.add('atl-weekly-coach-scroll-latest');
     jumpToLatest.hidden = this.conversationAutoFollow;
     composer.createEl('small', {
-      text: 'AI 会继续追问，或把已经足够清楚的内容整理到右侧草稿。',
+      text: '这里只讨论本周是否值得投入和如何取舍；具体方案会记录下来，留到任务中处理。',
     });
   }
 
@@ -507,6 +532,7 @@ export class WeeklyThinkingCoachModal extends Modal {
       for (const field of WEEKLY_COACH_DRAFT_FIELDS) {
         this.renderDraftField(card, item.id, field);
       }
+      this.renderDeferredQuestions(card, item.id, '进入任务后待思考');
 
       const actions = card.createDiv({ cls: 'atl-weekly-coach-card-actions' });
       if (this.session.focusedItemId === item.id) {
@@ -534,6 +560,7 @@ export class WeeklyThinkingCoachModal extends Modal {
         card.querySelector<HTMLInputElement>('input')?.focus();
       });
     }
+    this.renderDeferredQuestions(list, null, '待关联的任务问题');
 
     if (this.session.items.length < 3) {
       const empty = container.createDiv({ cls: 'atl-weekly-coach-empty-slot' });
@@ -594,6 +621,55 @@ export class WeeklyThinkingCoachModal extends Modal {
     }
   }
 
+  private renderDeferredQuestions(
+    container: HTMLElement,
+    relatedItemId: string | null,
+    label: string,
+  ): void {
+    const questions = this.session.deferredTaskQuestions.filter(
+      (question) => question.relatedItemId === relatedItemId,
+    );
+    if (questions.length === 0) return;
+    const details = container.createEl('details', { cls: 'atl-weekly-coach-deferred' });
+    details.createEl('summary', { text: `${label}（${questions.length}）` });
+    const list = details.createDiv({ cls: 'atl-weekly-coach-deferred-list' });
+    for (const question of questions) {
+      const row = list.createDiv({ cls: 'atl-weekly-coach-deferred-row' });
+      const input = row.createEl('input', {
+        type: 'text',
+        attr: { 'aria-label': '编辑进入任务后待思考的问题' },
+      });
+      input.value = question.question;
+      input.disabled = this.persisting;
+      input.addEventListener('input', () => {
+        if (this.persisting) return;
+        this.session = editWeeklyCoachDeferredTaskQuestion(
+          this.session,
+          question.id,
+          input.value,
+        );
+        this.changed();
+      });
+      this.appendIconButton(row, '删除进入任务后待思考的问题', 'trash-2', () => {
+        this.session = removeWeeklyCoachDeferredTaskQuestion(this.session, question.id);
+        this.changed();
+        this.render();
+      });
+    }
+  }
+
+  private renderReadOnlyDeferredQuestions(
+    container: HTMLElement,
+    questions: string[],
+    label: string,
+  ): void {
+    if (questions.length === 0) return;
+    const details = container.createEl('details', { cls: 'atl-weekly-coach-deferred' });
+    details.createEl('summary', { text: `${label}（${questions.length}）` });
+    const list = details.createEl('ul', { cls: 'atl-weekly-coach-deferred-readonly' });
+    for (const question of questions) list.createEl('li', { text: question });
+  }
+
   private renderNoFocusChoice(container: HTMLElement): void {
     const choice = container.createEl('label', { cls: 'atl-weekly-coach-no-focus' });
     const checkbox = choice.createEl('input', { type: 'checkbox' });
@@ -629,7 +705,17 @@ export class WeeklyThinkingCoachModal extends Modal {
       card.createEl('span', { text: `预期结果：${focus.outcome}` });
       card.createEl('span', { text: `为什么是本周：${focus.whyThisWeek}` });
       card.createEl('span', { text: `完成证据：${focus.evidence}` });
+      this.renderReadOnlyDeferredQuestions(
+        card,
+        focus.deferredTaskQuestions,
+        '进入任务后待思考',
+      );
     }
+    this.renderReadOnlyDeferredQuestions(
+      container,
+      document.record.input.unassignedDeferredTaskQuestions,
+      '其他进入任务后待思考的问题',
+    );
   }
 
   private renderFooter(): void {
@@ -721,7 +807,7 @@ export class WeeklyThinkingCoachModal extends Modal {
       })),
       deletedFocuses: this.session.deletedItems.map((item) => item.focusLabel),
       focusedItemId: this.session.focusedItemId,
-      deferredTaskQuestions: [],
+      deferredTaskQuestions: this.session.deferredTaskQuestions.map((item) => ({ ...item })),
     };
 
     try {
@@ -738,8 +824,13 @@ export class WeeklyThinkingCoachModal extends Modal {
         nextId: this.dependencies.createId,
         focusedItemId: this.session.focusedItemId,
       });
+      const withDeferred = mergeWeeklyCoachDeferredTaskQuestions(
+        merged.draft,
+        result.deferredTaskQuestions,
+        { nextId: this.dependencies.createId },
+      );
       this.session = {
-        ...merged.draft,
+        ...withDeferred,
         sessionSummary: result.sessionSummary,
         pendingQuestion: result.nextQuestion ?? '',
         questionReason: result.questionReason ?? '',

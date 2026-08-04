@@ -330,6 +330,103 @@ describe('WeeklyThinkingCoachModal', () => {
     }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
   });
 
+  it('shows linked and unassigned deferred questions without task execution actions', async () => {
+    const result: WeeklyCoachResult = {
+      ...coachResult,
+      deferredTaskQuestions: [{
+        relatedItemId: null,
+        relatedFocus: '验证产品边界是否可复用',
+        question: '定义边界说明的内部模板',
+      }, {
+        relatedItemId: null,
+        relatedFocus: '其他方向',
+        question: '确认后续任务承载位置',
+      }],
+    };
+    const { modal } = setup({ coach: result });
+    await open(modal);
+
+    sendMessage(modal, '我希望减少团队重复讨论');
+
+    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('进入任务后待思考（1）'));
+    expect(modal.contentEl.textContent).toContain(
+      '这里只讨论本周是否值得投入和如何取舍；具体方案会记录下来，留到任务中处理。',
+    );
+    expect(modal.contentEl.textContent).toContain('待关联的任务问题（1）');
+    const actionLabels = [...modal.contentEl.querySelectorAll<HTMLButtonElement>('button')]
+      .map((item) => item.textContent?.trim() || item.getAttribute('aria-label'));
+    expect(actionLabels).not.toContain('创建任务');
+    expect(actionLabels).not.toContain('交给 AI');
+  });
+
+  it('edits and deletes a deferred question through the draft service', async () => {
+    const result: WeeklyCoachResult = {
+      ...coachResult,
+      deferredTaskQuestions: [{
+        relatedItemId: null,
+        relatedFocus: '验证产品边界是否可复用',
+        question: '定义 Skill 可用标准',
+      }],
+    };
+    const { modal, saveSessionDraft } = setup({ coach: result });
+    await open(modal);
+    sendMessage(modal, '继续整理');
+    await vi.waitFor(() => expect(modal.contentEl.textContent).toContain('进入任务后待思考（1）'));
+
+    const questionInput = modal.contentEl.querySelector<HTMLInputElement>(
+      'input[aria-label="编辑进入任务后待思考的问题"]',
+    )!;
+    questionInput.value = '确认 Skill 可用标准';
+    questionInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+    button(modal, '删除进入任务后待思考的问题').click();
+    button(modal, '保存并离开').click();
+
+    await vi.waitFor(() => expect(saveSessionDraft).toHaveBeenCalledWith(
+      expect.objectContaining({ deferredTaskQuestions: [] }),
+    ));
+  });
+
+  it('keeps complete focuses confirmable when deferred questions reach their limit', async () => {
+    const deferredTaskQuestions = Array.from({ length: 5 }, (_, index) => ({
+      id: `question-${index + 1}`,
+      relatedItemId: 'focus-1',
+      relatedFocus: '验证产品边界是否可复用',
+      question: `任务阶段问题 ${index + 1}`,
+    }));
+    const { modal, confirm } = setup({
+      draft: sessionDraft({ deferredTaskQuestions }),
+    });
+    await open(modal);
+
+    button(modal, '确认并写入 Obsidian').click();
+
+    await vi.waitFor(() => expect(confirm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        focuses: [expect.objectContaining({
+          deferredTaskQuestions: deferredTaskQuestions.map((item) => item.question),
+        })],
+      }),
+      null,
+    ));
+  });
+
+  it('restores deferred questions from a formal draft and includes them in the next turn', async () => {
+    const record = weeklyDocument('草稿');
+    record.record.input.focuses[0]!.deferredTaskQuestions = ['定义兼容范围'];
+    record.record.input.unassignedDeferredTaskQuestions = ['确认任务承载位置'];
+    const { modal, runCoach } = setup({ record });
+    await open(modal);
+
+    expect(modal.contentEl.textContent).toContain('进入任务后待思考（1）');
+    expect(modal.contentEl.textContent).toContain('待关联的任务问题（1）');
+    sendMessage(modal, '继续做周级取舍');
+    await vi.waitFor(() => expect(runCoach).toHaveBeenCalled());
+    expect(runCoach.mock.calls[0]?.[0].deferredTaskQuestions).toEqual([
+      expect.objectContaining({ relatedFocus: '验证产品边界是否可复用', question: '定义兼容范围' }),
+      expect.objectContaining({ relatedItemId: null, question: '确认任务承载位置' }),
+    ]);
+  });
+
   it('replaces the composer send action with stop while AI is running', async () => {
     const pending = new Promise<WeeklyCoachResult>(() => undefined);
     const { modal } = setup({ coachOperation: async () => pending });
