@@ -2584,6 +2584,10 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
   margin-top: 10px;
 }
 
+.atl-weekly-coach-source-list[hidden] {
+  display: none;
+}
+
 .atl-weekly-coach-source {
   align-items: center;
   color: var(--text-muted);
