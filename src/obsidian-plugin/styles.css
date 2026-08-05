@@ -2521,14 +2521,27 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
 .atl-weekly-coach-conversation,
 .atl-weekly-coach-draft-panel {
   min-width: 0;
+}
+
+.atl-weekly-coach-draft-panel {
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 
 .atl-weekly-coach-conversation {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.atl-weekly-coach-scroll-region {
   display: flex;
   flex-direction: column;
   gap: 18px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 18px 22px 20px;
 }
 
@@ -2699,14 +2712,11 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
   align-items: end;
   background: var(--background-primary);
   border-top: 1px solid var(--background-modifier-border);
-  bottom: 0;
   display: grid;
   gap: 8px;
   grid-template-columns: minmax(0, 1fr) 36px;
-  margin: 0 -2px -2px;
-  padding: 14px 2px 2px;
-  position: sticky;
-  z-index: 3;
+  padding: 14px 22px 18px;
+  position: relative;
 }
 
 .atl-weekly-coach-composer textarea {
@@ -3103,7 +3113,15 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
   }
 
   .atl-weekly-coach-conversation {
+    min-height: 0;
+  }
+
+  .atl-weekly-coach-scroll-region {
     padding: 15px 16px 18px;
+  }
+
+  .atl-weekly-coach-composer {
+    padding: 12px 16px 14px;
   }
 
   .atl-weekly-coach-draft-panel {

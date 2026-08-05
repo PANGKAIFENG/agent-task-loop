@@ -162,6 +162,8 @@ describe('personal home heatmap styles', () => {
     expect(declarationsFor(css, '.atl-weekly-coach-main'))
       .toMatch(/grid-template-columns\s*:\s*minmax\(0,\s*1\.35fr\)\s+minmax\(300px,\s*0\.85fr\)/);
     expect(declarationsFor(css, '.atl-weekly-coach-conversation'))
+      .toMatch(/overflow\s*:\s*hidden/);
+    expect(declarationsFor(css, '.atl-weekly-coach-scroll-region'))
       .toMatch(/overflow-y\s*:\s*auto/);
     expect(declarationsFor(css, '.atl-weekly-coach-draft-panel'))
       .toMatch(/overflow-y\s*:\s*auto/);
@@ -199,16 +201,22 @@ describe('personal home heatmap styles', () => {
       .toMatch(/background\s*:\s*var\(--background-primary-alt\)/);
   });
 
-  it('pins the composer and presents AI progress as a lightweight inline row', async () => {
+  it('keeps the composer outside the independently scrolling message history', async () => {
     const css = await readFile(
       new URL('../../../src/obsidian-plugin/styles.css', import.meta.url),
       'utf8',
     );
 
+    expect(declarationsFor(css, '.atl-weekly-coach-conversation'))
+      .toMatch(/overflow\s*:\s*hidden/);
+    expect(declarationsFor(css, '.atl-weekly-coach-scroll-region'))
+      .toMatch(/overflow-y\s*:\s*auto/);
+    expect(declarationsFor(css, '.atl-weekly-coach-scroll-region'))
+      .toMatch(/min-height\s*:\s*0/);
     expect(declarationsFor(css, '.atl-weekly-coach-composer'))
-      .toMatch(/position\s*:\s*sticky/);
+      .toMatch(/position\s*:\s*relative/);
     expect(declarationsFor(css, '.atl-weekly-coach-composer'))
-      .toMatch(/bottom\s*:\s*0/);
+      .not.toMatch(/position\s*:\s*sticky/);
     expect(declarationsFor(css, '.atl-weekly-coach-progress'))
       .toMatch(/grid-template-columns\s*:\s*auto minmax\(0,\s*1fr\) auto/);
     expect(declarationsFor(css, '.atl-weekly-coach-progress'))

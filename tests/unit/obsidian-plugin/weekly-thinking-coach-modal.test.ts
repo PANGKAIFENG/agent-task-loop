@@ -269,7 +269,15 @@ describe('WeeklyThinkingCoachModal', () => {
     await open(modal);
 
     expect(modal.modalEl.classList).toContain('atl-weekly-coach-modal');
-    expect(modal.contentEl.querySelector('.atl-weekly-coach-conversation')).not.toBeNull();
+    const conversation = modal.contentEl.querySelector('.atl-weekly-coach-conversation');
+    const scrollRegion = modal.contentEl.querySelector('.atl-weekly-coach-scroll-region');
+    const composer = modal.contentEl.querySelector('.atl-weekly-coach-composer');
+    expect(conversation).not.toBeNull();
+    expect(scrollRegion).not.toBeNull();
+    expect(composer).not.toBeNull();
+    expect(scrollRegion?.parentElement).toBe(conversation);
+    expect(composer?.parentElement).toBe(conversation);
+    expect(scrollRegion?.contains(composer)).toBe(false);
     expect(modal.contentEl.querySelector('.atl-weekly-coach-draft-panel')).not.toBeNull();
     expect(modal.contentEl.textContent).toContain('本周重点草稿');
     expect(modal.contentEl.textContent).toContain('0 / 3');
@@ -766,7 +774,7 @@ describe('WeeklyThinkingCoachModal', () => {
       await open(modal);
       sendMessage(modal, '等待期间我要阅读历史');
       const conversation = modal.contentEl.querySelector<HTMLElement>(
-        '.atl-weekly-coach-conversation',
+        '.atl-weekly-coach-scroll-region',
       )!;
       Object.defineProperty(conversation, 'scrollHeight', { configurable: true, value: 1_200 });
       Object.defineProperty(conversation, 'clientHeight', { configurable: true, value: 400 });
@@ -775,7 +783,7 @@ describe('WeeklyThinkingCoachModal', () => {
 
       await vi.advanceTimersByTimeAsync(1_000);
 
-      expect(modal.contentEl.querySelector('.atl-weekly-coach-conversation')).toBe(conversation);
+      expect(modal.contentEl.querySelector('.atl-weekly-coach-scroll-region')).toBe(conversation);
       expect(conversation.scrollTop).toBe(120);
       modal.close();
     } finally {
@@ -792,7 +800,7 @@ describe('WeeklyThinkingCoachModal', () => {
     await open(modal);
     sendMessage(modal, '先读历史');
     const conversation = modal.contentEl.querySelector<HTMLElement>(
-      '.atl-weekly-coach-conversation',
+      '.atl-weekly-coach-scroll-region',
     )!;
     Object.defineProperty(conversation, 'scrollHeight', { configurable: true, value: 1_200 });
     Object.defineProperty(conversation, 'clientHeight', { configurable: true, value: 400 });
@@ -800,9 +808,12 @@ describe('WeeklyThinkingCoachModal', () => {
     conversation.dispatchEvent(new window.Event('scroll'));
     runCoach.mock.calls[0]?.[1].onProgress({ stage: 'parsing' });
 
-    expect(button(modal, '回到最新消息').dataset.icon).toBe('arrow-down');
-    button(modal, '回到最新消息').click();
+    const jumpToLatest = button(modal, '回到最新消息');
+    expect(jumpToLatest.dataset.icon).toBe('arrow-down');
+    expect(jumpToLatest.hidden).toBe(false);
+    jumpToLatest.click();
     expect(conversation.scrollTop).toBe(1_200);
+    expect(jumpToLatest.hidden).toBe(true);
     modal.close();
   });
 
