@@ -176,13 +176,22 @@ export class Setting {
 
 export class Modal {
   readonly containerEl = document.createElement('div');
+  readonly bgEl = document.createElement('div');
   readonly modalEl = document.createElement('div');
+  readonly closeButtonEl = document.createElement('div');
   readonly contentEl = document.createElement('div');
   selection: Selection | null = null;
 
   constructor(readonly app: unknown) {
-    this.modalEl.append(this.contentEl);
-    this.containerEl.append(this.modalEl);
+    this.containerEl.className = 'modal-container';
+    this.bgEl.className = 'modal-bg';
+    this.modalEl.className = 'modal';
+    this.closeButtonEl.className = 'modal-close-button';
+    this.contentEl.className = 'modal-content';
+    this.modalEl.append(this.closeButtonEl, this.contentEl);
+    this.containerEl.append(this.bgEl, this.modalEl);
+    this.bgEl.addEventListener('click', () => this.close());
+    this.closeButtonEl.addEventListener('click', () => this.close());
   }
 
   open(): void {

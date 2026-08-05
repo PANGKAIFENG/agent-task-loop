@@ -195,8 +195,13 @@ export class WeeklyThinkingCoachModal extends Modal {
   private sourcesExpanded = false;
   private conversationScrollTop = 0;
   private conversationAutoFollow = true;
-  private readonly preventBackdropDismissal = (event: MouseEvent): void => {
-    if (event.target !== this.containerEl) return;
+  private readonly preventBackdropDismissal = (event: Event): void => {
+    const target = event.target as { closest?: (selector: string) => Element | null } | null;
+    const backdrop = target?.closest?.('.modal-bg');
+    const isOwnBackdrop = backdrop !== null
+      && backdrop !== undefined
+      && backdrop.parentElement === this.containerEl;
+    if (event.target !== this.containerEl && !isOwnBackdrop) return;
     event.preventDefault();
     event.stopImmediatePropagation();
   };
@@ -218,6 +223,7 @@ export class WeeklyThinkingCoachModal extends Modal {
     this.skipCloseSave = false;
     this.modalEl.classList.add('atl-weekly-coach-modal');
     this.contentEl.classList.add('atl-weekly-coach-content');
+    this.containerEl.addEventListener('pointerdown', this.preventBackdropDismissal, true);
     this.containerEl.addEventListener('mousedown', this.preventBackdropDismissal, true);
     this.containerEl.addEventListener('click', this.preventBackdropDismissal, true);
     this.render();
@@ -228,6 +234,7 @@ export class WeeklyThinkingCoachModal extends Modal {
     this.closed = true;
     this.abortActiveCoach();
     this.clearAutosaveTimer();
+    this.containerEl.removeEventListener('pointerdown', this.preventBackdropDismissal, true);
     this.containerEl.removeEventListener('mousedown', this.preventBackdropDismissal, true);
     this.containerEl.removeEventListener('click', this.preventBackdropDismissal, true);
     if (!this.skipCloseSave && !this.isConfirmed() && this.dirty) {
