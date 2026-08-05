@@ -352,8 +352,8 @@ export class WeeklyThinkingCoachModal extends Modal {
         : 'has-draft-items'}`,
     });
     const conversation = main.createDiv({ cls: 'atl-weekly-coach-conversation' });
-    this.renderConversation(conversation);
-    this.attachConversationScroll(conversation);
+    const scrollRegion = this.renderConversation(conversation);
+    this.attachConversationScroll(scrollRegion);
     this.renderDraftPanel(main.createDiv({ cls: 'atl-weekly-coach-draft-panel' }));
     this.renderFooter();
   }
@@ -374,16 +374,17 @@ export class WeeklyThinkingCoachModal extends Modal {
     meta.createEl('span', { text: this.dependencies.modelLabel });
   }
 
-  private renderConversation(container: HTMLElement): void {
+  private renderConversation(container: HTMLElement): HTMLElement {
+    const scrollRegion = container.createDiv({ cls: 'atl-weekly-coach-scroll-region' });
     if (this.isConfirmed()) {
-      const confirmed = container.createDiv({ cls: 'atl-weekly-coach-confirmed-message' });
+      const confirmed = scrollRegion.createDiv({ cls: 'atl-weekly-coach-confirmed-message' });
       confirmed.createEl('strong', { text: '这是你确认的本周判断' });
       confirmed.createEl('p', { text: '正式记录已写入 Obsidian，可用于本周执行与后续复盘。' });
-      return;
+      return scrollRegion;
     }
 
-    this.renderSources(container);
-    const messages = container.createDiv({ cls: 'atl-weekly-coach-messages' });
+    this.renderSources(scrollRegion);
+    const messages = scrollRegion.createDiv({ cls: 'atl-weekly-coach-messages' });
     for (const message of this.messages) this.renderMessage(messages, message);
     if (this.busy) this.renderProgress(messages);
     if (this.error !== '') {
@@ -399,7 +400,8 @@ export class WeeklyThinkingCoachModal extends Modal {
         });
       }
     }
-    this.renderComposer(container);
+    this.renderComposer(container, scrollRegion);
+    return scrollRegion;
   }
 
   private renderSources(container: HTMLElement): void {
@@ -460,7 +462,7 @@ export class WeeklyThinkingCoachModal extends Modal {
     }
   }
 
-  private renderComposer(container: HTMLElement): void {
+  private renderComposer(container: HTMLElement, scrollRegion: HTMLElement): void {
     const composer = container.createDiv({ cls: 'atl-weekly-coach-composer' });
     const textarea = composer.createEl('textarea', {
       attr: {
@@ -485,7 +487,7 @@ export class WeeklyThinkingCoachModal extends Modal {
       composer,
       '回到最新消息',
       'arrow-down',
-      () => this.scrollConversationToLatest(container),
+      () => this.scrollConversationToLatest(scrollRegion),
     );
     jumpToLatest.classList.add('atl-weekly-coach-scroll-latest');
     jumpToLatest.hidden = this.conversationAutoFollow;
@@ -1113,7 +1115,7 @@ export class WeeklyThinkingCoachModal extends Modal {
 
   private captureConversationScroll(): void {
     const conversation = this.contentEl.querySelector<HTMLElement>(
-      '.atl-weekly-coach-conversation',
+      '.atl-weekly-coach-scroll-region',
     );
     if (conversation === null) return;
     this.conversationScrollTop = conversation.scrollTop;
@@ -1133,26 +1135,26 @@ export class WeeklyThinkingCoachModal extends Modal {
         - conversation.clientHeight
         - conversation.scrollTop;
       this.conversationAutoFollow = distanceFromBottom <= AUTO_FOLLOW_THRESHOLD_PX;
-      const action = conversation.querySelector<HTMLButtonElement>(
+      const action = conversation.parentElement?.querySelector<HTMLButtonElement>(
         '.atl-weekly-coach-scroll-latest',
       );
-      if (action !== null) action.hidden = this.conversationAutoFollow;
+      if (action !== undefined && action !== null) action.hidden = this.conversationAutoFollow;
     };
     conversation.addEventListener('scroll', updateScrollState, { passive: true });
-    const action = conversation.querySelector<HTMLButtonElement>(
+    const action = conversation.parentElement?.querySelector<HTMLButtonElement>(
       '.atl-weekly-coach-scroll-latest',
     );
-    if (action !== null) action.hidden = this.conversationAutoFollow;
+    if (action !== undefined && action !== null) action.hidden = this.conversationAutoFollow;
   }
 
   private scrollConversationToLatest(conversation: HTMLElement): void {
     this.conversationAutoFollow = true;
     conversation.scrollTop = conversation.scrollHeight;
     this.conversationScrollTop = conversation.scrollTop;
-    const action = conversation.querySelector<HTMLButtonElement>(
+    const action = conversation.parentElement?.querySelector<HTMLButtonElement>(
       '.atl-weekly-coach-scroll-latest',
     );
-    if (action !== null) action.hidden = true;
+    if (action !== undefined && action !== null) action.hidden = true;
   }
 
   private canReusePreviousSummary(): boolean {
