@@ -290,16 +290,46 @@ describe('WeeklyThinkingCoachModal', () => {
     expect(sourceList.hidden).toBe(false);
   });
 
-  it('keeps the modal open when the backdrop is clicked', async () => {
+  it.each(['pointerdown', 'mousedown', 'click'])(
+    'keeps the modal open when the real backdrop receives %s',
+    async (eventType) => {
+      const { modal } = setup();
+      await open(modal);
+      const close = vi.spyOn(modal, 'close');
+      const input = modal.contentEl.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="给本周思考教练发消息"]',
+      )!;
+      input.value = '这段输入不能因为点击空白而丢失';
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+      const event = new window.MouseEvent(eventType, { bubbles: true, cancelable: true });
+      const backdrop = modal.containerEl.querySelector<HTMLElement>('.modal-bg')!;
+
+      backdrop.dispatchEvent(event);
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(close).not.toHaveBeenCalled();
+      expect(modal.contentEl.textContent).toContain('本周思考教练');
+      expect(modal.contentEl.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="给本周思考教练发消息"]',
+      )?.value).toBe('这段输入不能因为点击空白而丢失');
+    },
+  );
+
+  it('allows modal content interaction and the explicit close button', async () => {
     const { modal } = setup();
     await open(modal);
     const close = vi.spyOn(modal, 'close');
-    modal.containerEl.addEventListener('click', () => modal.close());
+    const contentClick = new window.MouseEvent('click', { bubbles: true, cancelable: true });
 
-    modal.containerEl.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    modal.modalEl.dispatchEvent(contentClick);
 
+    expect(contentClick.defaultPrevented).toBe(false);
     expect(close).not.toHaveBeenCalled();
-    expect(modal.contentEl.textContent).toContain('本周思考教练');
+
+    modal.containerEl.querySelector<HTMLElement>('.modal-close-button')!.click();
+
+    expect(close).toHaveBeenCalledOnce();
+    expect(modal.contentEl.childElementCount).toBe(0);
   });
 
   it('does not claim a model connection when configuration is invalid', async () => {
