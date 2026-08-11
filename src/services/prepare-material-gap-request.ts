@@ -116,6 +116,7 @@ function searchSource(path: string): MaterialSearchSource | null {
 const INLINE_NUMERIC_VALUE = /(?:\d+(?:\.\d+)?%?|百分之[一二三四五六七八九十百千万亿]+|[一二三四五六七八九十百千万亿]+(?:项|个|类|条|份|人|次|天|周|月|年|元))/u;
 const UNRESOLVED_MATERIAL = /(?:待补齐|待确认|待提供|待统计|尚未|未找到|未提供|未统计|暂无|缺失|未知|没有)/u;
 const DATE_OR_TIME = /\b\d{4}-\d{1,2}-\d{1,2}(?:[T ]\d{1,2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?)?|\b\d{1,2}:\d{2}(?::\d{2})?\b/gu;
+const REFERENCE_INDEX = /(?:附件|附录|图|表|文件|链接)\s*(?:第\s*)?\d+(?:\s*(?:号|份|个))?|第\s*\d+\s*页/gu;
 
 function searchableContent(content: string): string {
   try {
@@ -128,7 +129,10 @@ function searchableContent(content: string): string {
 function numericEvidence(content: string, description: string): boolean {
   for (const line of content.split(/\r?\n/u)) {
     if (!line.includes(description) || UNRESOLVED_MATERIAL.test(line)) continue;
-    const inline = line.replaceAll(description, '').replace(DATE_OR_TIME, '');
+    const inline = line
+      .replaceAll(description, '')
+      .replace(DATE_OR_TIME, '')
+      .replace(REFERENCE_INDEX, '');
     if (INLINE_NUMERIC_VALUE.test(inline)) return true;
   }
   return false;

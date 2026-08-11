@@ -194,6 +194,111 @@ describe('DwsMaterialSearchConnector', () => {
     ]);
   });
 
+  it('parses the native DWS result-array envelopes for every external source', async () => {
+    const runner = vi.fn(async (args: string[]) => {
+      const command = args.slice(4).join(' ');
+      if (command.startsWith('chat message search')) {
+        return result({
+          success: true,
+          result: [{
+            title: '精恭纺项目群',
+            messages: [{
+              content: '验收分类数量：第一类 12 项。',
+              openMessageId: 'message-native',
+              sender: '材料负责人',
+              senderOpenDingTalkId: 'open-native',
+            }],
+          }],
+        });
+      }
+      if (command.startsWith('drive search')) {
+        return result({
+          success: true,
+          result: {
+            doc_results: { content: { result: [{
+              name: '精恭纺验收表',
+              nodeId: 'doc-native',
+              docUrl: 'https://alidocs.dingtalk.com/i/nodes/doc-native',
+            }] } },
+            drive_results: { content: { result: [{
+              name: '验收附件.xlsx',
+              fileId: 'drive-native',
+              docUrl: 'https://alidocs.dingtalk.com/i/nodes/drive-native',
+            }] } },
+          },
+        });
+      }
+      if (command.startsWith('doc read')) {
+        return result({
+          success: true,
+          result: { markdown: '验收分类表：已确认。' },
+        });
+      }
+      if (command === 'aitable base search --query 精恭纺验收分类') {
+        return result({
+          success: true,
+          result: [{ baseId: 'base-native', baseName: '精恭纺验收总表' }],
+        });
+      }
+      if (command === 'aitable table get --base-id base-native') {
+        return result({
+          success: true,
+          result: [{ tableId: 'table-native', tableName: '分类统计' }],
+        });
+      }
+      if (command === 'aitable record query --base-id base-native --table-id table-native --query 精恭纺验收分类 --limit 10') {
+        return result({
+          success: true,
+          result: [{
+            recordId: 'record-native',
+            cells: { 分类: '第一类', 数量: 12 },
+          }],
+        });
+      }
+      if (command.startsWith('aisearch person')) {
+        return result({
+          success: true,
+          result: [{
+            title: '材料负责人',
+            userId: 'user-native',
+            openDingTalkId: 'open-native',
+            sourceType: 'person',
+          }],
+        });
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    const connector = new DwsMaterialSearchConnector({
+      profile: 'ding-synthetic-profile',
+      runner,
+    });
+
+    const outcomes = await connector.search({
+      query: '精恭纺验收分类',
+      occurredAt: '2026-08-10T16:00:00+08:00',
+      projectId: 'project-jgf',
+    });
+
+    expect(outcomes.find(({ source }) => source === 'dingtalk_message')).toMatchObject({
+      materials: [{ sourceRef: 'dingtalk-message:message-native' }],
+      contacts: [{ userId: 'user-native' }],
+    });
+    expect(outcomes.find(({ source }) => source === 'dingtalk_doc')).toMatchObject({
+      materials: [{
+        sourceRef: 'https://alidocs.dingtalk.com/i/nodes/doc-native',
+        content: '验收分类表：已确认。',
+      }],
+    });
+    expect(outcomes.find(({ source }) => source === 'dingtalk_drive')).toMatchObject({
+      materials: [{ sourceRef: 'https://alidocs.dingtalk.com/i/nodes/drive-native' }],
+    });
+    expect(outcomes.find(({ source }) => source === 'dingtalk_aitable')).toMatchObject({
+      materials: [{
+        sourceRef: 'dingtalk-aitable:base-native/table-native/record-native',
+      }],
+    });
+  });
+
   it('distinguishes permission failures from execution failures', async () => {
     const runner = vi.fn(async (args: string[]) => {
       const command = args.slice(4).join(' ');

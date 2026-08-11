@@ -138,6 +138,27 @@ describe('prepare material gap request', () => {
     });
   });
 
+  it('does not treat an attachment index on the same line as numeric evidence', async () => {
+    const input = await prepareMaterialGapRequest({
+      loadProgress: async () => progress,
+      readSource: async () => '验收分类数量见附件 2。',
+      clock: () => new Date('2026-08-12T02:00:00.000Z'),
+    }, {
+      progressId: progress.progressId,
+      progressVersion: progress.version,
+      missing: {
+        kind: 'numeric',
+        description: '验收分类数量',
+        purpose: '精恭纺验收周报',
+      },
+    });
+
+    expect(input.searches[0]).toMatchObject({
+      status: 'not_found',
+      sourceRef: null,
+    });
+  });
+
   it('accepts a numeric value in the same markdown table row as the material label', async () => {
     const input = await prepareMaterialGapRequest({
       loadProgress: async () => progress,

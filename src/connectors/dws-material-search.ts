@@ -109,6 +109,11 @@ function getArray(value: Record<string, unknown>, key: string): unknown[] {
   return Array.isArray(child) ? child : [];
 }
 
+function optionalArray(value: Record<string, unknown>, key: string): unknown[] | null {
+  const child = value[key];
+  return Array.isArray(child) ? child : null;
+}
+
 function boundedContent(value: string): string {
   return value.slice(0, MAX_EVIDENCE_CHARACTERS);
 }
@@ -214,9 +219,8 @@ export class DwsMaterialSearchConnector {
       return unresolvedOutcome('dingtalk_message', target, outcome.status);
     }
     const result = getRecord(outcome.value, 'result');
-    const conversations = result === null
-      ? []
-      : getArray(result, 'conversationMessagesList');
+    const conversations = optionalArray(outcome.value, 'result')
+      ?? (result === null ? [] : getArray(result, 'conversationMessagesList'));
     const messages: MessageEvidence[] = [];
     for (const conversation of conversations.slice(0, MAX_RESULTS_PER_SOURCE)) {
       if (!isRecord(conversation)) continue;
@@ -302,7 +306,9 @@ export class DwsMaterialSearchConnector {
     const result = getRecord(outcome.value, 'result');
     const docResults = result === null ? null : getRecord(result, 'doc_results');
     const docContent = docResults === null ? null : getRecord(docResults, 'content');
-    const documents = docContent === null ? [] : getArray(docContent, 'documents');
+    const documents = docContent === null
+      ? []
+      : optionalArray(docContent, 'result') ?? getArray(docContent, 'documents');
     const materials: MaterialEvidence[] = [];
     const readFailures: Array<'permission_denied' | 'failed'> = [];
     for (const document of documents.slice(0, MAX_DOCUMENT_READS)) {
@@ -318,7 +324,11 @@ export class DwsMaterialSearchConnector {
         readFailures.push(read.status);
         continue;
       }
-      const markdown = stringValue(read.value.markdown, MAX_EVIDENCE_CHARACTERS);
+      const readResult = getRecord(read.value, 'result');
+      const markdown = stringValue(
+        readResult?.markdown ?? read.value.markdown,
+        MAX_EVIDENCE_CHARACTERS,
+      );
       if (markdown === null) continue;
       materials.push({
         sourceRef: stringValue(document.docUrl, 20_000) ?? `dingtalk-doc:${nodeId}`,
@@ -334,7 +344,9 @@ export class DwsMaterialSearchConnector {
 
     const driveResults = result === null ? null : getRecord(result, 'drive_results');
     const driveContent = driveResults === null ? null : getRecord(driveResults, 'content');
-    const items = driveContent === null ? [] : getArray(driveContent, 'items');
+    const items = driveContent === null
+      ? []
+      : optionalArray(driveContent, 'result') ?? getArray(driveContent, 'items');
     const driveMaterials = items.slice(0, MAX_RESULTS_PER_SOURCE).flatMap((item) => {
       if (!isRecord(item)) return [];
       const name = stringValue(item.name, 2_000);
@@ -365,7 +377,8 @@ export class DwsMaterialSearchConnector {
       return unresolvedOutcome('dingtalk_aitable', target, outcome.status);
     }
     const data = getRecord(outcome.value, 'data');
-    const bases = data === null ? [] : getArray(data, 'bases');
+    const bases = optionalArray(outcome.value, 'result')
+      ?? (data === null ? [] : getArray(data, 'bases'));
     const materials: MaterialEvidence[] = [];
     const failures: Array<'permission_denied' | 'failed'> = [];
     for (const base of bases.slice(0, MAX_AITABLE_BASES)) {
@@ -383,7 +396,8 @@ export class DwsMaterialSearchConnector {
         continue;
       }
       const tableData = getRecord(tableCatalog.value, 'data');
-      const tables = tableData === null ? [] : getArray(tableData, 'tables');
+      const tables = optionalArray(tableCatalog.value, 'result')
+        ?? (tableData === null ? [] : getArray(tableData, 'tables'));
       for (const table of tables.slice(0, MAX_AITABLE_TABLES_PER_BASE)) {
         if (!isRecord(table) || materials.length >= MAX_RESULTS_PER_SOURCE) break;
         const tableId = stringValue(table.tableId, 1_024)
@@ -403,7 +417,11 @@ export class DwsMaterialSearchConnector {
           continue;
         }
         const recordData = getRecord(recordSearch.value, 'data');
-        const records = recordData === null ? [] : getArray(recordData, 'records');
+        const resultRecord = getRecord(recordSearch.value, 'result');
+        const records = optionalArray(recordSearch.value, 'result')
+          ?? (resultRecord === null
+            ? recordData === null ? [] : getArray(recordData, 'records')
+            : getArray(resultRecord, 'records'));
         for (const record of records) {
           if (!isRecord(record) || materials.length >= MAX_RESULTS_PER_SOURCE) break;
           const recordId = stringValue(record.recordId, 1_024)
