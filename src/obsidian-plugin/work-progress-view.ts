@@ -1,7 +1,7 @@
 import { ItemView, setIcon, type WorkspaceLeaf } from 'obsidian';
 
 import type { ProgressDraft } from '../domain/progress.js';
-import type { CreateMaterialGapInput } from '../services/create-material-gap.js';
+import type { PrepareMaterialGapRequestInput } from '../services/prepare-material-gap-request.js';
 import {
   type WorkProgressHubController,
   type WorkProgressHubSnapshot,
@@ -16,10 +16,10 @@ export interface WorkProgressViewDependencies {
   openPath(path: string): Promise<void> | void;
   requestWeeklyFeedback(report: WorkProgressHubSnapshot['weeklyReports'][number]):
     Promise<string | null>;
-  requestProgressDraft(): Promise<ProgressDraft | null>;
+  requestProgressDraft(initial?: ProgressDraft): Promise<ProgressDraft | null>;
   requestMaterialGap(
     progress: WorkProgressHubSnapshot['progress'],
-  ): Promise<CreateMaterialGapInput | null>;
+  ): Promise<PrepareMaterialGapRequestInput | null>;
 }
 
 const TAB_LABELS: Array<{ tab: WorkProgressHubTab; label: string }> = [
@@ -274,6 +274,19 @@ export class WorkProgressView extends ItemView {
             .catch(() => undefined);
         });
         card.append(revoke);
+        for (const draft of item.progressDrafts) {
+          const row = element('div', 'atl-work-progress-draft');
+          row.append(element('span', undefined, draft.topic));
+          const formProgress = element('button', 'mod-cta', '形成进展');
+          formProgress.type = 'button';
+          formProgress.dataset.action = 'form-progress';
+          formProgress.disabled = state.busyAction !== null;
+          formProgress.addEventListener('click', () => {
+            void this.createProgress(draft).catch(() => undefined);
+          });
+          row.append(formProgress);
+          card.append(row);
+        }
         list.append(card);
         continue;
       }
@@ -396,8 +409,8 @@ export class WorkProgressView extends ItemView {
     return section;
   }
 
-  private async createProgress(): Promise<void> {
-    const draft = await this.dependencies.requestProgressDraft();
+  private async createProgress(initial?: ProgressDraft): Promise<void> {
+    const draft = await this.dependencies.requestProgressDraft(initial);
     if (draft === null) return;
     await this.controller?.createProgressVersion(draft);
   }

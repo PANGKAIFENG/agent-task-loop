@@ -5,7 +5,7 @@ import { WorkspaceLeaf } from 'obsidian';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ProgressDraft } from '../../../src/domain/progress.js';
-import type { CreateMaterialGapInput } from '../../../src/services/create-material-gap.js';
+import type { PrepareMaterialGapRequestInput } from '../../../src/services/prepare-material-gap-request.js';
 import type {
   WorkProgressHubState,
 } from '../../../src/obsidian-plugin/work-progress-hub-controller.js';
@@ -36,6 +36,7 @@ function readyState(): WorkProgressHubState {
         createdAt: '2026-08-10T19:56:00+08:00',
         status: 'available',
         activeDecision: null,
+        progressDrafts: [],
         candidates: [{
           eventKeyHash: `sha256:${'a'.repeat(64)}`,
           eventPath: `TaskNotes/DingTalk/sha256-${'a'.repeat(64)}.md`,
@@ -145,12 +146,10 @@ function setup(initial = readyState()) {
       description: '四类事项的准确数量',
       purpose: '精恭纺验收周报',
     },
-    searches: [],
-    suggestedContact: null,
   };
   const requestProgressDraft = vi.fn(async (): Promise<ProgressDraft | null> => progressDraft);
   const requestMaterialGap = vi.fn(
-    async (): Promise<CreateMaterialGapInput | null> => materialGap,
+    async (): Promise<PrepareMaterialGapRequestInput | null> => materialGap,
   );
   const view = new WorkProgressView(new WorkspaceLeaf(), {
     createController: () => controller as never,
@@ -222,6 +221,47 @@ describe('WorkProgressView', () => {
       '[data-action="confirm-match"]',
     )!);
     expect(controller.confirmSelectedMatch).toHaveBeenCalledOnce();
+  });
+
+  it('passes the selected meeting topic draft into the progress entry flow', async () => {
+    const state = readyState();
+    const meetingDraft: ProgressDraft = {
+      topic: '验收分类',
+      reportCategory: 'routine_check',
+      primaryProjectId: null,
+      occurredAt: '2026-08-10T19:00:00+08:00',
+      sources: ['08_Meetings/2026-08/meeting-a.md'],
+      statements: [{
+        kind: 'pending',
+        text: '已讨论按四类整理验收事项。',
+        sourceRefs: ['08_Meetings/2026-08/meeting-a.md'],
+      }],
+      evidence: [{
+        kind: 'discussion',
+        summary: '已讨论按四类整理验收事项。',
+        sourceRef: '08_Meetings/2026-08/meeting-a.md',
+      }],
+      selfEvidence: [],
+      agentEvidence: [],
+    };
+    state.snapshot!.matches[0] = {
+      ...state.snapshot!.matches[0]!,
+      activeDecision: {
+        decisionId: 'decision-confirmed',
+        action: 'confirmed',
+        eventKeyHash: `sha256:${'a'.repeat(64)}`,
+      },
+      progressDrafts: [meetingDraft],
+    };
+    const { controller, requestProgressDraft, view } = setup(state);
+    await view.onOpen();
+
+    fireEvent.click(view.contentEl.querySelector<HTMLButtonElement>(
+      '[data-action="form-progress"]',
+    )!);
+
+    await vi.waitFor(() => expect(requestProgressDraft).toHaveBeenCalledWith(meetingDraft));
+    expect(controller.createProgressVersion).toHaveBeenCalledOnce();
   });
 
   it('opens persisted objects and keeps weekly review actions independent', async () => {

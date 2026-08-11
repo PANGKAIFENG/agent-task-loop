@@ -63,6 +63,13 @@ function fileSystem(): MeetingNoteFileSystem & MeetingAnalysisFileSystem & Meeti
       await mkdir(dirname(join(root, path)), { recursive: true });
       await writeFile(join(root, path), content, { encoding: 'utf8', flag: 'wx' });
     },
+    removeIfContentMatches: async (path, expected) => {
+      const fullPath = join(root, path);
+      const current = await readFile(fullPath, 'utf8').catch(() => null);
+      if (current !== expected) return false;
+      await rm(fullPath);
+      return true;
+    },
     createBinary: async (path: string, data: Uint8Array) => {
       await mkdir(dirname(join(root, path)), { recursive: true });
       await writeFile(join(root, path), data, { flag: 'wx' });

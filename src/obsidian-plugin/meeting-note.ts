@@ -73,6 +73,7 @@ export interface MeetingNoteFileSystem {
   listMarkdownFiles(path: string): Promise<string[]>;
   ensureDirectory(path: string): Promise<void>;
   create(path: string, content: string): Promise<void>;
+  removeIfContentMatches(path: string, expected: string): Promise<boolean>;
   process(path: string, transform: (content: string) => string): Promise<string>;
 }
 
@@ -556,7 +557,8 @@ export function updateMeetingNote(raw: string, input: RenderMeetingNoteInput): s
 export class MeetingNoteController {
   private readonly rollbacks = new WeakMap<
     CreateMeetingNoteResult,
-    { path: string; before: string; after: string }
+    | { kind: 'update'; path: string; before: string; after: string }
+    | { kind: 'create'; path: string; after: string }
   >();
 
   constructor(private readonly fileSystem: MeetingNoteFileSystem) {}
@@ -573,7 +575,7 @@ export class MeetingNoteController {
       return after;
     });
     const result: CreateMeetingNoteResult = { created: false, path };
-    this.rollbacks.set(result, { path, before, after });
+    this.rollbacks.set(result, { kind: 'update', path, before, after });
     return result;
   }
 
@@ -581,9 +583,13 @@ export class MeetingNoteController {
     const rollback = this.rollbacks.get(result);
     if (rollback === undefined) return;
     try {
-      await this.fileSystem.process(rollback.path, (current) => (
-        current === rollback.after ? rollback.before : current
-      ));
+      if (rollback.kind === 'create') {
+        await this.fileSystem.removeIfContentMatches(rollback.path, rollback.after);
+      } else {
+        await this.fileSystem.process(rollback.path, (current) => (
+          current === rollback.after ? rollback.before : current
+        ));
+      }
     } finally {
       this.rollbacks.delete(result);
     }
@@ -632,6 +638,10 @@ export class MeetingNoteController {
     return this.existingNotePath(source);
   }
 
+  async findExistingRecordingPath(recordingId: string): Promise<string | null> {
+    return this.existingRecordingNotePath(recordingId);
+  }
+
   async create(input: CreateMeetingNoteInput): Promise<CreateMeetingNoteResult> {
     if (input.transcript.trim() === '') {
       throw new Error('会议听记不能为空');
@@ -651,15 +661,16 @@ export class MeetingNoteController {
     }
     const directory = path.slice(0, path.lastIndexOf('/'));
     await this.fileSystem.ensureDirectory(directory);
-    try {
-      await this.fileSystem.create(path, renderMeetingNote({
+    const content = renderMeetingNote({
         source,
         meetingType: input.meetingType,
         participants: input.participants,
         transcript: input.transcript,
         ...(input.qianwen === undefined ? {} : { qianwen: input.qianwen }),
         attachments: input.attachments ?? [],
-      }));
+      });
+    try {
+      await this.fileSystem.create(path, content);
     } catch (error) {
       const racedPath = await this.existingNotePath(source);
       if (racedPath !== null) {
@@ -667,7 +678,9 @@ export class MeetingNoteController {
       }
       throw error;
     }
-    return { created: true, path };
+    const result: CreateMeetingNoteResult = { created: true, path };
+    this.rollbacks.set(result, { kind: 'create', path, after: content });
+    return result;
   }
 
   async createStandalone(
@@ -680,13 +693,16 @@ export class MeetingNoteController {
     const path = buildStandaloneMeetingNotePath(input.qianwen);
     if (await this.fileSystem.exists(path)) return { created: false, path };
     await this.fileSystem.ensureDirectory(path.slice(0, path.lastIndexOf('/')));
+    const content = renderStandaloneMeetingNote(input);
     try {
-      await this.fileSystem.create(path, renderStandaloneMeetingNote(input));
+      await this.fileSystem.create(path, content);
     } catch (error) {
       const racedPath = await this.existingRecordingNotePath(input.qianwen.recordingId);
       if (racedPath !== null) return { created: false, path: racedPath };
       throw error;
     }
-    return { created: true, path };
+    const result: CreateMeetingNoteResult = { created: true, path };
+    this.rollbacks.set(result, { kind: 'create', path, after: content });
+    return result;
   }
 }

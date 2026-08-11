@@ -43,6 +43,18 @@ describe('progress eligibility', () => {
     });
   });
 
+  it('evaluates UTC instants against the Shanghai calendar week', () => {
+    expect(assessProgressEligibility(draft({
+      occurredAt: '2026-08-09T16:30:00.000Z',
+    }), {
+      startDate: '2026-08-10',
+      endDate: '2026-08-16',
+    })).toMatchObject({
+      status: 'eligible',
+      reasons: [],
+    });
+  });
+
   it('rejects a routine check that only proves attendance and discussion', () => {
     const result = assessProgressEligibility(draft({
       topic: 'skill进展核对',

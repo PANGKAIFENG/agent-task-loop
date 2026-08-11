@@ -10,6 +10,7 @@ import {
 } from '../domain/acceptance-object.js';
 import type { ProgressRepository } from '../storage/markdown-progress-repository.js';
 import type { WeeklyReportRepository } from '../storage/markdown-weekly-report-repository.js';
+import { calendarDateInTimeZone } from '../domain/week-period.js';
 
 export interface WeeklyReportServiceContext {
   progressRepository: ProgressRepository;
@@ -24,7 +25,7 @@ export interface GenerateWeeklyReportInput {
 }
 
 function isInWeek(occurredAt: string, week: GenerateWeeklyReportInput['week']): boolean {
-  const date = occurredAt.slice(0, 10);
+  const date = calendarDateInTimeZone(occurredAt, 'Asia/Shanghai');
   return date >= week.startDate && date <= week.endDate;
 }
 

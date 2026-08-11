@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 
 import { MeetingNoteController, parseDingTalkMeetingSource } from '../src/obsidian-plugin/meeting-note.js';
@@ -196,6 +196,13 @@ async function writeReadyNotes(
       content,
       { encoding: 'utf8', flag: 'wx' },
     ),
+    removeIfContentMatches: async (path: string, expected: string) => {
+      const fullPath = join(vaultRoot, path);
+      const current = await readFile(fullPath, 'utf8').catch(() => null);
+      if (current !== expected) return false;
+      await rm(fullPath);
+      return true;
+    },
     process: async (path: string, transform: (content: string) => string) => {
       const filePath = join(vaultRoot, path);
       const updated = transform(await readFile(filePath, 'utf8'));

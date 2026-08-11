@@ -6,17 +6,31 @@ export interface IsoWeekPeriod {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-function localDate(now: Date, timeZone: string): Date {
+export function calendarDateInTimeZone(
+  value: Date | string,
+  timeZone: string,
+): string {
+  const instant = typeof value === 'string' ? new Date(value) : value;
+  if (!Number.isFinite(instant.getTime())) throw new Error('时间无效');
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
-  }).formatToParts(now);
-  const value = (type: Intl.DateTimeFormatPartTypes): number => Number(
-    parts.find((part) => part.type === type)?.value,
-  );
-  return new Date(Date.UTC(value('year'), value('month') - 1, value('day')));
+  }).formatToParts(instant);
+  const part = (type: Intl.DateTimeFormatPartTypes): string => {
+    const value = parts.find((candidate) => candidate.type === type)?.value;
+    if (value === undefined) throw new Error('无法解析时区日期');
+    return value;
+  };
+  return `${part('year')}-${part('month')}-${part('day')}`;
+}
+
+function localDate(now: Date, timeZone: string): Date {
+  const [year, month, day] = calendarDateInTimeZone(now, timeZone)
+    .split('-')
+    .map(Number);
+  return new Date(Date.UTC(year!, month! - 1, day));
 }
 
 function isoDate(value: Date): string {

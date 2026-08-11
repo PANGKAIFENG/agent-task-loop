@@ -31,6 +31,7 @@ import type {
 import { projectAcceptanceObjects } from '../domain/acceptance-object.js';
 import type { TaskRepository } from '../storage/contracts.js';
 import type { AcceptanceNotificationLedger } from './notify-acceptance.js';
+import { prepareMeetingProgressDrafts } from './prepare-meeting-progress-drafts.js';
 
 export interface QueryWorkProgressHubContext {
   sourceRepository: QianwenSourceStateRepository;
@@ -42,6 +43,7 @@ export interface QueryWorkProgressHubContext {
   taskRepository: Pick<TaskRepository, 'list'>;
   notificationLedger?: Pick<AcceptanceNotificationLedger, 'list'>;
   listCalendarSources(): Promise<DingTalkMeetingSource[]>;
+  findMeetingPath?(recordingId: string): Promise<string | null>;
 }
 
 function currentRecording(
@@ -178,6 +180,46 @@ export async function queryWorkProgressHub(
     });
   }
   const sourceRecordings = successfulScan?.recordings ?? [];
+  const matches = await Promise.all(visibleRecordings.map(async (version) => {
+    const activeDecision = activeByRecording.get(version.id);
+    const recording = matchableRecording(version);
+    let progressDrafts: WorkProgressMatchItem['progressDrafts'] = [];
+    if (
+      activeDecision !== undefined
+      && recording !== null
+      && context.findMeetingPath !== undefined
+    ) {
+      const meetingPath = await context.findMeetingPath(version.id);
+      if (meetingPath !== null) {
+        const calendar = activeDecision.action === 'confirmed'
+          ? calendarSources.find(({ eventKeyHash }) => (
+            eventKeyHash === activeDecision.eventKeyHash
+          ))
+          : undefined;
+        progressDrafts = prepareMeetingProgressDrafts({
+          meetingTitle: calendar?.title ?? recording.title,
+          occurredAt: calendar?.scheduled ?? recording.createdAt,
+          sourceRef: meetingPath,
+          summary: recording.summary.trim() === '' ? recording.transcript : recording.summary,
+        });
+      }
+    }
+    return {
+      recordingId: version.id,
+      title: version.title ?? version.id,
+      createdAt: version.createdAt,
+      status: version.status,
+      activeDecision: activeDecision === undefined ? null : {
+        decisionId: activeDecision.decisionId,
+        action: activeDecision.action,
+        eventKeyHash: activeDecision.eventKeyHash,
+      },
+      progressDrafts,
+      candidates: recording === null
+        ? []
+        : candidatesForRecording(recording, calendarSources),
+    };
+  }));
 
   const weeklyReports = await Promise.all(reports.map(async (report) => {
     const decisions = (await context.weeklyDecisionRepository.listForWeekly(report.weeklyId))
@@ -223,24 +265,7 @@ export async function queryWorkProgressHub(
       waiting: sourceRecordings.filter((recording) => recording.status === 'waiting').length,
       failed: sourceRecordings.filter((recording) => recording.status === 'failed').length,
     },
-    matches: visibleRecordings.map((version) => {
-      const activeDecision = activeByRecording.get(version.id);
-      const recording = matchableRecording(version);
-      return {
-        recordingId: version.id,
-        title: version.title ?? version.id,
-        createdAt: version.createdAt,
-        status: version.status,
-        activeDecision: activeDecision === undefined ? null : {
-          decisionId: activeDecision.decisionId,
-          action: activeDecision.action,
-          eventKeyHash: activeDecision.eventKeyHash,
-        },
-        candidates: recording === null
-          ? []
-          : candidatesForRecording(recording, calendarSources),
-      };
-    }),
+    matches,
     progress: progress.map((item) => ({
       progressId: item.progressId,
       version: item.version,

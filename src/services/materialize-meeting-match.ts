@@ -158,8 +158,9 @@ export async function markRecordingWithoutCalendarWithEvidence(
     clock: context.clock,
     id: context.id,
   }, input);
+  let meeting: CreateMeetingNoteResult | undefined;
   try {
-    const meeting = await context.meetingNotes.createStandalone({
+    meeting = await context.meetingNotes.createStandalone({
       meetingType: 'discussion',
       participants: [],
       transcript: evidence.transcript,
@@ -172,6 +173,13 @@ export async function markRecordingWithoutCalendarWithEvidence(
       meetingCreated: meeting.created,
     };
   } catch (error) {
+    if (meeting !== undefined) {
+      try {
+        await context.meetingNotes.rollback(meeting);
+      } catch {
+        // The original evidence error remains the actionable failure.
+      }
+    }
     await compensateNewDecision(context, previousDecisionId, decision);
     throw error;
   }

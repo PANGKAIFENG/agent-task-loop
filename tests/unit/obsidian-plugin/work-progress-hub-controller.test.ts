@@ -21,6 +21,7 @@ function snapshot(): WorkProgressHubSnapshot {
       createdAt: '2026-08-10T19:56:00+08:00',
       status: 'available',
       activeDecision: null,
+      progressDrafts: [],
       candidates: [{
         eventKeyHash: `sha256:${'a'.repeat(64)}`,
         eventPath: `TaskNotes/DingTalk/sha256-${'a'.repeat(64)}.md`,

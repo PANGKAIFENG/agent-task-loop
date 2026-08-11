@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { calendarDateInTimeZone } from './week-period.js';
+
 export const PROGRESS_EVIDENCE_KINDS = [
   'attendance',
   'discussion',
@@ -128,16 +130,15 @@ const REPORTABLE_EVIDENCE = new Set<ProgressEvidenceKind>(REPORTABLE_EVIDENCE_KI
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const NUMERIC_CLAIM_PATTERN = /(?:\d|百分之|[一二三四五六七八九十百千万亿]+(?:项|个|类|条|份|人|次|天|周|月|年|元))/u;
 
-function localDate(value: string): string | null {
-  const matched = /^(\d{4}-\d{2}-\d{2})(?:T|$)/.exec(value);
-  return matched?.[1] ?? null;
-}
-
 function isWithinWeek(occurredAt: string, week: ProgressWeek): boolean {
-  const date = localDate(occurredAt);
+  let date: string;
+  try {
+    date = calendarDateInTimeZone(occurredAt, 'Asia/Shanghai');
+  } catch {
+    return false;
+  }
   if (
-    date === null
-    || !ISO_DATE_PATTERN.test(week.startDate)
+    !ISO_DATE_PATTERN.test(week.startDate)
     || !ISO_DATE_PATTERN.test(week.endDate)
   ) {
     return false;

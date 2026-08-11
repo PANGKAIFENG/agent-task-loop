@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFile as readExternalFile, stat as statExternalFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, dirname, extname, join, relative, sep } from 'node:path';
+import { basename, extname, join, relative, sep } from 'node:path';
 
 import {
   FileSystemAdapter,
@@ -30,11 +30,12 @@ import {
 import { createClaudeStructuredExecutor } from '../runner/claude-driver.js';
 import { createAcceptanceNotifier } from '../services/acceptance-notifier-factory.js';
 import { captureTask } from '../services/capture-task.js';
-import {
-  createMaterialGap,
-  type CreateMaterialGapInput,
-} from '../services/create-material-gap.js';
+import { createMaterialGap } from '../services/create-material-gap.js';
 import { createProgressVersion } from '../services/create-progress-version.js';
+import {
+  prepareMaterialGapRequest,
+  type PrepareMaterialGapRequestInput,
+} from '../services/prepare-material-gap-request.js';
 import {
   confirmMeetingMatchWithEvidence,
   markRecordingWithoutCalendarWithEvidence,
@@ -56,6 +57,7 @@ import { MarkdownWeeklyReportRepository } from '../storage/markdown-weekly-repor
 import { FileMeetingMatchDecisionRepository } from '../storage/meeting-match-decision-repository.js';
 import { FileQianwenSourceStateRepository } from '../storage/qianwen-source-state-repository.js';
 import { FileAcceptanceNotificationLedger } from '../storage/file-acceptance-notification-ledger.js';
+import { qianwenRuntimeRoot } from '../qianwen-runtime-root.js';
 import { FileWeeklyReviewDecisionRepository } from '../storage/weekly-review-decision-repository.js';
 import { MarkdownTaskRepository } from '../storage/markdown-task-repository.js';
 import { recordTaskCompletionDate } from '../services/record-task-completion-date.js';
@@ -569,7 +571,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
       createController: () => this.createWorkProgressController(),
       openPath: (path) => this.openWorkProgressPath(path),
       requestWeeklyFeedback: (report) => this.requestWeeklyFeedback(report),
-      requestProgressDraft: () => this.requestProgressDraft(),
+      requestProgressDraft: (initial) => this.requestProgressDraft(initial),
       requestMaterialGap: (progress) => this.requestMaterialGap(progress),
     });
   }
@@ -580,7 +582,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
       throw new Error('Agent Task Loop 工作沉淀仅支持桌面版本地 Vault');
     }
     const root = paths.root;
-    const runtimeRoot = join(dirname(paths.runnerPath), '.atl-runtime');
+    const runtimeRoot = qianwenRuntimeRoot({ runnerPath: paths.runnerPath });
     const sourceRepository = new FileQianwenSourceStateRepository(runtimeRoot);
     const decisionRepository = new FileMeetingMatchDecisionRepository(root);
     const progressRepository = new MarkdownProgressRepository(root);
@@ -639,6 +641,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
         taskRepository: new MarkdownTaskRepository(root),
         notificationLedger: new FileAcceptanceNotificationLedger(join(root, '.atl-runtime')),
         listCalendarSources: () => this.listWorkProgressCalendarSources(),
+        findMeetingPath: (recordingId) => meetingNotes.findExistingRecordingPath(recordingId),
       }),
       confirmMatch: (input) => confirmMeetingMatchWithEvidence(materializeContext(), input),
       markNoCalendar: (input) => markRecordingWithoutCalendarWithEvidence(
@@ -717,11 +720,22 @@ export default class AgentTaskLoopPlugin extends Plugin {
       },
       createMaterialGap: (input) => {
         const writable = writeContext();
-        return createMaterialGap({
+        return prepareMaterialGapRequest({
+          loadProgress: async (progressId, version) => (
+            (await progressRepository.listVersions(progressId))
+              .find((candidate) => candidate.version === version) ?? null
+          ),
+          readSource: async (path) => (
+            await this.app.vault.adapter.exists(path)
+              ? this.app.vault.adapter.read(path)
+              : null
+          ),
+          clock: () => new Date(),
+        }, input).then((prepared) => createMaterialGap({
           repository: writable.materialGapRepository,
           clock: () => new Date(),
           id: randomUUID,
-        }, input);
+        }, prepared));
       },
       syncSource: () => this.syncQianwenNow(),
     });
@@ -1088,7 +1102,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
     });
   }
 
-  private requestProgressDraft(): Promise<ProgressDraft | null> {
+  private requestProgressDraft(initial?: ProgressDraft): Promise<ProgressDraft | null> {
     return new Promise((resolve) => {
       let settled = false;
       const settle = (draft: ProgressDraft | null) => {
@@ -1100,16 +1114,18 @@ export default class AgentTaskLoopPlugin extends Plugin {
         this.app,
         async (draft) => settle(draft),
         () => settle(null),
+        () => new Date(),
+        initial,
       ).open();
     });
   }
 
   private requestMaterialGap(
     progress: WorkProgressHubSnapshot['progress'],
-  ): Promise<CreateMaterialGapInput | null> {
+  ): Promise<PrepareMaterialGapRequestInput | null> {
     return new Promise((resolve) => {
       let settled = false;
-      const settle = (input: CreateMaterialGapInput | null) => {
+      const settle = (input: PrepareMaterialGapRequestInput | null) => {
         if (settled) return;
         settled = true;
         resolve(input);
@@ -1134,6 +1150,13 @@ export default class AgentTaskLoopPlugin extends Plugin {
       ensureDirectory: (path: string) => this.ensureVaultDirectory(path),
       create: async (path: string, content: string) => {
         await this.app.vault.create(path, content);
+      },
+      removeIfContentMatches: async (path: string, expected: string) => {
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (!(file instanceof TFile)) return false;
+        if (await this.app.vault.cachedRead(file) !== expected) return false;
+        await this.app.vault.delete(file);
+        return true;
       },
       process: async (path: string, transform: (content: string) => string) => {
         const file = this.app.vault.getAbstractFileByPath(path);
@@ -1323,7 +1346,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
     if (paths === null || !Platform.isDesktopApp) {
       throw new Error('千问听记同步仅支持 Obsidian 桌面版');
     }
-    const runtimeRoot = join(dirname(paths.runnerPath), '.atl-runtime');
+    const runtimeRoot = qianwenRuntimeRoot({ runnerPath: paths.runnerPath });
     const result = await syncQianwenSource({
       repository: new FileQianwenSourceStateRepository(runtimeRoot, {
         writeAuthorization: createVaultWriteAuthorization(runtimeRoot),
@@ -1502,6 +1525,13 @@ export default class AgentTaskLoopPlugin extends Plugin {
       },
       create: async (path: string, content: string) => {
         await this.app.vault.create(path, content);
+      },
+      removeIfContentMatches: async (path: string, expected: string) => {
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (!(file instanceof TFile)) return false;
+        if (await this.app.vault.cachedRead(file) !== expected) return false;
+        await this.app.vault.delete(file);
+        return true;
       },
       createBinary: async (path: string, data: Uint8Array) => {
         await this.app.vault.createBinary(path, new Uint8Array(data).buffer);

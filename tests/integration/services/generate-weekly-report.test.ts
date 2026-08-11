@@ -188,4 +188,33 @@ describe('generate weekly report', () => {
       '2026-W33-v1.md',
     ), 'utf8')).toContain('# 2026-W33 工作进展周报');
   });
+
+  it('includes a Shanghai Monday progress even when stored as a UTC instant', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'atl-weekly-shanghai-'));
+    roots.push(root);
+    const progressRepository = new MarkdownProgressRepository(root);
+    const weeklyRepository = new MarkdownWeeklyReportRepository(root);
+    const week = { startDate: '2026-08-10', endDate: '2026-08-16' };
+    await createProgressVersion({
+      repository: progressRepository,
+      clock: () => new Date('2026-08-10T01:00:00.000Z'),
+      id: () => 'progress-shanghai-monday',
+    }, {
+      draft: draft({ occurredAt: '2026-08-09T16:30:00.000Z' }),
+      week,
+    });
+
+    const report = await generateWeeklyReport({
+      progressRepository,
+      weeklyRepository,
+      clock: () => new Date('2026-08-16T10:00:00.000Z'),
+    }, {
+      weekKey: '2026-W33',
+      week,
+    });
+
+    expect(report.progressRefs).toEqual([
+      { progressId: 'progress-shanghai-monday', version: 1 },
+    ]);
+  });
 });

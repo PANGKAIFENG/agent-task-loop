@@ -53,6 +53,7 @@ import { MarkdownTaskRepository } from './storage/markdown-task-repository.js';
 import { MarkdownWeeklyReportRepository } from './storage/markdown-weekly-report-repository.js';
 import { FileQianwenSourceStateRepository } from './storage/qianwen-source-state-repository.js';
 import { createVaultWriteAuthorization } from './storage/task-paths.js';
+import { qianwenRuntimeRoot } from './qianwen-runtime-root.js';
 import { ATL_VERSION } from './version.js';
 
 class CliUsageError extends Error {
@@ -248,12 +249,8 @@ async function runnerController(driverName: string) {
   });
 }
 
-function qianwenRuntimeRoot(): string {
-  return join(process.cwd(), '.atl-runtime');
-}
-
 async function synchronizeQianwen(mode: 'scheduled' | 'manual') {
-  const runtimeRoot = qianwenRuntimeRoot();
+  const runtimeRoot = qianwenRuntimeRoot({ cwd: process.cwd() });
   return syncQianwenSource({
     repository: new FileQianwenSourceStateRepository(runtimeRoot, {
       writeAuthorization: createVaultWriteAuthorization(runtimeRoot),

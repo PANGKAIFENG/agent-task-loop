@@ -83,7 +83,7 @@ describe('ProgressEntryModal', () => {
       topic: '精恭纺验收分类',
       reportCategory: 'project_acceptance',
       primaryProjectId: 'project-a',
-      occurredAt: new Date('2026-08-11T10:30').toISOString(),
+      occurredAt: '2026-08-11T10:30:00+08:00',
       sources: ['08_Meetings/2026-08/meeting-a.md'],
       statements: [{
         kind: 'fact',
@@ -98,6 +98,48 @@ describe('ProgressEntryModal', () => {
       selfEvidence: [],
       agentEvidence: [],
     }));
+  });
+
+  it('opens a meeting-derived draft with conservative evidence prefilled', async () => {
+    const { ProgressEntryModal } = await import(
+      '../../../src/obsidian-plugin/work-progress-entry-modal.js'
+    );
+    const initial = {
+      topic: '验收分类',
+      reportCategory: 'routine_check' as const,
+      primaryProjectId: null,
+      occurredAt: '2026-08-10T17:00:00+08:00',
+      sources: ['08_Meetings/2026-08/meeting-a.md'],
+      statements: [{
+        kind: 'pending' as const,
+        text: '已讨论按四类整理验收事项。',
+        sourceRefs: ['08_Meetings/2026-08/meeting-a.md'],
+      }],
+      evidence: [{
+        kind: 'discussion' as const,
+        summary: '已讨论按四类整理验收事项。',
+        sourceRef: '08_Meetings/2026-08/meeting-a.md',
+      }],
+      selfEvidence: [],
+      agentEvidence: [],
+    };
+    const modal = new ProgressEntryModal(
+      {} as never,
+      vi.fn(async () => undefined),
+      undefined,
+      () => new Date('2026-08-12T00:00:00.000Z'),
+      initial,
+    );
+    modal.open();
+
+    expect(modal.contentEl.querySelector<HTMLInputElement>('[aria-label="进展主题"]')?.value)
+      .toBe('验收分类');
+    expect(modal.contentEl.querySelector<HTMLInputElement>('[aria-label="主项目 ID"]')?.value)
+      .toBe('');
+    expect(modal.contentEl.querySelector<HTMLInputElement>('[aria-label="发生时间"]')?.value)
+      .toBe('2026-08-10T17:00');
+    expect(modal.contentEl.querySelector<HTMLSelectElement>('[aria-label="证据类型"]')?.value)
+      .toBe('discussion');
   });
 
   it('reports cancellation without submitting', async () => {
@@ -144,8 +186,6 @@ describe('MaterialGapEntryModal', () => {
         description: '四类事项的准确数量',
         purpose: '精恭纺验收周报',
       },
-      searches: [],
-      suggestedContact: null,
     }));
   });
 });

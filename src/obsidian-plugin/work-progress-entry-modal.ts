@@ -12,7 +12,7 @@ import {
   type ProgressReportCategory,
   type ProgressStatementKind,
 } from '../domain/progress.js';
-import type { CreateMaterialGapInput } from '../services/create-material-gap.js';
+import type { PrepareMaterialGapRequestInput } from '../services/prepare-material-gap-request.js';
 import type { WorkProgressHubSnapshot } from './work-progress-hub-controller.js';
 
 const REPORT_CATEGORY_LABELS: Record<ProgressReportCategory, string> = {
@@ -48,13 +48,27 @@ const MATERIAL_KIND_LABELS = {
 } as const;
 
 function localDateTimeValue(now: Date): string {
-  const offset = now.getTimezoneOffset() * 60_000;
-  return new Date(now.getTime() - offset).toISOString().slice(0, 16);
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(now);
+  const part = (type: Intl.DateTimeFormatPartTypes): string => (
+    parts.find((candidate) => candidate.type === type)?.value ?? ''
+  );
+  return `${part('year')}-${part('month')}-${part('day')}T${part('hour')}:${part('minute')}`;
 }
 
 function normalizedOccurredAt(value: string): string | null {
-  const parsed = new Date(value);
-  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
+  const normalized = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/u.test(value)
+    ? `${value}:00+08:00`
+    : value;
+  const parsed = new Date(normalized);
+  return Number.isFinite(parsed.getTime()) ? normalized : null;
 }
 
 export class ProgressEntryModal extends Modal {
@@ -75,9 +89,21 @@ export class ProgressEntryModal extends Modal {
     private readonly onSubmit: (draft: ProgressDraft) => Promise<void>,
     private readonly onCancel?: () => void,
     now: () => Date = () => new Date(),
+    initial?: ProgressDraft,
   ) {
     super(app);
-    this.occurredAt = localDateTimeValue(now());
+    this.occurredAt = initial === undefined
+      ? localDateTimeValue(now())
+      : localDateTimeValue(new Date(initial.occurredAt));
+    if (initial !== undefined) {
+      this.topic = initial.topic;
+      this.reportCategory = initial.reportCategory;
+      this.primaryProjectId = initial.primaryProjectId ?? '';
+      this.source = initial.sources[0] ?? '';
+      this.statementKind = initial.statements[0]?.kind ?? 'pending';
+      this.statement = initial.statements[0]?.text ?? '';
+      this.evidenceKind = initial.evidence[0]?.kind ?? 'discussion';
+    }
   }
 
   override onOpen(): void {
@@ -242,7 +268,7 @@ export class ProgressEntryModal extends Modal {
 
 export class MaterialGapEntryModal extends Modal {
   private selectedProgress = 0;
-  private kind: CreateMaterialGapInput['missing']['kind'] = 'numeric';
+  private kind: PrepareMaterialGapRequestInput['missing']['kind'] = 'numeric';
   private description = '';
   private purpose = '';
   private formError = '';
@@ -252,7 +278,7 @@ export class MaterialGapEntryModal extends Modal {
   constructor(
     app: App,
     private readonly progress: WorkProgressHubSnapshot['progress'],
-    private readonly onSubmit: (input: CreateMaterialGapInput) => Promise<void>,
+    private readonly onSubmit: (input: PrepareMaterialGapRequestInput) => Promise<void>,
     private readonly onCancel?: () => void,
   ) {
     super(app);
@@ -302,7 +328,7 @@ export class MaterialGapEntryModal extends Modal {
         }
         dropdown.selectEl.setAttribute('aria-label', '缺口类型');
         dropdown.setValue(this.kind).onChange((value) => {
-          this.kind = value as CreateMaterialGapInput['missing']['kind'];
+          this.kind = value as PrepareMaterialGapRequestInput['missing']['kind'];
           this.formError = '';
         });
       });
@@ -358,8 +384,6 @@ export class MaterialGapEntryModal extends Modal {
         progressId: selected.progressId,
         progressVersion: selected.version,
         missing: { kind: this.kind, description, purpose },
-        searches: [],
-        suggestedContact: null,
       });
       this.completed = true;
       this.close();

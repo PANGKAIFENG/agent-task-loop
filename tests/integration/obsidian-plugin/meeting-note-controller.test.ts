@@ -53,6 +53,13 @@ function nodeFileSystem(): MeetingNoteFileSystem {
       await mkdir(dirname(join(root, path)), { recursive: true });
       await writeFile(join(root, path), content, { encoding: 'utf8', flag: 'wx' });
     },
+    removeIfContentMatches: async (path, expected) => {
+      const fullPath = join(root, path);
+      const current = await readFile(fullPath, 'utf8').catch(() => null);
+      if (current !== expected) return false;
+      await rm(fullPath);
+      return true;
+    },
     process: async (path, transform) => {
       const fullPath = join(root, path);
       const next = transform(await readFile(fullPath, 'utf8'));

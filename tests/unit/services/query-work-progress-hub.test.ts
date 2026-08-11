@@ -372,6 +372,57 @@ describe('queryWorkProgressHub', () => {
     expect(result.matches).toHaveLength(2);
   });
 
+  it('projects multiple editable progress drafts from an active meeting decision and meeting path', async () => {
+    const state = sourceState();
+    const recording = state.recordings['recording-a']!.versions[0]!;
+    recording.summary = [
+      '## 验收分类',
+      '已讨论按四类整理验收事项。',
+      '## 交付资料',
+      '需求分类表仍待补齐。',
+    ].join('\n');
+
+    const result = await queryWorkProgressHub({
+      sourceRepository: { load: async () => state, save: async () => undefined },
+      decisionRepository: {
+        listActive: async () => [{
+          schemaVersion: 1,
+          decisionId: 'decision-confirmed',
+          action: 'confirmed',
+          recordingId: 'recording-a',
+          eventKeyHash: EVENT_HASH,
+          supersedesDecisionId: null,
+          decidedAt: '2026-08-11T05:00:00.000Z',
+        }],
+      } as never,
+      progressRepository: { listCurrent: async () => [] } as never,
+      materialGapRepository: { list: async () => [] } as never,
+      weeklyRepository: { listCurrent: async () => [] } as never,
+      weeklyDecisionRepository: { listForWeekly: async () => [] } as never,
+      taskRepository: { list: async () => [] } as never,
+      listCalendarSources: async () => [calendar()],
+      findMeetingPath: async (recordingId) => (
+        recordingId === 'recording-a'
+          ? '08_Meetings/2026-08/meeting-a.md'
+          : null
+      ),
+    });
+
+    expect(result.matches.find(({ recordingId }) => recordingId === 'recording-a'))
+      .toMatchObject({
+        activeDecision: { action: 'confirmed', eventKeyHash: EVENT_HASH },
+        progressDrafts: [{
+          topic: '验收分类',
+          occurredAt: '2026-08-10T19:00:00+08:00',
+          sources: ['08_Meetings/2026-08/meeting-a.md'],
+        }, {
+          topic: '交付资料',
+          occurredAt: '2026-08-10T19:00:00+08:00',
+          sources: ['08_Meetings/2026-08/meeting-a.md'],
+        }],
+      });
+  });
+
   it('does not expose a revoked meeting decision as the active match', async () => {
     const result = await queryWorkProgressHub({
       sourceRepository: { load: async () => sourceState(), save: async () => undefined },
