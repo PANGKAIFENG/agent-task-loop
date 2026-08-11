@@ -6,6 +6,7 @@ export interface QianwenSyncPluginCommand {
 
 export interface QianwenSyncPluginDependencies<Result> {
   addCommand(command: QianwenSyncPluginCommand): void;
+  canSync(): boolean;
   sync(): Promise<Result>;
   onSuccess(result: Result): void;
   onError(message: string): void;
@@ -38,6 +39,10 @@ export class QianwenSyncPluginLifecycle<Result> {
 
   run(): Promise<void> {
     if (this.inFlight !== null) return this.inFlight;
+    if (!this.dependencies.canSync()) {
+      this.dependencies.onError('请先允许 ATL 管理此 Vault');
+      return Promise.resolve();
+    }
     const operation = this.dependencies.sync()
       .then((result) => this.dependencies.onSuccess(result))
       .catch((error: unknown) => this.dependencies.onError(errorMessage(error)))

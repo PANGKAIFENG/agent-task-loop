@@ -52,6 +52,7 @@ import { MarkdownProgressRepository } from './storage/markdown-progress-reposito
 import { MarkdownTaskRepository } from './storage/markdown-task-repository.js';
 import { MarkdownWeeklyReportRepository } from './storage/markdown-weekly-report-repository.js';
 import { FileQianwenSourceStateRepository } from './storage/qianwen-source-state-repository.js';
+import { createVaultWriteAuthorization } from './storage/task-paths.js';
 import { ATL_VERSION } from './version.js';
 
 class CliUsageError extends Error {
@@ -252,8 +253,11 @@ function qianwenRuntimeRoot(): string {
 }
 
 async function synchronizeQianwen(mode: 'scheduled' | 'manual') {
+  const runtimeRoot = qianwenRuntimeRoot();
   return syncQianwenSource({
-    repository: new FileQianwenSourceStateRepository(qianwenRuntimeRoot()),
+    repository: new FileQianwenSourceStateRepository(runtimeRoot, {
+      writeAuthorization: createVaultWriteAuthorization(runtimeRoot),
+    }),
     connector: new QianwenDesktopConnector(),
     now: new Date(),
     timeZone: 'Asia/Shanghai',

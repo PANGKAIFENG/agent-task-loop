@@ -46,3 +46,12 @@ export function currentIsoWeekPeriod(
     endDate: isoDate(end),
   };
 }
+
+export function isoWeekPeriodForOccurredAt(
+  occurredAt: string,
+  timeZone: string,
+): IsoWeekPeriod {
+  const instant = new Date(occurredAt);
+  if (!Number.isFinite(instant.getTime())) throw new Error('工作进展发生时间无效');
+  return currentIsoWeekPeriod(instant, timeZone);
+}

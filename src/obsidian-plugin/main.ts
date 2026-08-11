@@ -22,10 +22,19 @@ import './styles.css';
 
 import { QianwenDesktopConnector } from '../connectors/qianwen-desktop-connector.js';
 import { optionalDingTalkProfile } from '../dingtalk-profile.js';
-import { currentIsoWeekPeriod } from '../domain/week-period.js';
+import type { ProgressDraft } from '../domain/progress.js';
+import {
+  currentIsoWeekPeriod,
+  isoWeekPeriodForOccurredAt,
+} from '../domain/week-period.js';
 import { createClaudeStructuredExecutor } from '../runner/claude-driver.js';
 import { createAcceptanceNotifier } from '../services/acceptance-notifier-factory.js';
 import { captureTask } from '../services/capture-task.js';
+import {
+  createMaterialGap,
+  type CreateMaterialGapInput,
+} from '../services/create-material-gap.js';
+import { createProgressVersion } from '../services/create-progress-version.js';
 import {
   confirmMeetingMatchWithEvidence,
   markRecordingWithoutCalendarWithEvidence,
@@ -164,6 +173,10 @@ import {
   WORK_PROGRESS_VIEW_TYPE,
   WorkProgressView,
 } from './work-progress-view.js';
+import {
+  MaterialGapEntryModal,
+  ProgressEntryModal,
+} from './work-progress-entry-modal.js';
 import { WeeklyFeedbackModal } from './weekly-feedback-modal.js';
 import { LegacyTaskTitleRepairController } from './legacy-task-title-repair-controller.js';
 import { LegacyTaskTitleRepairModal } from './legacy-task-title-repair-modal.js';
@@ -347,6 +360,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
 
     new QianwenSyncPluginLifecycle({
       addCommand: (command) => this.addCommand(command),
+      canSync: () => this.settings.allowVaultManagement,
       sync: () => this.syncQianwenNow(),
       onSuccess: (result) => {
         if (result.status === 'not_due') {
@@ -555,6 +569,8 @@ export default class AgentTaskLoopPlugin extends Plugin {
       createController: () => this.createWorkProgressController(),
       openPath: (path) => this.openWorkProgressPath(path),
       requestWeeklyFeedback: (report) => this.requestWeeklyFeedback(report),
+      requestProgressDraft: () => this.requestProgressDraft(),
+      requestMaterialGap: (progress) => this.requestMaterialGap(progress),
     });
   }
 
@@ -587,6 +603,12 @@ export default class AgentTaskLoopPlugin extends Plugin {
           writeAuthorization,
         }),
         weeklyDecisionRepository: new FileWeeklyReviewDecisionRepository(root, {
+          writeAuthorization,
+        }),
+        progressRepository: new MarkdownProgressRepository(root, {
+          writeAuthorization,
+        }),
+        materialGapRepository: new MarkdownMaterialGapRepository(root, {
           writeAuthorization,
         }),
       };
@@ -677,6 +699,29 @@ export default class AgentTaskLoopPlugin extends Plugin {
             endDate: period.endDate,
           },
         });
+      },
+      createProgress: (draft) => {
+        const writable = writeContext();
+        const period = isoWeekPeriodForOccurredAt(draft.occurredAt, 'Asia/Shanghai');
+        return createProgressVersion({
+          repository: writable.progressRepository,
+          clock: () => new Date(),
+          id: randomUUID,
+        }, {
+          draft,
+          week: {
+            startDate: period.startDate,
+            endDate: period.endDate,
+          },
+        });
+      },
+      createMaterialGap: (input) => {
+        const writable = writeContext();
+        return createMaterialGap({
+          repository: writable.materialGapRepository,
+          clock: () => new Date(),
+          id: randomUUID,
+        }, input);
       },
       syncSource: () => this.syncQianwenNow(),
     });
@@ -1043,6 +1088,41 @@ export default class AgentTaskLoopPlugin extends Plugin {
     });
   }
 
+  private requestProgressDraft(): Promise<ProgressDraft | null> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const settle = (draft: ProgressDraft | null) => {
+        if (settled) return;
+        settled = true;
+        resolve(draft);
+      };
+      new ProgressEntryModal(
+        this.app,
+        async (draft) => settle(draft),
+        () => settle(null),
+      ).open();
+    });
+  }
+
+  private requestMaterialGap(
+    progress: WorkProgressHubSnapshot['progress'],
+  ): Promise<CreateMaterialGapInput | null> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const settle = (input: CreateMaterialGapInput | null) => {
+        if (settled) return;
+        settled = true;
+        resolve(input);
+      };
+      new MaterialGapEntryModal(
+        this.app,
+        progress,
+        async (input) => settle(input),
+        () => settle(null),
+      ).open();
+    });
+  }
+
   private workProgressMeetingFileSystem() {
     return {
       exists: (path: string) => this.app.vault.adapter.exists(path),
@@ -1236,15 +1316,18 @@ export default class AgentTaskLoopPlugin extends Plugin {
       failed: number;
     }
   > {
+    if (!this.settings.allowVaultManagement) {
+      throw new Error('请先允许 ATL 管理此 Vault');
+    }
     const paths = this.localPluginPaths();
     if (paths === null || !Platform.isDesktopApp) {
       throw new Error('千问听记同步仅支持 Obsidian 桌面版');
     }
+    const runtimeRoot = join(dirname(paths.runnerPath), '.atl-runtime');
     const result = await syncQianwenSource({
-      repository: new FileQianwenSourceStateRepository(join(
-        dirname(paths.runnerPath),
-        '.atl-runtime',
-      )),
+      repository: new FileQianwenSourceStateRepository(runtimeRoot, {
+        writeAuthorization: createVaultWriteAuthorization(runtimeRoot),
+      }),
       connector: new QianwenDesktopConnector(),
       now: new Date(),
       timeZone: resolveSystemTimeZone(),

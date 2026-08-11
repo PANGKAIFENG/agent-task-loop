@@ -1,5 +1,7 @@
 import { ItemView, setIcon, type WorkspaceLeaf } from 'obsidian';
 
+import type { ProgressDraft } from '../domain/progress.js';
+import type { CreateMaterialGapInput } from '../services/create-material-gap.js';
 import {
   type WorkProgressHubController,
   type WorkProgressHubSnapshot,
@@ -14,6 +16,10 @@ export interface WorkProgressViewDependencies {
   openPath(path: string): Promise<void> | void;
   requestWeeklyFeedback(report: WorkProgressHubSnapshot['weeklyReports'][number]):
     Promise<string | null>;
+  requestProgressDraft(): Promise<ProgressDraft | null>;
+  requestMaterialGap(
+    progress: WorkProgressHubSnapshot['progress'],
+  ): Promise<CreateMaterialGapInput | null>;
 }
 
 const TAB_LABELS: Array<{ tab: WorkProgressHubTab; label: string }> = [
@@ -231,8 +237,8 @@ export class WorkProgressView extends ItemView {
     }
     switch (state.activeTab) {
       case 'matches': body.append(this.renderMatches(state, snapshot)); break;
-      case 'progress': body.append(this.renderProgress(snapshot)); break;
-      case 'materials': body.append(this.renderMaterials(snapshot)); break;
+      case 'progress': body.append(this.renderProgress(state, snapshot)); break;
+      case 'materials': body.append(this.renderMaterials(state, snapshot)); break;
       case 'weekly': body.append(this.renderWeekly(state, snapshot)); break;
     }
     return body;
@@ -342,24 +348,66 @@ export class WorkProgressView extends ItemView {
     return row;
   }
 
-  private renderProgress(snapshot: WorkProgressHubSnapshot): HTMLElement {
-    return this.renderPersistedList(snapshot.progress.map((item) => ({
+  private renderProgress(
+    state: WorkProgressHubState,
+    snapshot: WorkProgressHubSnapshot,
+  ): HTMLElement {
+    const section = element('section', 'atl-work-progress-section');
+    const actions = element('div', 'atl-work-progress-section-actions');
+    const create = element('button', 'mod-cta', '新建进展');
+    create.type = 'button';
+    create.dataset.action = 'create-progress';
+    create.disabled = state.busyAction !== null;
+    create.addEventListener('click', () => {
+      void this.createProgress().catch(() => undefined);
+    });
+    actions.append(create);
+    section.append(actions, this.renderPersistedList(snapshot.progress.map((item) => ({
       key: item.progressId,
       title: item.topic,
       meta: `${item.projectId ?? '待确认项目'} · v${item.version}`,
       status: statusLabel(item.lifecycleStatus),
       path: item.path,
-    })), '当前没有工作进展版本。');
+    })), '当前没有工作进展版本。'));
+    return section;
   }
 
-  private renderMaterials(snapshot: WorkProgressHubSnapshot): HTMLElement {
-    return this.renderPersistedList(snapshot.materialGaps.map((item) => ({
+  private renderMaterials(
+    state: WorkProgressHubState,
+    snapshot: WorkProgressHubSnapshot,
+  ): HTMLElement {
+    const section = element('section', 'atl-work-progress-section');
+    const actions = element('div', 'atl-work-progress-section-actions');
+    const create = element('button', 'mod-cta', '登记缺口');
+    create.type = 'button';
+    create.dataset.action = 'create-material-gap';
+    create.disabled = state.busyAction !== null || snapshot.progress.length === 0;
+    create.addEventListener('click', () => {
+      void this.createMaterialGap(snapshot.progress).catch(() => undefined);
+    });
+    actions.append(create);
+    section.append(actions, this.renderPersistedList(snapshot.materialGaps.map((item) => ({
       key: item.gapId,
       title: item.title,
       meta: item.gapId,
       status: statusLabel(item.status),
       path: item.path,
-    })), '当前没有待补材料。');
+    })), '当前没有待补材料。'));
+    return section;
+  }
+
+  private async createProgress(): Promise<void> {
+    const draft = await this.dependencies.requestProgressDraft();
+    if (draft === null) return;
+    await this.controller?.createProgressVersion(draft);
+  }
+
+  private async createMaterialGap(
+    progress: WorkProgressHubSnapshot['progress'],
+  ): Promise<void> {
+    const input = await this.dependencies.requestMaterialGap(progress);
+    if (input === null) return;
+    await this.controller?.registerMaterialGap(input);
   }
 
   private renderPersistedList(

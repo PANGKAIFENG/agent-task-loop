@@ -8,6 +8,7 @@ describe('Qianwen sync plugin lifecycle', () => {
     const onSuccess = vi.fn();
     const lifecycle = new QianwenSyncPluginLifecycle({
       addCommand: (command) => commands.push(command),
+      canSync: () => true,
       sync: async () => ({ status: 'completed' as const, available: 2, pending: 1 }),
       onSuccess,
       onError: vi.fn(),
@@ -36,6 +37,7 @@ describe('Qianwen sync plugin lifecycle', () => {
     }));
     const lifecycle = new QianwenSyncPluginLifecycle({
       addCommand: (command) => commands.push(command),
+      canSync: () => true,
       sync,
       onSuccess: vi.fn(),
       onError: vi.fn(),
@@ -48,5 +50,22 @@ describe('Qianwen sync plugin lifecycle', () => {
 
     finish?.();
     await vi.waitFor(() => expect(lifecycle.running).toBe(false));
+  });
+
+  it('does not synchronize when Vault management is disabled', async () => {
+    const sync = vi.fn(async () => ({ status: 'completed' as const }));
+    const onError = vi.fn();
+    const lifecycle = new QianwenSyncPluginLifecycle({
+      addCommand: vi.fn(),
+      canSync: () => false,
+      sync,
+      onSuccess: vi.fn(),
+      onError,
+    });
+
+    await lifecycle.run();
+
+    expect(sync).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledWith('请先允许 ATL 管理此 Vault');
   });
 });

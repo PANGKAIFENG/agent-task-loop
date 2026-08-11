@@ -1,4 +1,6 @@
 import type { AcceptanceObject } from '../domain/acceptance-object.js';
+import type { ProgressDraft } from '../domain/progress.js';
+import type { CreateMaterialGapInput } from '../services/create-material-gap.js';
 
 export type WorkProgressHubTab = 'matches' | 'progress' | 'materials' | 'weekly';
 
@@ -99,6 +101,8 @@ export interface WorkProgressHubDependencies {
   deferWeekly(input: { weeklyId: string; version: number }): Promise<unknown>;
   generateWeekly(): Promise<unknown>;
   syncSource(): Promise<unknown>;
+  createProgress(input: ProgressDraft): Promise<unknown>;
+  createMaterialGap(input: CreateMaterialGapInput): Promise<unknown>;
 }
 
 type StateListener = (state: WorkProgressHubState) => void;
@@ -221,6 +225,17 @@ export class WorkProgressHubController {
 
   retrySource(): Promise<void> {
     return this.runAction('sync-source', () => this.dependencies.syncSource());
+  }
+
+  createProgressVersion(input: ProgressDraft): Promise<void> {
+    return this.runAction('create-progress', () => this.dependencies.createProgress(input));
+  }
+
+  registerMaterialGap(input: CreateMaterialGapInput): Promise<void> {
+    return this.runAction(
+      'create-material-gap',
+      () => this.dependencies.createMaterialGap(input),
+    );
   }
 
   dispose(): void {

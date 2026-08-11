@@ -91,6 +91,8 @@ function setup() {
   const deferWeekly = vi.fn(async () => undefined);
   const generateWeekly = vi.fn(async () => undefined);
   const syncSource = vi.fn(async () => undefined);
+  const createProgress = vi.fn(async () => undefined);
+  const createMaterialGap = vi.fn(async () => undefined);
   const controller = new WorkProgressHubController({
     loadSnapshot,
     confirmMatch,
@@ -101,6 +103,8 @@ function setup() {
     deferWeekly,
     generateWeekly,
     syncSource,
+    createProgress,
+    createMaterialGap,
   });
   return {
     controller,
@@ -113,6 +117,8 @@ function setup() {
     deferWeekly,
     generateWeekly,
     syncSource,
+    createProgress,
+    createMaterialGap,
   };
 }
 
@@ -207,6 +213,56 @@ describe('WorkProgressHubController', () => {
     await controller.generateCurrentWeeklyReport();
 
     expect(generateWeekly).toHaveBeenCalledOnce();
+    expect(loadSnapshot).toHaveBeenCalledTimes(2);
+  });
+
+  it('creates a structured progress version and reloads the hub', async () => {
+    const { controller, createProgress, loadSnapshot } = setup();
+    await controller.initialize();
+    const draft = {
+      topic: '精恭纺验收分类',
+      reportCategory: 'project_acceptance' as const,
+      primaryProjectId: 'project-a',
+      occurredAt: '2026-08-11T10:00:00+08:00',
+      sources: ['08_Meetings/2026-08/meeting-a.md'],
+      statements: [{
+        kind: 'fact' as const,
+        text: '已确认四类验收事项。',
+        sourceRefs: ['08_Meetings/2026-08/meeting-a.md'],
+      }],
+      evidence: [{
+        kind: 'confirmed_decision' as const,
+        summary: '会议形成四类划分结论',
+        sourceRef: '08_Meetings/2026-08/meeting-a.md',
+      }],
+      selfEvidence: [],
+      agentEvidence: [],
+    };
+
+    await controller.createProgressVersion(draft);
+
+    expect(createProgress).toHaveBeenCalledWith(draft);
+    expect(loadSnapshot).toHaveBeenCalledTimes(2);
+  });
+
+  it('creates a material gap for an explicit progress version and reloads the hub', async () => {
+    const { controller, createMaterialGap, loadSnapshot } = setup();
+    await controller.initialize();
+    const input = {
+      progressId: 'progress-a',
+      progressVersion: 2,
+      missing: {
+        kind: 'numeric' as const,
+        description: '四类事项的准确数量',
+        purpose: '精恭纺验收周报',
+      },
+      searches: [],
+      suggestedContact: null,
+    };
+
+    await controller.registerMaterialGap(input);
+
+    expect(createMaterialGap).toHaveBeenCalledWith(input);
     expect(loadSnapshot).toHaveBeenCalledTimes(2);
   });
 

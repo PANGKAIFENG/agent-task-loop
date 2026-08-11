@@ -4,6 +4,8 @@ import { fireEvent } from '@testing-library/react';
 import { WorkspaceLeaf } from 'obsidian';
 import { describe, expect, it, vi } from 'vitest';
 
+import type { ProgressDraft } from '../../../src/domain/progress.js';
+import type { CreateMaterialGapInput } from '../../../src/services/create-material-gap.js';
 import type {
   WorkProgressHubState,
 } from '../../../src/obsidian-plugin/work-progress-hub-controller.js';
@@ -110,16 +112,61 @@ function setup(initial = readyState()) {
     deferWeeklyReport: vi.fn(async () => undefined),
     generateCurrentWeeklyReport: vi.fn(async () => undefined),
     retrySource: vi.fn(async () => undefined),
+    createProgressVersion: vi.fn(async () => undefined),
+    registerMaterialGap: vi.fn(async () => undefined),
     dispose: vi.fn(),
   };
   const openPath = vi.fn(async () => undefined);
   const requestWeeklyFeedback = vi.fn(async () => '压缩背景，补充输出。');
+  const progressDraft = {
+    topic: '精恭纺验收分类',
+    reportCategory: 'project_acceptance' as const,
+    primaryProjectId: 'project-a',
+    occurredAt: '2026-08-11T10:00:00+08:00',
+    sources: ['08_Meetings/2026-08/meeting-a.md'],
+    statements: [{
+      kind: 'fact' as const,
+      text: '已确认四类验收事项。',
+      sourceRefs: ['08_Meetings/2026-08/meeting-a.md'],
+    }],
+    evidence: [{
+      kind: 'confirmed_decision' as const,
+      summary: '会议形成四类划分结论',
+      sourceRef: '08_Meetings/2026-08/meeting-a.md',
+    }],
+    selfEvidence: [],
+    agentEvidence: [],
+  };
+  const materialGap = {
+    progressId: 'progress-a',
+    progressVersion: 2,
+    missing: {
+      kind: 'numeric' as const,
+      description: '四类事项的准确数量',
+      purpose: '精恭纺验收周报',
+    },
+    searches: [],
+    suggestedContact: null,
+  };
+  const requestProgressDraft = vi.fn(async (): Promise<ProgressDraft | null> => progressDraft);
+  const requestMaterialGap = vi.fn(
+    async (): Promise<CreateMaterialGapInput | null> => materialGap,
+  );
   const view = new WorkProgressView(new WorkspaceLeaf(), {
     createController: () => controller as never,
     openPath,
     requestWeeklyFeedback,
+    requestProgressDraft,
+    requestMaterialGap,
   });
-  return { controller, openPath, requestWeeklyFeedback, view };
+  return {
+    controller,
+    openPath,
+    requestWeeklyFeedback,
+    requestProgressDraft,
+    requestMaterialGap,
+    view,
+  };
 }
 
 describe('WorkProgressView', () => {
@@ -207,6 +254,64 @@ describe('WorkProgressView', () => {
       '压缩背景，补充输出。',
     );
     expect(controller.deferWeeklyReport).toHaveBeenCalledWith('weekly-2026-W33', 2);
+  });
+
+  it('offers structured creation actions on the progress and materials tabs', async () => {
+    const {
+      controller,
+      requestProgressDraft,
+      requestMaterialGap,
+      view,
+    } = setup();
+    await view.onOpen();
+
+    fireEvent.click([...view.contentEl.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
+      .find((tab) => tab.textContent?.includes('工作进展'))!);
+    const createProgress = view.contentEl.querySelector<HTMLButtonElement>(
+      '[data-action="create-progress"]',
+    );
+    expect(createProgress?.textContent).toContain('新建进展');
+    fireEvent.click(createProgress!);
+    await vi.waitFor(() => expect(controller.createProgressVersion).toHaveBeenCalledOnce());
+    expect(requestProgressDraft).toHaveBeenCalledOnce();
+
+    fireEvent.click([...view.contentEl.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
+      .find((tab) => tab.textContent?.includes('待补材料'))!);
+    const createGap = view.contentEl.querySelector<HTMLButtonElement>(
+      '[data-action="create-material-gap"]',
+    );
+    expect(createGap?.textContent).toContain('登记缺口');
+    fireEvent.click(createGap!);
+    await vi.waitFor(() => expect(controller.registerMaterialGap).toHaveBeenCalledOnce());
+    expect(requestMaterialGap).toHaveBeenCalledWith(readyState().snapshot!.progress);
+  });
+
+  it('does not write when a structured creation modal is cancelled', async () => {
+    const {
+      controller,
+      requestProgressDraft,
+      requestMaterialGap,
+      view,
+    } = setup();
+    requestProgressDraft.mockResolvedValueOnce(null);
+    requestMaterialGap.mockResolvedValueOnce(null);
+    await view.onOpen();
+
+    fireEvent.click([...view.contentEl.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
+      .find((tab) => tab.textContent?.includes('工作进展'))!);
+    fireEvent.click(view.contentEl.querySelector<HTMLButtonElement>(
+      '[data-action="create-progress"]',
+    )!);
+    await vi.waitFor(() => expect(requestProgressDraft).toHaveBeenCalledOnce());
+    expect(controller.createProgressVersion).not.toHaveBeenCalled();
+
+    fireEvent.click([...view.contentEl.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
+      .find((tab) => tab.textContent?.includes('待补材料'))!);
+    fireEvent.click(view.contentEl.querySelector<HTMLButtonElement>(
+      '[data-action="create-material-gap"]',
+    )!);
+    await vi.waitFor(() => expect(requestMaterialGap).toHaveBeenCalledOnce());
+    expect(controller.registerMaterialGap).not.toHaveBeenCalled();
   });
 
   it('shows durable DingTalk delivery, failure, conflict, and unconfigured states', async () => {

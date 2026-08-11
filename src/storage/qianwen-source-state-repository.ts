@@ -1,5 +1,5 @@
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { z } from 'zod';
 
@@ -7,6 +7,14 @@ import type {
   QianwenRecordingStatus,
   QianwenSourceSnapshot,
 } from '../obsidian-plugin/qianwen-source-state.js';
+import {
+  assertVaultWriteAllowed,
+  type VaultWriteAuthorization,
+} from './task-paths.js';
+import {
+  acquireSafeFileLock,
+  reclaimExpiredSafeFileLock,
+} from './file-io.js';
 
 export interface QianwenPersistedRecordingVersion {
   id: string;
@@ -38,8 +46,26 @@ export interface QianwenSourceRuntimeState {
 }
 
 export interface QianwenSourceStateRepository {
+  withLock?<T>(operation: () => Promise<T>): Promise<T>;
   load(): Promise<QianwenSourceRuntimeState>;
   save(state: QianwenSourceRuntimeState): Promise<void>;
+}
+
+const LOCK_LEASE_MS = 5 * 60 * 1000;
+const LOCK_RETRY_MS = 20;
+const LOCK_ATTEMPTS = 250;
+
+export class QianwenSourceStateLockTimeoutError extends Error {
+  readonly code = 'qianwen_source_state_lock_timeout';
+
+  constructor() {
+    super('千问听记同步正在运行，请稍后重试');
+    this.name = 'QianwenSourceStateLockTimeoutError';
+  }
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 const EMPTY_STATE: QianwenSourceRuntimeState = {
@@ -118,9 +144,48 @@ function parseState(value: unknown): QianwenSourceRuntimeState {
 
 export class FileQianwenSourceStateRepository implements QianwenSourceStateRepository {
   private readonly path: string;
+  private readonly lockRoot: string;
+  private readonly writeAuthorization: VaultWriteAuthorization | undefined;
 
-  constructor(private readonly runtimeRoot: string) {
+  constructor(
+    private readonly runtimeRoot: string,
+    options: { writeAuthorization?: VaultWriteAuthorization } = {},
+  ) {
     this.path = join(runtimeRoot, 'qianwen-source-state.json');
+    this.lockRoot = join(runtimeRoot, 'qianwen-source-locks');
+    this.writeAuthorization = options.writeAuthorization;
+  }
+
+  async withLock<T>(operation: () => Promise<T>): Promise<T> {
+    assertVaultWriteAllowed(this.runtimeRoot, this.writeAuthorization);
+    const lockPath = join(this.lockRoot, 'sync.lock');
+    const boundary = {
+      vaultRoot: dirname(this.runtimeRoot),
+      tasksRoot: this.runtimeRoot,
+      subtree: this.lockRoot,
+    };
+    for (let attempt = 0; attempt < LOCK_ATTEMPTS; attempt += 1) {
+      const now = new Date();
+      let lock = await acquireSafeFileLock(lockPath, boundary, {
+        acquiredAt: now,
+        leaseMs: LOCK_LEASE_MS,
+      });
+      if (lock === null && await reclaimExpiredSafeFileLock(lockPath, boundary, now)) {
+        lock = await acquireSafeFileLock(lockPath, boundary, {
+          acquiredAt: now,
+          leaseMs: LOCK_LEASE_MS,
+        });
+      }
+      if (lock !== null) {
+        try {
+          return await operation();
+        } finally {
+          await lock.release();
+        }
+      }
+      if (attempt + 1 < LOCK_ATTEMPTS) await delay(LOCK_RETRY_MS);
+    }
+    throw new QianwenSourceStateLockTimeoutError();
   }
 
   async load(): Promise<QianwenSourceRuntimeState> {
@@ -141,6 +206,7 @@ export class FileQianwenSourceStateRepository implements QianwenSourceStateRepos
   }
 
   async save(state: QianwenSourceRuntimeState): Promise<void> {
+    assertVaultWriteAllowed(this.runtimeRoot, this.writeAuthorization);
     await mkdir(this.runtimeRoot, { recursive: true, mode: 0o700 });
     const temporaryPath = `${this.path}.tmp-${process.pid}-${Date.now()}`;
     await writeFile(temporaryPath, `${JSON.stringify(state, null, 2)}\n`, {

@@ -13,6 +13,10 @@ await mkdir(outputDirectory, { recursive: true });
 await new Promise((resolve, reject) => {
   const child = spawn('/usr/bin/xcrun', [
     'clang',
+    '-arch',
+    'arm64',
+    '-arch',
+    'x86_64',
     '-fobjc-arc',
     '-framework',
     'AppKit',
@@ -34,4 +38,4 @@ await new Promise((resolve, reject) => {
     else reject(new Error(`Qianwen helper compilation failed with exit code ${String(code)}`));
   });
 });
-await chmod(output, 0o700);
+await chmod(output, 0o755);

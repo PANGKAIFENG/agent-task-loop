@@ -1,4 +1,5 @@
 import type {
+  CreateMeetingNoteResult,
   DingTalkMeetingSource,
   MeetingNoteController,
   QianwenMeetingEvidence,
@@ -16,7 +17,7 @@ import {
 export interface MaterializeMeetingMatchContext {
   sourceRepository: QianwenSourceStateRepository;
   decisionRepository: MeetingMatchDecisionRepository;
-  meetingNotes: Pick<MeetingNoteController, 'create' | 'createStandalone'>;
+  meetingNotes: Pick<MeetingNoteController, 'create' | 'createStandalone' | 'rollback'>;
   listCalendarSources(): Promise<DingTalkMeetingSource[]>;
   readCalendarSource(path: string): Promise<string>;
   readMeetingNote(path: string): Promise<string>;
@@ -115,8 +116,9 @@ export async function confirmMeetingMatchWithEvidence(
     clock: context.clock,
     id: context.id,
   }, input);
+  let meeting: CreateMeetingNoteResult | undefined;
   try {
-    const meeting = await context.meetingNotes.create({
+    meeting = await context.meetingNotes.create({
       eventPath: calendar.eventPath,
       meetingType: 'discussion',
       participants: calendar.participants ?? [],
@@ -132,6 +134,13 @@ export async function confirmMeetingMatchWithEvidence(
       meetingCreated: meeting.created,
     };
   } catch (error) {
+    if (meeting !== undefined) {
+      try {
+        await context.meetingNotes.rollback(meeting);
+      } catch {
+        // The original evidence error remains the actionable failure.
+      }
+    }
     await compensateNewDecision(context, previousDecisionId, decision);
     throw error;
   }

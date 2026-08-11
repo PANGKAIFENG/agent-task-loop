@@ -430,6 +430,34 @@ function replaceTranscriptRegion(body: string, transcript: string): string {
   ].join('');
 }
 
+function replaceQianwenSummaryRegion(
+  body: string,
+  qianwen: QianwenMeetingEvidence,
+): string {
+  const start = body.indexOf(QIANWEN_SUMMARY_START);
+  const end = body.indexOf(QIANWEN_SUMMARY_END, start + QIANWEN_SUMMARY_START.length);
+  const summary = qianwenSummaryRegion(qianwen).slice(0, -1).join('\n');
+  if (start !== -1 && end !== -1 && end > start) {
+    return [
+      body.slice(0, start),
+      summary,
+      body.slice(end + QIANWEN_SUMMARY_END.length),
+    ].join('');
+  }
+  if (start !== -1 || end !== -1) throw new Error('千问 AI 纪要区域无效');
+
+  const analysisStart = body.lastIndexOf(MEETING_ANALYSIS_START);
+  if (analysisStart === -1) throw new Error('会议分析区域无效');
+  const before = body.slice(0, analysisStart);
+  return [
+    before,
+    before.endsWith('\n') ? '' : '\n',
+    summary,
+    '\n\n',
+    body.slice(analysisStart),
+  ].join('');
+}
+
 function existingInputHash(
   raw: string,
   data: Record<string, unknown>,
@@ -471,6 +499,9 @@ function existingInputHash(
 
 export function updateMeetingNote(raw: string, input: RenderMeetingNoteInput): string {
   if (input.transcript.trim() === '') throw new Error('会议听记不能为空');
+  if (input.qianwen !== undefined && !validQianwenEvidence(input.qianwen)) {
+    throw new Error('千问听记证据无效');
+  }
   const document = parseTaskDocument(raw);
   const expectedCalendarEvent = `[[${input.source.eventPath.slice(0, -3)}]]`;
   if (
@@ -507,12 +538,56 @@ export function updateMeetingNote(raw: string, input: RenderMeetingNoteInput): s
     participants: normalizedParticipants(input.participants),
     attachments: normalizedAttachments(input.attachments).map(attachmentFrontmatter),
     analysis_status: analysisStatus,
+    ...(input.qianwen === undefined ? {} : {
+      qianwen_recording_id: input.qianwen.recordingId,
+      qianwen_title: input.qianwen.title,
+      qianwen_created_at: input.qianwen.createdAt,
+      qianwen_duration_seconds: input.qianwen.durationSeconds,
+      qianwen_source_url: input.qianwen.sourceUrl,
+    }),
   };
-  return serializeTaskDocument(data, replaceTranscriptRegion(document.body, input.transcript));
+  const body = replaceTranscriptRegion(document.body, input.transcript);
+  return serializeTaskDocument(
+    data,
+    input.qianwen === undefined ? body : replaceQianwenSummaryRegion(body, input.qianwen),
+  );
 }
 
 export class MeetingNoteController {
+  private readonly rollbacks = new WeakMap<
+    CreateMeetingNoteResult,
+    { path: string; before: string; after: string }
+  >();
+
   constructor(private readonly fileSystem: MeetingNoteFileSystem) {}
+
+  private async updateExisting(
+    path: string,
+    input: RenderMeetingNoteInput,
+  ): Promise<CreateMeetingNoteResult> {
+    let before = '';
+    let after = '';
+    await this.fileSystem.process(path, (raw) => {
+      before = raw;
+      after = updateMeetingNote(raw, input);
+      return after;
+    });
+    const result: CreateMeetingNoteResult = { created: false, path };
+    this.rollbacks.set(result, { path, before, after });
+    return result;
+  }
+
+  async rollback(result: CreateMeetingNoteResult): Promise<void> {
+    const rollback = this.rollbacks.get(result);
+    if (rollback === undefined) return;
+    try {
+      await this.fileSystem.process(rollback.path, (current) => (
+        current === rollback.after ? rollback.before : current
+      ));
+    } finally {
+      this.rollbacks.delete(result);
+    }
+  }
 
   private async existingNotePath(source: DingTalkMeetingSource): Promise<string | null> {
     const calendarEvent = `[[${source.eventPath.slice(0, -3)}]]`;
@@ -568,13 +643,11 @@ export class MeetingNoteController {
     const existingPath = await this.existingNotePath(source);
     const updateInput = { ...input, source };
     if (existingPath !== null) {
-      await this.fileSystem.process(existingPath, (raw) => updateMeetingNote(raw, updateInput));
-      return { created: false, path: existingPath };
+      return this.updateExisting(existingPath, updateInput);
     }
     const path = buildMeetingNotePath(source);
     if (await this.fileSystem.exists(path)) {
-      await this.fileSystem.process(path, (raw) => updateMeetingNote(raw, updateInput));
-      return { created: false, path };
+      return this.updateExisting(path, updateInput);
     }
     const directory = path.slice(0, path.lastIndexOf('/'));
     await this.fileSystem.ensureDirectory(directory);
@@ -590,8 +663,7 @@ export class MeetingNoteController {
     } catch (error) {
       const racedPath = await this.existingNotePath(source);
       if (racedPath !== null) {
-        await this.fileSystem.process(racedPath, (raw) => updateMeetingNote(raw, updateInput));
-        return { created: false, path: racedPath };
+        return this.updateExisting(racedPath, updateInput);
       }
       throw error;
     }

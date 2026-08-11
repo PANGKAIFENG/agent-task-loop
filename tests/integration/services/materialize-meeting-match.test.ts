@@ -153,4 +153,45 @@ describe('meeting match evidence materialization', () => {
     expect(raw).toContain('match_status: no_calendar');
     expect(raw).toContain('qianwen_recording_id: recording-a');
   });
+
+  it('restores an existing meeting note when post-write evidence validation fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'atl-meeting-match-rollback-'));
+    roots.push(root);
+    await mkdir(dirname(join(root, EVENT_PATH)), { recursive: true });
+    await writeFile(join(root, EVENT_PATH), eventDocument(), 'utf8');
+    const meetingNotes = new MeetingNoteController(fileSystem(root));
+    const existing = await meetingNotes.create({
+      eventPath: EVENT_PATH,
+      meetingType: 'discussion',
+      participants: [],
+      transcript: '用户原有正文',
+    });
+    await writeFile(join(root, existing.path), `${await readFile(join(root, existing.path), 'utf8')}\n人工补充。\n`, 'utf8');
+    const before = await readFile(join(root, existing.path), 'utf8');
+    const ids = ['decision-rollback', 'decision-rollback-revoked'];
+
+    await expect(confirmMeetingMatchWithEvidence({
+      sourceRepository: { load: async () => sourceState(), save: async () => undefined },
+      decisionRepository: new FileMeetingMatchDecisionRepository(root),
+      meetingNotes,
+      listCalendarSources: async () => [{
+        eventPath: EVENT_PATH,
+        eventKeyHash: EVENT_HASH,
+        title: '精恭纺验收推进会议',
+        scheduled: '2026-08-10T17:00:00+08:00',
+        meetingDate: '2026-08-10',
+        durationMinutes: 60,
+      }],
+      readCalendarSource: async (path) => readFile(join(root, path), 'utf8'),
+      readMeetingNote: async () => before,
+      clock: () => new Date('2026-08-11T14:00:00.000Z'),
+      id: () => ids.shift() ?? 'unexpected',
+    }, {
+      recordingId: 'recording-a',
+      eventKeyHash: EVENT_HASH,
+    })).rejects.toMatchObject({ code: 'meeting_evidence_unavailable' });
+
+    await expect(readFile(join(root, existing.path), 'utf8')).resolves.toBe(before);
+    await expect(new FileMeetingMatchDecisionRepository(root).listActive()).resolves.toEqual([]);
+  });
 });

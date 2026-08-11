@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -8,6 +8,28 @@ import { syncQianwenSource } from '../../../src/services/sync-qianwen-source.js'
 import { FileQianwenSourceStateRepository } from '../../../src/storage/qianwen-source-state-repository.js';
 
 describe('sync Qianwen source', () => {
+  it('rejects persistent state writes outside temporary storage without authorization', async () => {
+    const root = await mkdtemp(join(process.cwd(), '.atl-qianwen-auth-'));
+    const scan = vi.fn(async () => ({
+      connectorStatus: 'connected' as const,
+      scannedAt: '2026-08-11T08:00:01+08:00',
+      range: { startDate: '2026-08-05', endDate: '2026-08-11' },
+      recordings: [],
+    }));
+    try {
+      await expect(syncQianwenSource({
+        repository: new FileQianwenSourceStateRepository(root),
+        connector: { scan },
+        now: new Date('2026-08-11T08:00:00+08:00'),
+        timeZone: 'Asia/Shanghai',
+        mode: 'manual',
+      })).rejects.toThrow('Vault writes are disabled');
+      expect(scan).not.toHaveBeenCalled();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('persists a scheduled claim before scanning and skips the repeated startup', async () => {
     const root = await mkdtemp(join(tmpdir(), 'atl-qianwen-state-'));
     const repository = new FileQianwenSourceStateRepository(root);
@@ -50,6 +72,84 @@ describe('sync Qianwen source', () => {
     expect((await stat(join(root, 'qianwen-source-state.json'))).mode & 0o777).toBe(0o600);
     expect(JSON.parse(await readFile(join(root, 'qianwen-source-state.json'), 'utf8')))
       .toMatchObject({ schemaVersion: 2, lastAttemptedDate: '2026-08-10' });
+  });
+
+  it('serializes concurrent synchronizations and preserves both recording updates', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'atl-qianwen-concurrent-'));
+    const left = new FileQianwenSourceStateRepository(root);
+    const right = new FileQianwenSourceStateRepository(root);
+    let releaseLeft!: () => void;
+    let leftEntered!: () => void;
+    let first: Promise<unknown> | undefined;
+    let second: Promise<unknown> | undefined;
+    const leftReady = new Promise<void>((resolve) => { leftEntered = resolve; });
+    const leftRelease = new Promise<void>((resolve) => { releaseLeft = resolve; });
+    const rightScan = vi.fn(async () => ({
+      connectorStatus: 'connected' as const,
+      scannedAt: '2026-08-11T08:01:00+08:00',
+      range: { startDate: '2026-08-05', endDate: '2026-08-11' },
+      recordings: [{
+        id: 'recording-right',
+        title: '右侧同步',
+        createdAt: '2026-08-11T07:00:00+08:00',
+        durationSeconds: 300,
+        sourceUrl: 'https://qianwen.com/chat/right',
+        transcriptComplete: true,
+        transcript: '右侧原文',
+        summary: '右侧摘要',
+      }],
+    }));
+    try {
+      first = syncQianwenSource({
+        repository: left,
+        connector: { scan: async () => {
+          leftEntered();
+          await leftRelease;
+          return {
+            connectorStatus: 'connected' as const,
+            scannedAt: '2026-08-11T08:00:00+08:00',
+            range: { startDate: '2026-08-05', endDate: '2026-08-11' },
+            recordings: [{
+              id: 'recording-left',
+              title: '左侧同步',
+              createdAt: '2026-08-11T06:00:00+08:00',
+              durationSeconds: 300,
+              sourceUrl: 'https://qianwen.com/chat/left',
+              transcriptComplete: true,
+              transcript: '左侧原文',
+              summary: '左侧摘要',
+            }],
+          };
+        } },
+        now: new Date('2026-08-11T08:00:00+08:00'),
+        timeZone: 'Asia/Shanghai',
+        mode: 'manual',
+      });
+      await leftReady;
+      second = syncQianwenSource({
+        repository: right,
+        connector: { scan: rightScan },
+        now: new Date('2026-08-11T08:01:00+08:00'),
+        timeZone: 'Asia/Shanghai',
+        mode: 'manual',
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(rightScan).not.toHaveBeenCalled();
+      releaseLeft();
+      await Promise.all([first, second]);
+
+      expect(Object.keys((await left.load()).recordings).sort()).toEqual([
+        'recording-left',
+        'recording-right',
+      ]);
+    } finally {
+      releaseLeft?.();
+      await Promise.allSettled([first, second].filter(
+        (operation): operation is Promise<unknown> => operation !== undefined,
+      ));
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('preserves the last successful result when a later connector scan fails', async () => {

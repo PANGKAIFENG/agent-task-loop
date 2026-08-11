@@ -109,50 +109,58 @@ export async function syncQianwenSource(input: SyncQianwenSourceInput): Promise<
   | { status: 'not_due' }
   | { status: 'completed'; snapshot: ReturnType<typeof normalizeQianwenSourceScan> }
 > {
-  const current = await input.repository.load();
-  const claim = input.mode === 'manual'
-    ? {
-        targetDate: qianwenLocalDate(input.now, input.timeZone),
-        checkpoint: { lastAttemptedDate: qianwenLocalDate(input.now, input.timeZone) },
-      }
-    : claimQianwenScheduledScan({
-        now: input.now,
-        lastAttemptedDate: current.lastAttemptedDate,
-        timeZone: input.timeZone,
-      });
-  if (claim === null) return { status: 'not_due' };
+  const synchronize = async (): Promise<
+    | { status: 'not_due' }
+    | { status: 'completed'; snapshot: ReturnType<typeof normalizeQianwenSourceScan> }
+  > => {
+    const current = await input.repository.load();
+    const claim = input.mode === 'manual'
+      ? {
+          targetDate: qianwenLocalDate(input.now, input.timeZone),
+          checkpoint: { lastAttemptedDate: qianwenLocalDate(input.now, input.timeZone) },
+        }
+      : claimQianwenScheduledScan({
+          now: input.now,
+          lastAttemptedDate: current.lastAttemptedDate,
+          timeZone: input.timeZone,
+        });
+    if (claim === null) return { status: 'not_due' };
 
-  await input.repository.save(stateWithCheckpoint(current, claim.targetDate));
+    await input.repository.save(stateWithCheckpoint(current, claim.targetDate));
 
-  let sourceScan: QianwenSourceScanInput;
-  try {
-    sourceScan = await input.connector.scan({
-      startDate: shiftDate(claim.targetDate, -6),
-      endDate: claim.targetDate,
-    });
-  } catch {
-    sourceScan = {
-      connectorStatus: 'network_failed',
-      scannedAt: input.now.toISOString(),
-      range: {
+    let sourceScan: QianwenSourceScanInput;
+    try {
+      sourceScan = await input.connector.scan({
         startDate: shiftDate(claim.targetDate, -6),
         endDate: claim.targetDate,
-      },
-      recordings: [],
+      });
+    } catch {
+      sourceScan = {
+        connectorStatus: 'network_failed',
+        scannedAt: input.now.toISOString(),
+        range: {
+          startDate: shiftDate(claim.targetDate, -6),
+          endDate: claim.targetDate,
+        },
+        recordings: [],
+      };
+    }
+    const snapshot = normalizeQianwenSourceScan(sourceScan);
+    const next: QianwenSourceRuntimeState = {
+      schemaVersion: 2,
+      lastAttemptedDate: claim.targetDate,
+      lastScan: snapshot,
+      lastSuccessfulScan: snapshot.connector.resultKind === 'success'
+        ? snapshot
+        : current.lastSuccessfulScan,
+      recordings: snapshot.connector.resultKind === 'success'
+        ? mergeRecordings(current.recordings, sourceScan, snapshot)
+        : current.recordings,
     };
-  }
-  const snapshot = normalizeQianwenSourceScan(sourceScan);
-  const next: QianwenSourceRuntimeState = {
-    schemaVersion: 2,
-    lastAttemptedDate: claim.targetDate,
-    lastScan: snapshot,
-    lastSuccessfulScan: snapshot.connector.resultKind === 'success'
-      ? snapshot
-      : current.lastSuccessfulScan,
-    recordings: snapshot.connector.resultKind === 'success'
-      ? mergeRecordings(current.recordings, sourceScan, snapshot)
-      : current.recordings,
+    await input.repository.save(next);
+    return { status: 'completed', snapshot };
   };
-  await input.repository.save(next);
-  return { status: 'completed', snapshot };
+  return input.repository.withLock === undefined
+    ? synchronize()
+    : input.repository.withLock(synchronize);
 }

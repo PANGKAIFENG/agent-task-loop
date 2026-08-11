@@ -203,6 +203,42 @@ describe('meeting note rendering', () => {
     expect(document.body).toContain('人工补充，不属于 ATL 管理区。');
   });
 
+  it('adds Qianwen metadata and the managed summary when binding an existing meeting note', () => {
+    const source = parseDingTalkMeetingSource(EVENT_PATH, eventDocument());
+    const original = `${renderMeetingNote({
+      source,
+      meetingType: 'discussion',
+      participants: ['旧参与人'],
+      transcript: '手工粘贴的旧听记',
+    })}\n人工补充，不属于 ATL 管理区。\n`;
+
+    const updated = updateMeetingNote(original, {
+      source,
+      meetingType: 'discussion',
+      participants: ['旧参与人'],
+      transcript: '千问完整原文',
+      qianwen: {
+        recordingId: 'recording-existing',
+        title: '团队目标讨论',
+        createdAt: '2026-07-22T14:42:00+08:00',
+        durationSeconds: 720,
+        sourceUrl: 'qianwen.com/chat/recording-existing',
+        summary: '## 千问结论\n\n- 确认目标。',
+      },
+    });
+    const document = parseTaskDocument(updated);
+
+    expect(document.data).toMatchObject({
+      qianwen_recording_id: 'recording-existing',
+      qianwen_title: '团队目标讨论',
+      qianwen_created_at: '2026-07-22T14:42:00+08:00',
+      qianwen_duration_seconds: 720,
+      qianwen_source_url: 'qianwen.com/chat/recording-existing',
+    });
+    expect(extractQianwenSummary(updated)).toBe('## 千问结论\n\n- 确认目标。');
+    expect(document.body).toContain('人工补充，不属于 ATL 管理区。');
+  });
+
   it('rejects a blank transcript', () => {
     const source = parseDingTalkMeetingSource(EVENT_PATH, eventDocument());
 
