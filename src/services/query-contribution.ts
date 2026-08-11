@@ -2,7 +2,7 @@ import type { Project } from '../domain/project.js';
 import type { Task } from '../domain/task.js';
 import type { AuditEvent } from '../storage/contracts.js';
 
-export type ContributionRange = '7d' | '12w' | '1y';
+export type ContributionRange = '7d' | '12w' | '26w' | '1y';
 
 export interface ContributionSnapshot {
   range: ContributionRange;
@@ -15,6 +15,7 @@ export interface ContributionSnapshot {
   days: Array<{
     date: string;
     completed: number;
+    outputCount: number;
     projectCount: number;
     level: 0 | 1 | 2 | 3 | 4;
   }>;
@@ -32,7 +33,10 @@ export interface ContributionSnapshot {
     completedAt: string;
     artifactRef: string | null;
   }>;
-  coverage: { historicalCompletionDateUnavailable: number };
+  coverage: {
+    historicalCompletionDateUnavailable: number;
+    tasksMissingCompletionDate: Array<{ taskId: string; title: string }>;
+  };
 }
 
 export interface QueryContributionInput {
@@ -80,16 +84,20 @@ function rangeLength(range: ContributionRange): number {
   switch (range) {
     case '7d': return 7;
     case '12w': return 84;
+    case '26w': return 182;
     case '1y': return 365;
   }
 }
 
-function isCompletion(event: AuditEvent): boolean {
+export function isTaskCompletionEvent(event: AuditEvent): boolean {
   return (
     event.event === 'task.reviewed' && event.details?.decision === 'approve'
   ) || (
     event.event === 'task.lifecycle_reconciled'
     && event.details?.status === 'done'
+  ) || (
+    event.event === 'task.completion_date_recorded'
+    && event.details?.source === 'manual_backfill'
   );
 }
 
@@ -99,6 +107,10 @@ function projectName(task: Task, projectsById: Map<string, Project>): string {
     : projectsById.get(task.projectId)?.name ?? '未归类';
 }
 
+function taskTitle(task: Task): string {
+  return task.title.trim() === '' ? '未命名任务' : task.title;
+}
+
 function completionMap(
   tasksById: Map<string, Task>,
   auditEvents: AuditEvent[],
@@ -106,7 +118,7 @@ function completionMap(
 ): Map<string, Completion> {
   const map = new Map<string, Completion>();
   auditEvents.forEach((event, order) => {
-    if (!isCompletion(event) || event.taskId === undefined) return;
+    if (!isTaskCompletionEvent(event) || event.taskId === undefined) return;
     const task = tasksById.get(event.taskId);
     if (task === undefined) return;
     const timestamp = Date.parse(event.at);
@@ -156,6 +168,7 @@ export function queryContribution(input: QueryContributionInput): ContributionSn
     return {
       date,
       completed,
+      outputCount: values.reduce((sum, { task }) => sum + task.artifactRefs.length, 0),
       projectCount: projectIds.size,
       level: Math.min(completed, 4) as 0 | 1 | 2 | 3 | 4,
     };
@@ -187,7 +200,7 @@ export function queryContribution(input: QueryContributionInput): ContributionSn
     };
     summary.completed += 1;
     summary.artifactCount += task.artifactRefs.length;
-    if (summary.evidenceTitles.length < 2) summary.evidenceTitles.push(task.title);
+    if (summary.evidenceTitles.length < 2) summary.evidenceTitles.push(taskTitle(task));
     summaries.set(key, summary);
   }
   const projectSummaries = [...summaries.values()].sort((left, right) => (
@@ -195,9 +208,14 @@ export function queryContribution(input: QueryContributionInput): ContributionSn
   ));
 
   const completionTaskIds = new Set(completions.map(({ task }) => task.taskId));
-  const historicalCompletionDateUnavailable = input.tasks.filter((task) => (
+  const tasksMissingCompletionDate = input.tasks.filter((task) => (
     task.status === 'done' && !completionTaskIds.has(task.taskId)
-  )).length;
+  )).sort((left, right) => (
+    right.updatedAt.localeCompare(left.updatedAt) || left.taskId.localeCompare(right.taskId)
+  )).map((task) => ({
+    taskId: task.taskId,
+    title: taskTitle(task),
+  }));
 
   return {
     range: input.range,
@@ -211,11 +229,14 @@ export function queryContribution(input: QueryContributionInput): ContributionSn
     projectSummaries,
     outputs: selectedCompletions.map(({ task, event }) => ({
       taskId: task.taskId,
-      title: task.title,
+      title: taskTitle(task),
       projectName: projectName(task, projectsById),
       completedAt: event.at,
       artifactRef: task.artifactRefs.at(-1) ?? null,
     })),
-    coverage: { historicalCompletionDateUnavailable },
+    coverage: {
+      historicalCompletionDateUnavailable: tasksMissingCompletionDate.length,
+      tasksMissingCompletionDate,
+    },
   };
 }

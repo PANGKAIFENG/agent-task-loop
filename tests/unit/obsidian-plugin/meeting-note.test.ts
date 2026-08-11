@@ -4,14 +4,31 @@ import {
   buildMeetingNotePath,
   buildStandaloneMeetingNotePath,
   extractQianwenSummary,
+  meetingAnalysisInputHash,
   parseDingTalkMeetingSource,
   renderMeetingNote,
   renderStandaloneMeetingNote,
+  updateMeetingNote,
 } from '../../../src/obsidian-plugin/meeting-note.js';
+import type { MeetingAttachment } from '../../../src/obsidian-plugin/meeting-attachment.js';
 import { parseTaskDocument } from '../../../src/storage/frontmatter.js';
 
 const EVENT_HASH = `sha256:${'a'.repeat(64)}`;
 const EVENT_PATH = `TaskNotes/DingTalk/sha256-${'a'.repeat(64)}.md`;
+
+function attachment(overrides: Partial<MeetingAttachment> = {}): MeetingAttachment {
+  return {
+    id: `sha256:${'b'.repeat(64)}`,
+    name: '访谈资料.pdf',
+    path: `08_Meetings/2026-07/attachments/${'a'.repeat(64)}/${'b'.repeat(12)}-访谈资料.pdf`,
+    mediaType: 'application/pdf',
+    size: 128,
+    role: 'reference',
+    analyzable: true,
+    includeInAnalysis: true,
+    ...overrides,
+  };
+}
 
 function eventDocument(overrides: Record<string, unknown> = {}): string {
   return [
@@ -78,6 +95,7 @@ describe('meeting note rendering', () => {
       meetingType: 'interview',
       participants: ['候选人', '面试官'],
       transcript,
+      attachments: [attachment()],
     });
     const document = parseTaskDocument(raw);
 
@@ -90,6 +108,16 @@ describe('meeting note rendering', () => {
       dingtalk_event_key_hash: EVENT_HASH,
       participants: ['候选人', '面试官'],
       analysis_status: 'pending',
+      attachments: [{
+        id: `sha256:${'b'.repeat(64)}`,
+        name: '访谈资料.pdf',
+        path: `08_Meetings/2026-07/attachments/${'a'.repeat(64)}/${'b'.repeat(12)}-访谈资料.pdf`,
+        media_type: 'application/pdf',
+        size: 128,
+        role: 'reference',
+        analyzable: true,
+        include_in_analysis: true,
+      }],
     });
     expect(JSON.stringify(document.data)).not.toContain('先谈目标');
     expect(document.body).toContain('> [!note]- 会议听记原文');
@@ -127,6 +155,52 @@ describe('meeting note rendering', () => {
     expect(document.body).toContain('<!-- ATL_QIANWEN_SUMMARY_START -->');
     expect(document.body).toContain('<!-- ATL_QIANWEN_SUMMARY_END -->');
     expect(extractQianwenSummary(raw)).toBe('## 千问结论\n\n- 确认目标。');
+  });
+
+  it('updates only managed transcript and fields while preserving analysis and manual body', () => {
+    const source = parseDingTalkMeetingSource(EVENT_PATH, eventDocument());
+    const originalTranscript = '第一版听记';
+    const originalAttachments = [attachment()];
+    const analyzedInputHash = meetingAnalysisInputHash({
+      source,
+      meetingType: 'discussion',
+      participants: ['旧参与人'],
+      transcript: originalTranscript,
+      attachments: originalAttachments,
+    });
+    const original = renderMeetingNote({
+      source,
+      meetingType: 'discussion',
+      participants: ['旧参与人'],
+      transcript: originalTranscript,
+      attachments: originalAttachments,
+    })
+      .replace('analysis_status: pending', [
+        'analysis_status: ready_for_confirm',
+        `analysis_input_hash: ${analyzedInputHash}`,
+      ].join('\n'))
+      .replace('尚未分析。', '已有的结构化总结。')
+      .concat('\n人工补充，不属于 ATL 管理区。\n');
+
+    const updated = updateMeetingNote(original, {
+      source,
+      meetingType: 'interview',
+      participants: ['新参与人'],
+      transcript: '第二版听记',
+      attachments: [attachment({ includeInAnalysis: false })],
+    });
+    const document = parseTaskDocument(updated);
+
+    expect(document.data).toMatchObject({
+      meeting_type: 'interview',
+      participants: ['新参与人'],
+      analysis_status: 'stale',
+      analysis_input_hash: analyzedInputHash,
+    });
+    expect(document.body).toContain('第二版听记');
+    expect(document.body).not.toContain('第一版听记');
+    expect(document.body).toContain('已有的结构化总结。');
+    expect(document.body).toContain('人工补充，不属于 ATL 管理区。');
   });
 
   it('rejects a blank transcript', () => {

@@ -12,14 +12,21 @@ import type {
   DingTalkRemoteSnapshot,
   DingTalkSyncResult,
 } from './dingtalk-calendar-types.js';
+import {
+  emptyWeeklyCoachDraftCollection,
+  normalizeWeeklyCoachDraftCollection,
+  type WeeklyCoachDraftCollection,
+} from '../services/weekly-coach-draft.js';
 
 export interface AtlPluginSettings {
   allowVaultManagement: boolean;
   taskCardThemeEnabled: boolean;
+  taskNotesFieldLayoutBackup?: unknown;
   capture: CaptureState;
   background: BackgroundSettings;
   dashboard: DashboardTokenCache;
   dingtalkCalendar: DingTalkCalendarSettings;
+  weeklyCoachDrafts: WeeklyCoachDraftCollection;
 }
 
 export interface CaptureState {
@@ -89,6 +96,7 @@ export const DEFAULT_SETTINGS: AtlPluginSettings = {
     lastError: null,
     events: {},
   },
+  weeklyCoachDrafts: emptyWeeklyCoachDraftCollection(),
 };
 
 function stringValue(value: unknown): string {
@@ -507,6 +515,11 @@ export function normalizeSettings(value: unknown): AtlPluginSettings {
   return {
     allowVaultManagement: root.allowVaultManagement === true,
     taskCardThemeEnabled: root.taskCardThemeEnabled !== false,
+    ...(
+      Object.hasOwn(root, 'taskNotesFieldLayoutBackup')
+        ? { taskNotesFieldLayoutBackup: root.taskNotesFieldLayoutBackup }
+        : {}
+    ),
     capture: {
       captureStateVersion: 2,
       lastSuccessfulScanAt: timestampValue(rawCapture.lastSuccessfulScanAt),
@@ -537,6 +550,7 @@ export function normalizeSettings(value: unknown): AtlPluginSettings {
     },
     dashboard,
     dingtalkCalendar,
+    weeklyCoachDrafts: normalizeWeeklyCoachDraftCollection(root.weeklyCoachDrafts),
   };
 }
 

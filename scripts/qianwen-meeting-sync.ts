@@ -196,6 +196,12 @@ async function writeReadyNotes(
       content,
       { encoding: 'utf8', flag: 'wx' },
     ),
+    process: async (path: string, transform: (content: string) => string) => {
+      const filePath = join(vaultRoot, path);
+      const updated = transform(await readFile(filePath, 'utf8'));
+      await writeFile(filePath, updated, 'utf8');
+      return updated;
+    },
     listMarkdownFiles: async (path: string) => markdownFiles(vaultRoot, path),
   };
   const controller = new MeetingNoteController(fileSystem);

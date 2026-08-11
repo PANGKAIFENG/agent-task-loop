@@ -16,6 +16,24 @@ export type ControlledTaskStatus = (typeof TASK_STATUSES)[number];
 export type TaskStatus = string;
 export type Priority = (typeof PRIORITIES)[number];
 
+export interface TaskBrief {
+  schemaVersion: 1;
+  objective: string;
+  nextAction: string;
+  completionCriteria: string;
+  updatedAt: string;
+}
+
+export const taskBriefSchema: z.ZodType<TaskBrief> = z
+  .object({
+    schemaVersion: z.literal(1),
+    objective: z.string().trim().min(1).max(4_000),
+    nextAction: z.string().trim().min(1).max(4_000),
+    completionCriteria: z.string().trim().min(1).max(4_000),
+    updatedAt: z.string().datetime({ offset: true }),
+  })
+  .strict();
+
 export const taskStatusSchema = z
   .string()
   .trim()
@@ -56,6 +74,7 @@ export interface Task {
   artifactRefs: string[];
   reviewFeedback: string | null;
   readyAt: string | null;
+  taskBrief?: TaskBrief | null | undefined;
   createdAt: string;
   updatedAt: string;
 }
@@ -94,6 +113,7 @@ export const taskSchema: z.ZodType<Task> = z
     artifactRefs: z.array(z.string()),
     reviewFeedback: z.string().nullable(),
     readyAt: z.string().nullable(),
+    taskBrief: taskBriefSchema.nullable().optional(),
     createdAt: z.string(),
     updatedAt: z.string(),
   })

@@ -54,6 +54,7 @@ const ERROR_MESSAGES = {
   invalid_structured_result: 'Claude returned an invalid structured result',
   invalid_research_result: 'Claude returned an invalid research result',
   claude_process_failed: 'Claude process failed',
+  claude_cancelled: 'Claude execution was cancelled',
 } as const;
 
 export type ClaudeDriverErrorCode = keyof typeof ERROR_MESSAGES;
@@ -72,6 +73,8 @@ export interface ProcessExecution {
   environment: NodeJS.ProcessEnv;
   input?: string;
   timeoutMs: number;
+  signal?: AbortSignal;
+  onStarted?(): void;
 }
 
 export interface ProcessResult {
@@ -117,7 +120,13 @@ export interface ClaudeStructuredInput<T> {
   jsonSchema: Record<string, unknown>;
   schema: ZodType<T>;
   timeoutMs: number;
+  signal?: AbortSignal;
+  onProgress?(progress: ClaudeStructuredProgress): void;
 }
+
+export type ClaudeStructuredProgress =
+  | { stage: 'model_started' }
+  | { stage: 'parsing' };
 
 export interface ClaudeStructuredExecutor {
   execute<T>(input: ClaudeStructuredInput<T>): Promise<T>;
@@ -136,6 +145,10 @@ function createDefaultExecutor(maxOutputBytes: number): ProcessExecutor {
   return {
     async execute(execution) {
       return new Promise((resolve, reject) => {
+        if (execution.signal?.aborted === true) {
+          reject(new Error('Process execution aborted'));
+          return;
+        }
         const child = spawn(execution.command, [...execution.args], {
           cwd: execution.cwd,
           detached: process.platform !== 'win32',
@@ -164,6 +177,7 @@ function createDefaultExecutor(maxOutputBytes: number): ProcessExecutor {
           settled = true;
           clearTimeout(timer);
           clearTimeout(terminationWatchdog);
+          execution.signal?.removeEventListener('abort', abortHandler);
           if (processFailure !== undefined) {
             reject(processFailure);
             return;
@@ -249,6 +263,7 @@ function createDefaultExecutor(maxOutputBytes: number): ProcessExecutor {
           settled = true;
           clearTimeout(timer);
           clearTimeout(terminationWatchdog);
+          execution.signal?.removeEventListener('abort', abortHandler);
           reject(error);
         });
         child.once('close', (exitCode) => {
@@ -270,6 +285,15 @@ function createDefaultExecutor(maxOutputBytes: number): ProcessExecutor {
             stopForProcessFailure('Process stdin closed before input');
           }
         });
+        const abortHandler = () => {
+          stopForProcessFailure('Process execution aborted');
+        };
+        execution.signal?.addEventListener('abort', abortHandler, { once: true });
+        try {
+          execution.onStarted?.();
+        } catch {
+          // Progress reporting must never interrupt the process lifecycle.
+        }
         try {
           child.stdin.end(execution.input);
         } catch {
@@ -672,6 +696,9 @@ class RestrictedClaudeStructuredExecutor implements ClaudeStructuredExecutor {
     ) {
       throw new ClaudeDriverError('invalid_driver_input');
     }
+    if (input.signal?.aborted === true) {
+      throw new ClaudeDriverError('claude_cancelled');
+    }
     const runDirectory = await this.fileSystem.mkdtemp(
       join(tmpdir(), 'atl-claude-'),
     );
@@ -719,8 +746,12 @@ class RestrictedClaudeStructuredExecutor implements ClaudeStructuredExecutor {
         cwd: runDirectory,
         environment,
         timeoutMs: HELP_TIMEOUT_MS,
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
       });
     } catch {
+      if (input.signal?.aborted === true) {
+        throw new ClaudeDriverError('claude_cancelled');
+      }
       throw new ClaudeDriverError('unsupported_claude_cli');
     }
     if (
@@ -761,13 +792,32 @@ class RestrictedClaudeStructuredExecutor implements ClaudeStructuredExecutor {
         environment,
         input: input.prompt,
         timeoutMs: Math.min(input.timeoutMs, CLAUDE_RESEARCH_TIMEOUT_MS),
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+        onStarted: () => {
+          try {
+            input.onProgress?.({ stage: 'model_started' });
+          } catch {
+            // Progress reporting is observational and must not fail execution.
+          }
+        },
       });
     } catch {
+      if (input.signal?.aborted === true) {
+        throw new ClaudeDriverError('claude_cancelled');
+      }
       throw new ClaudeDriverError('claude_process_failed');
+    }
+    if (input.signal?.aborted === true) {
+      throw new ClaudeDriverError('claude_cancelled');
     }
     if (result.timedOut) throw new ClaudeDriverError('claude_timeout');
     if (result.exitCode !== 0) {
       throw new ClaudeDriverError('claude_process_failed');
+    }
+    try {
+      input.onProgress?.({ stage: 'parsing' });
+    } catch {
+      // Progress reporting is observational and must not fail parsing.
     }
     return parseStructuredResult(result.stdout, input.schema);
   }

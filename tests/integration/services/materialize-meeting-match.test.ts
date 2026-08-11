@@ -72,6 +72,12 @@ function fileSystem(root: string): MeetingNoteFileSystem {
       await mkdir(dirname(join(root, path)), { recursive: true });
       await writeFile(join(root, path), content, { encoding: 'utf8', flag: 'wx' });
     },
+    process: async (path, transform) => {
+      const filePath = join(root, path);
+      const updated = transform(await readFile(filePath, 'utf8'));
+      await writeFile(filePath, updated, 'utf8');
+      return updated;
+    },
     listMarkdownFiles: async (path) => {
       try {
         const entries = await readdir(join(root, path), { recursive: true, withFileTypes: true });

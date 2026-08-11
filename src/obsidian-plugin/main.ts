@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { readFile as readExternalFile, stat as statExternalFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, dirname, join, relative, sep } from 'node:path';
+import { basename, dirname, extname, join, relative, sep } from 'node:path';
 
 import {
   FileSystemAdapter,
@@ -10,6 +11,7 @@ import {
   Plugin,
   PluginSettingTab,
   Setting,
+  setIcon,
   TFile,
   WorkspaceLeaf,
   type TAbstractFile,
@@ -47,8 +49,26 @@ import { FileQianwenSourceStateRepository } from '../storage/qianwen-source-stat
 import { FileAcceptanceNotificationLedger } from '../storage/file-acceptance-notification-ledger.js';
 import { FileWeeklyReviewDecisionRepository } from '../storage/weekly-review-decision-repository.js';
 import { MarkdownTaskRepository } from '../storage/markdown-task-repository.js';
+import { recordTaskCompletionDate } from '../services/record-task-completion-date.js';
+import {
+  collectWeeklyCoachContext,
+  type WeeklyCoachContextGateway,
+} from '../services/weekly-coach-context.js';
+import {
+  getWeeklyCoachSessionDraft,
+  putWeeklyCoachSessionDraft,
+  removeWeeklyCoachSessionDraft,
+  type WeeklyCoachSessionDraft,
+} from '../services/weekly-coach-draft.js';
+import {
+  confirmWeeklyFocus,
+  currentIsoWeek,
+  loadCurrentWeeklyFocus,
+  type WeeklyFocusGateway,
+} from '../services/weekly-focus.js';
 import { createVaultWriteAuthorization } from '../storage/task-paths.js';
 import { parseArtifactReference } from '../storage/artifact-reference.js';
+import { MarkdownTaskTitleRepairRepository } from '../storage/markdown-task-title-repair-repository.js';
 import {
   BackgroundRuntimeController,
   createBackgroundRuntimeDependencies,
@@ -61,6 +81,10 @@ import {
 import { extractTaskCandidates } from './candidate-extractor.js';
 import { CaptureCandidatesModal } from './capture-candidates-modal.js';
 import { CaptureController } from './capture-controller.js';
+import {
+  CompletionDateBackfillModal,
+  type CompletionDateBackfillTask,
+} from './completion-date-backfill-modal.js';
 import { formatCodexHandoff } from './codex-handoff.js';
 import { ConfirmationController } from './confirmation-controller.js';
 import { createReadOnlyDingTalkCalDavClient } from './dingtalk-caldav-client.js';
@@ -109,6 +133,8 @@ import {
 import {
   isAtlInboxTaskPath,
   isAtlTaskPath,
+  isTaskNotesTaskPath,
+  taskIdFromMetadata,
   taskIdFromPath,
 } from './task-eligibility.js';
 import {
@@ -118,16 +144,11 @@ import {
 import { UnifiedCalendarPluginLifecycle } from './unified-calendar-plugin.js';
 import { runWithPersistentFeedback } from './persistent-operation-feedback.js';
 import { enrichTask } from './task-enrichment.js';
-import {
-  MeetingAnalysisAlreadyExistsError,
-  MeetingAnalysisController,
-  MeetingAnalysisInProgressError,
-} from './meeting-analysis.js';
+import { createMeetingAttachmentDraft } from './meeting-attachment.js';
+import { MeetingAttachmentsWorkflow } from './meeting-attachments-workflow.js';
+import { assertMeetingDocumentSize } from './meeting-document-parser.js';
 import { MeetingCandidateController } from './meeting-candidate-controller.js';
-import {
-  MeetingNoteController,
-  parseDingTalkMeetingSource,
-} from './meeting-note.js';
+import { MeetingNoteController, parseDingTalkMeetingSource } from './meeting-note.js';
 import { MeetingPluginLifecycle } from './meeting-plugin-lifecycle.js';
 import { MeetingTranscriptModal } from './meeting-transcript-modal.js';
 import { QianwenSyncPluginLifecycle } from './qianwen-sync-plugin.js';
@@ -144,6 +165,30 @@ import {
   WorkProgressView,
 } from './work-progress-view.js';
 import { WeeklyFeedbackModal } from './weekly-feedback-modal.js';
+import { LegacyTaskTitleRepairController } from './legacy-task-title-repair-controller.js';
+import { LegacyTaskTitleRepairModal } from './legacy-task-title-repair-modal.js';
+import { WeeklyThinkingCoachModal } from './weekly-thinking-coach-modal.js';
+import { runWeeklyThinkingCoach } from './weekly-thinking-coach.js';
+import {
+  ensureWeeklyFocusParentDirectories,
+  runAuthorizedWeeklyFocusWrite,
+} from './weekly-focus-vault-gateway.js';
+import {
+  type TaskNotesFieldGovernanceStatus,
+} from './tasknotes-field-governance-controller.js';
+import {
+  createTaskNotesFieldGovernancePluginIntegration,
+  taskNotesFieldControlState,
+} from './tasknotes-field-governance-plugin-integration.js';
+import { SerializedSettingsWriter } from './serialized-settings-writer.js';
+import {
+  TaskBriefController,
+  TaskNotesTaskBriefController,
+} from './task-brief-controller.js';
+import { generateTaskBrief } from './task-brief-generation.js';
+import { TaskBriefModal } from './task-brief-modal.js';
+import { TaskBriefPluginLifecycle } from './task-brief-plugin-lifecycle.js';
+import { TaskNotesTaskBriefActionBridge } from './tasknotes-task-brief-action-bridge.js';
 
 const CARD_THEME_CLASS = 'atl-task-card-theme';
 
@@ -154,8 +199,9 @@ interface LocalPluginPaths {
 
 interface DirectoryDialog {
   showOpenDialog(options: {
-    properties: Array<'openDirectory' | 'multiSelections'>;
+    properties: Array<'openDirectory' | 'openFile' | 'multiSelections'>;
     title: string;
+    filters?: Array<{ name: string; extensions: string[] }>;
   }): Promise<{ canceled: boolean; filePaths: string[] }>;
 }
 
@@ -188,9 +234,21 @@ function errorMessage(error: unknown, fallback: string): string {
     : fallback;
 }
 
+function meetingAttachmentMediaType(path: string): string {
+  const extension = extname(path).toLocaleLowerCase('en-US');
+  if (extension === '.txt') return 'text/plain';
+  if (extension === '.md') return 'text/markdown';
+  if (extension === '.docx') {
+    return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  }
+  if (extension === '.pdf') return 'application/pdf';
+  return 'application/octet-stream';
+}
+
 function isContributionDataPath(path: string): boolean {
   return isAtlTaskPath(path)
-    || /^10_Tasks\/Audit\/\d{4}-\d{2}-\d{2}\.jsonl$/u.test(path);
+    || /^10_Tasks\/Audit\/\d{4}-\d{2}-\d{2}\.jsonl$/u.test(path)
+    || /^05_Reviews\/Weekly\/\d{4}-W\d{2} 周度重点\.md$/u.test(path);
 }
 
 function isWorkProgressDataPath(path: string): boolean {
@@ -202,6 +260,9 @@ function isWorkProgressDataPath(path: string): boolean {
 export default class AgentTaskLoopPlugin extends Plugin {
   settings: AtlPluginSettings = DEFAULT_SETTINGS;
   readonly boardAppearance = new BoardAppearanceController();
+  private readonly settingsWriter = new SerializedSettingsWriter<AtlPluginSettings>(
+    (snapshot) => this.saveData(snapshot),
+  );
   private syncScanInFlight: Promise<void> | null = null;
   private unifiedCalendarOpenInFlight: Promise<void> | null = null;
   private taskLifecycleReconciliation: TaskLifecycleReconciliationController | null = null;
@@ -253,7 +314,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
       },
       open: () => this.activateWorkProgressView(),
     }).start();
-    this.addRibbonIcon('chart-no-axes-combined', 'ATL：个人工作贡献', () => {
+    this.addRibbonIcon('layout-dashboard', 'ATL：个人首页', () => {
       void this.activateContributionView();
     });
 
@@ -271,9 +332,16 @@ export default class AgentTaskLoopPlugin extends Plugin {
     });
     this.addCommand({
       id: 'open-work-contribution',
-      name: '打开个人工作贡献',
+      name: '打开个人首页',
       callback: () => {
         void this.activateContributionView();
+      },
+    });
+    this.addCommand({
+      id: 'repair-legacy-task-titles',
+      name: '修复旧任务标题',
+      callback: () => {
+        void this.openLegacyTaskTitleRepair();
       },
     });
 
@@ -309,6 +377,74 @@ export default class AgentTaskLoopPlugin extends Plugin {
         void this.openMeetingTranscript(path);
       },
     }).start();
+
+    new TaskBriefPluginLifecycle({
+      addCommand: (command) => {
+        this.addCommand(command);
+      },
+      registerFileMenu: (handler) => {
+        this.registerEvent(this.app.workspace.on(
+          'file-menu',
+          (menu: Menu, file: TAbstractFile) => {
+            if (file instanceof TFile) handler(menu, file.path);
+          },
+        ));
+      },
+      getActiveFilePath: () => this.app.workspace.getActiveFile()?.path ?? null,
+      isTaskPath: (path) => {
+        if (isAtlTaskPath(path)) return true;
+        const file = this.app.vault.getAbstractFileByPath(path);
+        return file instanceof TFile && isTaskNotesTaskPath(
+          path,
+          this.app.metadataCache.getFileCache(file)?.frontmatter,
+        );
+      },
+      open: (path) => {
+        void this.openTaskBrief(path);
+      },
+    }).start();
+
+    const appWithPluginRegistry = this.app as typeof this.app & {
+      plugins?: { getPlugin(id: string): unknown };
+    };
+    const taskNotesTaskBriefBridge = new TaskNotesTaskBriefActionBridge({
+      document,
+      isTaskNotesEnabled: () => (
+        appWithPluginRegistry.plugins?.getPlugin('tasknotes') != null
+      ),
+      getEligibleTaskPaths: () => this.app.vault.getMarkdownFiles()
+        .filter((file) => isAtlTaskPath(file.path) || isTaskNotesTaskPath(
+          file.path,
+          this.app.metadataCache.getFileCache(file)?.frontmatter,
+        ))
+        .map((file) => file.path),
+      open: (path) => {
+        void this.openTaskBrief(path);
+      },
+      notice: (message) => {
+        new Notice(message);
+      },
+      setIcon,
+    });
+    this.app.workspace.onLayoutReady(() => {
+      taskNotesTaskBriefBridge.start();
+      this.app.workspace.iterateAllLeaves((leaf) => {
+        taskNotesTaskBriefBridge.addDocument(leaf.view.containerEl.ownerDocument);
+      });
+    });
+    this.registerEvent(this.app.workspace.on(
+      'window-open',
+      (_workspaceWindow, openedWindow) => {
+        taskNotesTaskBriefBridge.addDocument(openedWindow.document);
+      },
+    ));
+    this.registerEvent(this.app.workspace.on(
+      'window-close',
+      (_workspaceWindow, closedWindow) => {
+        taskNotesTaskBriefBridge.removeDocument(closedWindow.document);
+      },
+    ));
+    this.register(() => taskNotesTaskBriefBridge.stop());
 
     this.registerEvent(this.app.workspace.on(
       'file-menu',
@@ -383,7 +519,19 @@ export default class AgentTaskLoopPlugin extends Plugin {
 
   async saveSettings(): Promise<void> {
     this.applyTaskCardTheme();
-    await this.saveData(this.settings);
+    await this.settingsWriter.write(structuredClone(this.settings));
+  }
+
+  createTaskNotesFieldGovernanceIntegration() {
+    const appWithPluginRegistry = this.app as typeof this.app & {
+      plugins?: { getPlugin(id: string): unknown };
+    };
+    return createTaskNotesFieldGovernancePluginIntegration({
+      registry: appWithPluginRegistry.plugins,
+      getSettings: () => this.settings,
+      saveSettings: () => this.saveSettings(),
+      notice: (message) => new Notice(message),
+    });
   }
 
   private createContributionView(leaf: WorkspaceLeaf): WorkContributionView {
@@ -391,7 +539,14 @@ export default class AgentTaskLoopPlugin extends Plugin {
       createController: () => this.createContributionController(),
       openTask: (taskId) => this.openContributionTask(taskId),
       openArtifact: (artifactRef, taskId) => this.openContributionArtifact(artifactRef, taskId),
+      openCompletionDateBackfill: (tasks) => this.openCompletionDateBackfill(tasks),
       openSettings: () => this.openPluginSettings(),
+      loadWeeklyFocus: () => this.loadWeeklyFocus(),
+      loadWeeklyCoachDraft: async () => this.loadWeeklyCoachSessionDraft(
+        currentIsoWeek(new Date(), resolveSystemTimeZone()),
+      ),
+      openWeeklyCoach: (onChanged) => this.openWeeklyCoach(onChanged),
+      openWeeklyFocus: (path) => this.openWeeklyFocus(path),
     });
   }
 
@@ -527,10 +682,258 @@ export default class AgentTaskLoopPlugin extends Plugin {
     });
   }
 
+  private createWeeklyFocusGateway(): WeeklyFocusGateway {
+    const adapter = this.app.vault.adapter;
+    return {
+      read: async (path) => (
+        await adapter.exists(path) ? adapter.read(path) : null
+      ),
+      write: async (path, content, expectedContent) => {
+        if (!this.settings.allowVaultManagement) {
+          throw new Error('vault_management_disabled');
+        }
+        const exists = await adapter.exists(path);
+        const current = exists ? await adapter.read(path) : null;
+        if (current !== expectedContent) return false;
+
+        await ensureWeeklyFocusParentDirectories(
+          adapter,
+          path,
+          () => this.settings.allowVaultManagement,
+        );
+        if (!this.settings.allowVaultManagement) {
+          throw new Error('vault_management_disabled');
+        }
+
+        if (expectedContent === null) {
+          if (await adapter.exists(path)) return false;
+          await runAuthorizedWeeklyFocusWrite(
+            () => this.settings.allowVaultManagement,
+            () => this.app.vault.create(path, content),
+          );
+          return true;
+        }
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (!(file instanceof TFile)) return false;
+        let matched = false;
+        await runAuthorizedWeeklyFocusWrite(
+          () => this.settings.allowVaultManagement,
+          () => this.app.vault.process(file, (latest) => {
+            if (latest !== expectedContent) return latest;
+            matched = true;
+            return content;
+          }),
+        );
+        return matched;
+      },
+    };
+  }
+
+  private createWeeklyCoachContextGateway(): WeeklyCoachContextGateway {
+    const adapter = this.app.vault.adapter;
+    return {
+      listMarkdownPaths: async () => (
+        this.app.vault.getMarkdownFiles().map((file) => file.path)
+      ),
+      read: async (path) => adapter.read(path),
+    };
+  }
+
+  private loadWeeklyFocus() {
+    return loadCurrentWeeklyFocus(
+      this.createWeeklyFocusGateway(),
+      () => new Date(),
+      resolveSystemTimeZone(),
+    );
+  }
+
+  private loadWeeklyCoachSessionDraft(week: string): WeeklyCoachSessionDraft | null {
+    return getWeeklyCoachSessionDraft(this.settings.weeklyCoachDrafts, week);
+  }
+
+  private async saveWeeklyCoachSessionDraft(draft: WeeklyCoachSessionDraft): Promise<void> {
+    this.settings.weeklyCoachDrafts = putWeeklyCoachSessionDraft(
+      this.settings.weeklyCoachDrafts,
+      draft,
+    );
+    await this.saveSettings();
+  }
+
+  private async clearWeeklyCoachSessionDraft(week: string): Promise<void> {
+    this.settings.weeklyCoachDrafts = removeWeeklyCoachSessionDraft(
+      this.settings.weeklyCoachDrafts,
+      week,
+    );
+    await this.saveSettings();
+  }
+
+  private weeklyCoachModelLabel(): string {
+    const modelService = modelServiceConfiguration(this.settings.background);
+    if (!modelService.valid) return '模型配置需检查（可人工整理）';
+    return modelService.model === undefined
+      ? '沿用 Claude Code / CC-Switch'
+      : `自定义模型 · ${modelService.model}`;
+  }
+
+  private openWeeklyCoach(
+    onChanged: () => void,
+  ): void {
+    const timeZone = resolveSystemTimeZone();
+    const clock = () => new Date();
+    const week = currentIsoWeek(clock(), timeZone);
+    const gateway = this.createWeeklyFocusGateway();
+    new WeeklyThinkingCoachModal(this.app, {
+      week,
+      modelLabel: this.weeklyCoachModelLabel(),
+      loadRecord: () => loadCurrentWeeklyFocus(gateway, clock, timeZone),
+      loadSessionDraft: () => this.loadWeeklyCoachSessionDraft(week),
+      runCoach: async (turn, control) => {
+        const context = await collectWeeklyCoachContext(
+          this.createWeeklyCoachContextGateway(),
+          turn.selectedSources,
+          { now: clock() },
+        );
+        if (control.signal.aborted) throw new Error('weekly_coach_cancelled');
+        control.onProgress({
+          stage: 'context_ready',
+          sourceCount: new Set(context.documents.map(({ source }) => source)).size,
+          documentCount: context.documents.length,
+          totalCharacters: context.totalCharacters,
+        });
+        const executor = await this.createStructuredExecutor();
+        if (control.signal.aborted) throw new Error('weekly_coach_cancelled');
+        return runWeeklyThinkingCoach(executor, {
+          topic: turn.topic,
+          latestAnswer: turn.latestAnswer,
+          keyAnswers: turn.keyAnswers,
+          previousSummary: turn.previousSummary,
+          draftItems: turn.draftItems,
+          deletedFocuses: turn.deletedFocuses,
+          focusedItemId: turn.focusedItemId,
+          deferredTaskQuestions: turn.deferredTaskQuestions,
+          context,
+        }, control);
+      },
+      saveSessionDraft: (draft) => this.saveWeeklyCoachSessionDraft(draft),
+      clearSessionDraft: () => this.clearWeeklyCoachSessionDraft(week),
+      confirm: (input, expectedContent) => confirmWeeklyFocus(
+        gateway,
+        clock,
+        input,
+        expectedContent,
+        week,
+        timeZone,
+      ),
+      canManageVault: () => this.settings.allowVaultManagement,
+      onChanged,
+      openRecord: (path) => this.openWeeklyFocus(path),
+      notify: (message) => { new Notice(message); },
+      now: clock,
+      currentWeek: () => currentIsoWeek(clock(), timeZone),
+      createId: randomUUID,
+    }).open();
+  }
+
+  private async openWeeklyFocus(path: string): Promise<void> {
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile)) {
+      new Notice('找不到本周判断记录');
+      return;
+    }
+    await this.app.workspace.getLeaf(false).openFile(file);
+  }
+
+  private openCompletionDateBackfill(tasks: readonly CompletionDateBackfillTask[]): void {
+    if (!this.settings.allowVaultManagement) {
+      new Notice('请先在“设置 → Agent Task Loop”中允许 ATL 管理此 Vault');
+      return;
+    }
+    const paths = this.localPluginPaths();
+    if (paths === null) {
+      new Notice('Agent Task Loop 仅支持桌面版本地 Vault');
+      return;
+    }
+    new CompletionDateBackfillModal(this.app, tasks, async (taskId, completedOn) => {
+      if (!this.settings.allowVaultManagement) {
+        new Notice('Vault 管理权限已关闭，请重新开启后再补齐');
+        throw new Error('vault_management_disabled');
+      }
+      const currentPaths = this.localPluginPaths();
+      if (currentPaths === null) {
+        new Notice('Agent Task Loop 仅支持桌面版本地 Vault');
+        throw new Error('local_vault_unavailable');
+      }
+      const timeZone = resolveSystemTimeZone();
+      const context = createObsidianServiceContext(
+        currentPaths.root,
+        createVaultWriteAuthorization(currentPaths.root),
+        { timeZone },
+      );
+      const result = await recordTaskCompletionDate(context, {
+        taskId,
+        completedOn,
+        timeZone,
+      });
+      new Notice(result.recorded ? '历史完成日期已补齐' : '这项任务已有完成日期记录');
+      await Promise.all(
+        this.app.workspace.getLeavesOfType(WORK_CONTRIBUTION_VIEW_TYPE)
+          .map(async (leaf) => {
+            if (leaf.view instanceof WorkContributionView) {
+              await leaf.view.refreshContribution();
+            }
+          }),
+      );
+    }, () => this.settings.allowVaultManagement).open();
+  }
+
+  private async openLegacyTaskTitleRepair(): Promise<void> {
+    if (!this.settings.allowVaultManagement) {
+      new Notice('请先在“设置 → Agent Task Loop”中允许 ATL 管理此 Vault');
+      return;
+    }
+    const paths = this.localPluginPaths();
+    if (paths === null) {
+      new Notice('Agent Task Loop 仅支持桌面版本地 Vault');
+      return;
+    }
+    const previewController = new LegacyTaskTitleRepairController(
+      new MarkdownTaskTitleRepairRepository(paths.root),
+    );
+    let preview;
+    try {
+      preview = await previewController.preview();
+    } catch {
+      new Notice('无法扫描旧任务标题，请检查任务文件后重试');
+      return;
+    }
+    if (preview.candidates.length === 0) {
+      new Notice(`已扫描 ${preview.filesScanned} 个 Markdown 文件，没有需要修复的旧任务标题`);
+      return;
+    }
+
+    new LegacyTaskTitleRepairModal(this.app, preview, async () => {
+      if (!this.settings.allowVaultManagement) {
+        throw new Error('vault_management_disabled');
+      }
+      const currentPaths = this.localPluginPaths();
+      if (currentPaths === null || currentPaths.root !== paths.root) {
+        throw new Error('local_vault_changed');
+      }
+      const controller = new LegacyTaskTitleRepairController(
+        new MarkdownTaskTitleRepairRepository(currentPaths.root, {
+          writeAuthorization: createVaultWriteAuthorization(currentPaths.root),
+        }),
+      );
+      const result = await controller.repair(preview);
+      new Notice(`旧任务标题修复完成：成功 ${result.repaired} 个，跳过 ${result.skipped} 个`);
+      return result;
+    }, () => this.settings.allowVaultManagement).open();
+  }
+
   private createContributionController(): ContributionDashboardController {
     const paths = this.localPluginPaths();
     if (paths === null) {
-      throw new Error('Agent Task Loop 个人工作贡献仅支持桌面版本地 Vault');
+      throw new Error('Agent Task Loop 个人首页仅支持桌面版本地 Vault');
     }
     const timeZone = resolveSystemTimeZone();
     return new ContributionDashboardController({
@@ -582,7 +985,12 @@ export default class AgentTaskLoopPlugin extends Plugin {
       this.contributionRefreshTimer = null;
       for (const leaf of this.app.workspace.getLeavesOfType(WORK_CONTRIBUTION_VIEW_TYPE)) {
         const view = leaf.view;
-        if (view instanceof WorkContributionView) void view.refreshContribution();
+        if (view instanceof WorkContributionView) {
+          void Promise.all([
+            view.refreshContribution(),
+            view.refreshWeeklyCoachState(),
+          ]);
+        }
       }
     }, 250);
   }
@@ -647,6 +1055,11 @@ export default class AgentTaskLoopPlugin extends Plugin {
       create: async (path: string, content: string) => {
         await this.app.vault.create(path, content);
       },
+      process: async (path: string, transform: (content: string) => string) => {
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (!(file instanceof TFile)) throw new Error('会议笔记不存在');
+        return this.app.vault.process(file, transform);
+      },
     };
   }
 
@@ -677,9 +1090,27 @@ export default class AgentTaskLoopPlugin extends Plugin {
   }
 
   private async openContributionTask(taskId: string): Promise<void> {
-    const file = this.app.vault.getMarkdownFiles().find((candidate) => (
-      taskIdFromPath(candidate.path) === taskId
+    const markdownFiles = this.app.vault.getMarkdownFiles();
+    let file = markdownFiles.find((candidate) => (
+      taskIdFromMetadata(
+        candidate.path,
+        this.app.metadataCache.getFileCache(candidate)?.frontmatter,
+      ) === taskId
     ));
+    if (file === undefined) {
+      for (const candidate of markdownFiles) {
+        if (!isAtlTaskPath(candidate.path)) continue;
+        try {
+          const markdown = await this.app.vault.cachedRead(candidate);
+          if (taskIdFromMetadata(candidate.path, markdown) === taskId) {
+            file = candidate;
+            break;
+          }
+        } catch {
+          // A concurrently moved task is skipped; the next refresh will update the list.
+        }
+      }
+    }
     if (file === undefined) {
       new Notice('找不到这项任务文件');
       return;
@@ -975,97 +1406,120 @@ export default class AgentTaskLoopPlugin extends Plugin {
       return;
     }
 
-    new MeetingTranscriptModal(this.app, source, async (input, action) => {
-      const fileSystem = {
-        exists: async (path: string) => adapter.exists(path),
-        read: async (path: string) => adapter.read(path),
-        ensureDirectory: async (path: string) => {
-          let directory = '';
-          for (const segment of path.split('/').filter(Boolean)) {
-            directory = directory === '' ? segment : `${directory}/${segment}`;
-            if (!(await adapter.exists(directory))) await adapter.mkdir(directory);
-          }
-        },
-        create: async (path: string, content: string) => {
-          await this.app.vault.create(path, content);
-        },
-        listMarkdownFiles: async (path: string) => this.app.vault
-          .getMarkdownFiles()
-          .map((file) => file.path)
-          .filter((filePath) => filePath.startsWith(`${path}/`)),
-      };
-      const meeting = await new MeetingNoteController(fileSystem).create({
-        eventPath,
-        meetingType: input.meetingType,
-        participants: input.participants,
-        transcript: input.transcript,
-      });
-      const meetingFile = this.app.vault.getAbstractFileByPath(meeting.path);
-      if (!(meetingFile instanceof TFile)) {
-        throw new Error('Obsidian 尚未识别会议笔记');
-      }
-      await this.app.workspace.getLeaf(false).openFile(meetingFile);
-      if (action === 'save') {
-        new Notice(meeting.created
-          ? '会议听记已保存'
-          : '会议笔记已存在，未覆盖原听记');
-        return;
-      }
-
-      let analysis;
-      try {
-        const executor = await this.createStructuredExecutor();
-        analysis = await new MeetingAnalysisController({
-          fileSystem: {
-            read: async (path) => adapter.read(path),
-            process: async (path, transform) => {
-              const file = this.app.vault.getAbstractFileByPath(path);
-              if (!(file instanceof TFile)) throw new Error('会议笔记不存在');
-              return this.app.vault.process(file, transform);
-            },
-          },
-          executor,
-        }).analyze(meeting.path);
-      } catch (error) {
-        if (error instanceof MeetingAnalysisAlreadyExistsError) {
-          new Notice('已有 AI 分析和人工补充已保留，不会重复覆盖');
-          return;
+    const fileSystem = {
+      exists: async (path: string) => adapter.exists(path),
+      read: async (path: string) => adapter.read(path),
+      readBinary: async (path: string) => new Uint8Array(await adapter.readBinary(path)),
+      ensureDirectory: async (path: string) => {
+        let directory = '';
+        for (const segment of path.split('/').filter(Boolean)) {
+          directory = directory === '' ? segment : `${directory}/${segment}`;
+          if (!(await adapter.exists(directory))) await adapter.mkdir(directory);
         }
-        if (error instanceof MeetingAnalysisInProgressError) {
-          new Notice('这份会议笔记正在分析，请稍候');
-          return;
-        }
-        new Notice('会议笔记已保存，AI 分析失败，可稍后重试');
-        return;
-      }
+      },
+      create: async (path: string, content: string) => {
+        await this.app.vault.create(path, content);
+      },
+      createBinary: async (path: string, data: Uint8Array) => {
+        await this.app.vault.createBinary(path, new Uint8Array(data).buffer);
+      },
+      process: async (path: string, transform: (content: string) => string) => {
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (!(file instanceof TFile)) throw new Error('会议笔记不存在');
+        return this.app.vault.process(file, transform);
+      },
+      listMarkdownFiles: async (path: string) => this.app.vault
+        .getMarkdownFiles()
+        .map((file) => file.path)
+        .filter((filePath) => filePath.startsWith(`${path}/`)),
+    };
+    const modelService = modelServiceConfiguration(this.settings.background);
+    const modelLabel = modelService.model ?? 'inherit';
+    const workflow = new MeetingAttachmentsWorkflow({
+      fileSystem,
+      executor: () => this.createStructuredExecutor(),
+      modelLabel,
+      candidateNotePath: (path) => join(adapter.getBasePath(), path),
+    });
+    let existing;
+    try {
+      existing = await workflow.load(eventPath);
+    } catch {
+      new Notice('无法读取已有会议资料，请检查会议笔记后重试');
+      return;
+    }
+    const candidateController = new MeetingCandidateController({ context });
+    const openMeetingFile = async (path: string): Promise<void> => {
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (!(file instanceof TFile)) throw new Error('Obsidian 尚未识别会议笔记');
+      await this.app.workspace.getLeaf(false).openFile(file);
+    };
 
-      const candidateController = new MeetingCandidateController({ context });
-      const prepared = candidateController.prepare({
-        meetingNotePath: join(adapter.getBasePath(), meeting.path),
-        meetingDate: source.meetingDate,
-        analysis,
-      });
-      if (prepared.candidates.length === 0) {
-        new Notice('会议分析完成，未发现明确待办');
-        return;
-      }
-      new CaptureCandidatesModal(
-        this.app,
-        prepared,
-        async (selectedIds) => {
-          const result = await candidateController.commit(prepared, selectedIds);
-          const accepted = result.createdTaskIds.length + result.existingTaskIds.length;
-          new Notice(accepted === 0
-            ? '未选候选已保留在会议笔记中'
-            : `已将 ${accepted} 个会议待办加入 Inbox`);
+    new MeetingTranscriptModal(
+      this.app,
+      source,
+      async (input, action) => {
+        const result = action === 'save'
+          ? await workflow.submit({ eventPath, ...input, action })
+          : await workflow.submit({ eventPath, ...input, action });
+        if (result === null) {
+          const saved = await workflow.load(eventPath);
+          if (saved !== null) await openMeetingFile(saved.meetingPath);
+          new Notice('会议资料已保存');
+          return null;
+        }
+        await openMeetingFile(result.meetingPath);
+        return result;
+      },
+      {
+        ...(existing === null ? {} : { initialForm: existing.form }),
+        ...(existing?.result === null || existing?.result === undefined
+          ? {}
+          : { initialResult: existing.result }),
+        ...(existing === null
+          ? {}
+          : { initialAnalysisStatus: existing.analysis.status }),
+        modelLabel,
+        pickTranscriptFile: async () => {
+          const files = await this.pickMeetingFiles('transcript', false);
+          return files[0] ?? null;
         },
-        {
-          unselectedExplanation: '未勾选的候选会继续保留在会议笔记中。',
-          allowIgnoreUnselected: false,
-          initialSelectedCandidateIds: [],
-        },
-      ).open();
-    }).open();
+        pickReferenceFiles: async () => this.pickMeetingFiles('reference', true),
+        onCommitCandidates: async (prepared, selectedIds) => (
+          candidateController.commit(prepared, selectedIds)
+        ),
+      },
+    ).open();
+  }
+
+  private async pickMeetingFiles(
+    role: 'transcript' | 'reference',
+    multiple: boolean,
+  ) {
+    const dialog = getDirectoryDialog();
+    if (dialog === null) throw new Error('当前 Obsidian 无法打开系统文件选择器');
+    const result = await dialog.showOpenDialog({
+      title: role === 'transcript' ? '选择会议听记文件' : '选择会议关联资料',
+      properties: multiple ? ['openFile', 'multiSelections'] : ['openFile'],
+      ...(role === 'transcript'
+        ? { filters: [{ name: '会议文档', extensions: ['txt', 'md', 'docx', 'pdf'] }] }
+        : {}),
+    });
+    if (result.canceled) return [];
+    const attachments = [];
+    for (const path of result.filePaths) {
+      const stats = await statExternalFile(path);
+      if (!stats.isFile()) throw new Error('请选择有效文件');
+      assertMeetingDocumentSize(stats.size);
+      const data = new Uint8Array(await readExternalFile(path));
+      attachments.push(await createMeetingAttachmentDraft({
+        name: basename(path),
+        mediaType: meetingAttachmentMediaType(path),
+        data,
+        role,
+      }));
+    }
+    return attachments;
   }
 
   private scanSyncAssistant(): Promise<void> {
@@ -1237,6 +1691,92 @@ export default class AgentTaskLoopPlugin extends Plugin {
     }
   }
 
+  private async openTaskBrief(path: string): Promise<void> {
+    const authorized = this.authorizedServiceContext();
+    if (authorized === null) return;
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile)) {
+      new Notice('请选择有效的 TaskNotes 任务');
+      return;
+    }
+
+    let raw: string;
+    try {
+      raw = await this.app.vault.cachedRead(file);
+    } catch {
+      new Notice('无法读取这项任务，请刷新看板后重试');
+      return;
+    }
+    const atlTask = isAtlTaskPath(file.path);
+    const taskNotesTask = isTaskNotesTaskPath(file.path, raw);
+    if (!atlTask && !taskNotesTask) {
+      new Notice('请选择有效的 TaskNotes 任务');
+      return;
+    }
+
+    if (taskNotesTask && !atlTask) {
+      const controller = new TaskNotesTaskBriefController({
+        path: file.path,
+        read: (taskPath) => authorized.adapter.read(taskPath),
+        process: async (taskPath, update) => {
+          if (!this.settings.allowVaultManagement) {
+            throw new Error('vault_management_disabled');
+          }
+          const target = this.app.vault.getAbstractFileByPath(taskPath);
+          if (!(target instanceof TFile)) throw new Error('task_not_found');
+          return this.app.vault.process(target, update);
+        },
+        appendAudit: (event) => authorized.context.audit.append(event),
+        clock: authorized.context.clock,
+      });
+      try {
+        const prepared = await controller.prepare();
+        new TaskBriefModal(
+          this.app,
+          controller,
+          prepared,
+          async (input) => generateTaskBrief(
+            await this.createStructuredExecutor(),
+            input,
+          ),
+        ).open();
+      } catch {
+        new Notice('无法读取这项任务，请刷新看板后重试');
+      }
+      return;
+    }
+
+    let taskId: string | null;
+    try {
+      taskId = taskIdFromMetadata(file.path, raw);
+    } catch {
+      taskId = taskIdFromMetadata(
+        file.path,
+        this.app.metadataCache.getFileCache(file)?.frontmatter,
+      );
+    }
+    if (taskId === null) {
+      new Notice('无法识别这项 ATL 任务');
+      return;
+    }
+
+    const controller = new TaskBriefController(authorized.context);
+    try {
+      const prepared = await controller.prepare(taskId);
+      new TaskBriefModal(
+        this.app,
+        controller,
+        prepared,
+        async (input) => generateTaskBrief(
+          await this.createStructuredExecutor(),
+          input,
+        ),
+      ).open();
+    } catch {
+      new Notice('无法读取这项任务，请刷新看板后重试');
+    }
+  }
+
   private async copyTaskForCodex(file: TFile): Promise<void> {
     const taskId = taskIdFromPath(file.path);
     const adapter = this.app.vault.adapter;
@@ -1285,6 +1825,7 @@ const CHECK_LABELS = {
 class AgentTaskLoopSettingTab extends PluginSettingTab {
   private inspection: BackgroundInspection | null = null;
   private boardStatus: BoardPresetStatus | null = null;
+  private taskNotesFieldStatus: TaskNotesFieldGovernanceStatus | null = null;
   private refreshing = false;
   private statusLoaded = false;
 
@@ -1325,7 +1866,7 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
   }
 
   private renderContributionData(containerEl: HTMLElement): void {
-    containerEl.createEl('h2', { text: '个人工作贡献' });
+    containerEl.createEl('h2', { text: '个人首页数据' });
     new Setting(containerEl)
       .setName('任务贡献数据')
       .setDesc('来自 ATL 可审计的任务完成记录；不依赖 OpenToken，也不会修改任务。');
@@ -1634,7 +2175,7 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
         .onClick(() => this.atlPlugin.openUnifiedCalendar()));
     new Setting(containerEl)
       .setName('ATL 紧凑卡片')
-      .setDesc('在 TaskNotes 看板中优先显示项目、计划时间、截止时间和优先级，并在日历中单行省略过长标题。')
+      .setDesc('在 TaskNotes 看板中优先显示项目、来源日期、入箱时间、有效计划时间和优先级，并在日历中单行省略过长标题。')
       .addToggle((toggle) => toggle
         .setValue(this.atlPlugin.settings.taskCardThemeEnabled)
         .onChange(async (value) => {
@@ -1642,13 +2183,34 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
           await this.atlPlugin.saveSettings();
         }));
 
+    const fieldControlState = taskNotesFieldControlState(
+      this.taskNotesFieldStatus,
+      this.atlPlugin.settings.allowVaultManagement,
+    );
+    const fieldSetting = new Setting(containerEl)
+      .setName('任务编辑字段')
+      .setDesc(fieldControlState.description);
+    if (fieldControlState.showApply) {
+      fieldSetting.addButton((button) => button
+        .setCta()
+        .setButtonText('应用精简字段')
+        .setDisabled(fieldControlState.disabled)
+        .onClick(() => this.applyTaskNotesFieldPreset()));
+    }
+    if (fieldControlState.showRestore) {
+      fieldSetting.addButton((button) => button
+        .setButtonText('恢复原字段')
+        .setDisabled(fieldControlState.disabled)
+        .onClick(() => this.restoreTaskNotesFieldPreset()));
+    }
+
     const status = this.boardStatus;
     const setting = new Setting(containerEl)
       .setName('人工任务看板布局')
       .setDesc(status === null
         ? '正在读取任务总看板…'
         : status.available
-          ? '按原始任务状态显示四列；首次应用会保留原始备份。'
+          ? '按任务状态显示四列，并保留人工拖动优先；首次应用会保留原始备份。'
           : '未找到 10_Tasks/Views/任务总看板.base');
     if (status?.available === true && !status.applied) {
       setting.addButton((button) => button
@@ -1702,6 +2264,11 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
         : await this.atlPlugin.boardAppearance.status(paths.root);
     } catch (error) {
       new Notice(errorMessage(error, '无法读取 ATL 配置'));
+    }
+    try {
+      this.taskNotesFieldStatus = await this.atlPlugin
+        .createTaskNotesFieldGovernanceIntegration()
+        .status();
     } finally {
       this.refreshing = false;
       this.statusLoaded = true;
@@ -1783,6 +2350,30 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
       this.display();
     } catch (error) {
       new Notice(errorMessage(error, '无法应用推荐看板布局'));
+    }
+  }
+
+  private async refreshTaskNotesFieldStatus(): Promise<void> {
+    this.taskNotesFieldStatus = await this.atlPlugin
+      .createTaskNotesFieldGovernanceIntegration()
+      .status();
+  }
+
+  private async applyTaskNotesFieldPreset(): Promise<void> {
+    try {
+      await this.atlPlugin.createTaskNotesFieldGovernanceIntegration().apply();
+    } finally {
+      await this.refreshTaskNotesFieldStatus();
+      this.display();
+    }
+  }
+
+  private async restoreTaskNotesFieldPreset(): Promise<void> {
+    try {
+      await this.atlPlugin.createTaskNotesFieldGovernanceIntegration().restore();
+    } finally {
+      await this.refreshTaskNotesFieldStatus();
+      this.display();
     }
   }
 

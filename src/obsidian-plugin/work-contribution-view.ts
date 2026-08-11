@@ -1,10 +1,14 @@
 import { ItemView, setIcon, type WorkspaceLeaf } from 'obsidian';
 
 import type { ContributionRange } from '../services/query-contribution.js';
+import type { PersonalHomeTask } from '../services/query-personal-home.js';
+import type { WeeklyCoachSessionDraft } from '../services/weekly-coach-draft.js';
+import type { WeeklyFocusDocument } from '../services/weekly-focus.js';
 import {
   type ContributionDashboardController,
   type ContributionDashboardState,
 } from './contribution-dashboard-controller.js';
+import type { CompletionDateBackfillTask } from './completion-date-backfill-modal.js';
 
 export const WORK_CONTRIBUTION_VIEW_TYPE = 'atl-work-contribution';
 
@@ -12,14 +16,72 @@ export interface WorkContributionViewDependencies {
   createController: () => ContributionDashboardController;
   openTask: (taskId: string) => Promise<void> | void;
   openArtifact: (artifactRef: string, taskId: string) => Promise<void> | void;
+  openCompletionDateBackfill: (
+    tasks: readonly CompletionDateBackfillTask[],
+  ) => Promise<void> | void;
   openSettings: () => Promise<void> | void;
+  loadWeeklyFocus: () => Promise<WeeklyFocusDocument | null>;
+  loadWeeklyCoachDraft: () => Promise<WeeklyCoachSessionDraft | null>;
+  openWeeklyCoach: (onChanged: () => void) => Promise<void> | void;
+  openWeeklyFocus: (path: string) => Promise<void> | void;
 }
+
+type HomeTab = 'overview' | 'today' | 'input' | 'review';
+type PulseMode = 'tasks' | 'consumption' | 'outputs' | 'ai';
 
 const RANGE_OPTIONS: Array<{ value: ContributionRange; label: string }> = [
   { value: '7d', label: '7 天' },
-  { value: '12w', label: '12 周' },
+  { value: '26w', label: '26 周' },
   { value: '1y', label: '1 年' },
 ];
+
+const TAB_OPTIONS: Array<{ value: HomeTab; label: string; icon: string }> = [
+  { value: 'overview', label: '总览', icon: 'layout-dashboard' },
+  { value: 'today', label: '推进', icon: 'list-checks' },
+  { value: 'input', label: '输入', icon: 'inbox' },
+  { value: 'review', label: '复盘', icon: 'chart-no-axes-combined' },
+];
+
+const PULSE_OPTIONS: Array<{ value: PulseMode; label: string }> = [
+  { value: 'ai', label: 'AI' },
+  { value: 'tasks', label: '任务' },
+  { value: 'consumption', label: '消费' },
+  { value: 'outputs', label: '产出' },
+];
+
+const HEATMAP_DAY_COUNT = 182;
+
+export function daysForTrend<T>(days: T[], range: ContributionRange): T[] {
+  const length = range === '7d'
+    ? 7
+    : range === '12w'
+      ? 84
+      : range === '26w'
+        ? 182
+        : 365;
+  return days.slice(-length);
+}
+
+const PULSE_HEATMAP_LABELS: Record<Exclude<PulseMode, 'consumption'>, string> = {
+  tasks: '任务',
+  outputs: '产出',
+  ai: 'AI',
+};
+
+const STATUS_LABELS: Record<string, string> = {
+  inbox: '收件箱',
+  ready: '待执行',
+  in_progress: '执行中',
+  review: '待验收',
+  blocked: '已阻塞',
+};
+
+const PRIORITY_LABELS: Record<PersonalHomeTask['priority'], string> = {
+  urgent: '紧急',
+  high: '高',
+  normal: '普通',
+  low: '低',
+};
 
 function element<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -47,6 +109,14 @@ function formatNumber(value: number): string {
   return new Intl.NumberFormat('zh-CN').format(value);
 }
 
+function formatCompactToken(value: number): string {
+  const absolute = Math.abs(value);
+  if (absolute < 10_000) return formatNumber(value);
+  const divisor = absolute >= 100_000_000 ? 100_000_000 : 10_000;
+  const suffix = divisor === 100_000_000 ? '亿' : '万';
+  return `${Number((value / divisor).toFixed(2))}${suffix}`;
+}
+
 function formatTime(value: string): string {
   const parsed = new Date(value);
   return Number.isFinite(parsed.getTime())
@@ -57,31 +127,116 @@ function formatTime(value: string): string {
     : '--';
 }
 
+function formatCompactDate(value: string): string {
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) return '--';
+  return new Intl.DateTimeFormat('zh-CN', {
+    day: '2-digit',
+    month: '2-digit',
+  }).format(parsed).replace('/', '·');
+}
+
 function mondayBasedWeekday(date: string): number {
   const weekday = new Date(`${date}T12:00:00Z`).getUTCDay();
   return weekday === 0 ? 7 : weekday;
 }
 
-function lineChart(values: number[], label: string): SVGSVGElement {
+function addDays(date: string, count: number): string {
+  const value = new Date(`${date}T12:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + count);
+  return value.toISOString().slice(0, 10);
+}
+
+interface TrendPoint {
+  date: string;
+  value: number;
+}
+
+function lineChart(
+  points: TrendPoint[],
+  label: string,
+  suffix: string,
+  formatValue: (value: number) => string = formatNumber,
+): HTMLDivElement {
+  const plot = element('div', 'atl-contribution-chart-plot');
+  plot.setAttribute('role', 'img');
+  plot.setAttribute('aria-label', `${label}，聚焦后可使用左右方向键查看每日数据`);
+  plot.tabIndex = points.length === 0 ? -1 : 0;
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.classList.add('atl-contribution-chart-svg');
   svg.setAttribute('viewBox', '0 0 100 40');
   svg.setAttribute('preserveAspectRatio', 'none');
-  svg.setAttribute('role', 'img');
-  svg.setAttribute('aria-label', label);
-  const maximum = Math.max(...values, 1);
-  const points = values.map((value, index) => {
-    const x = values.length <= 1 ? 50 : (index / (values.length - 1)) * 100;
-    const y = 36 - (value / maximum) * 30;
-    return `${x.toFixed(2)},${y.toFixed(2)}`;
-  }).join(' ');
+  svg.setAttribute('aria-hidden', 'true');
+  const maximum = Math.max(...points.map(({ value }) => value), 1);
+  const coordinates = points.map(({ value }, index) => ({
+    x: points.length <= 1 ? 50 : (index / (points.length - 1)) * 100,
+    y: 36 - (value / maximum) * 30,
+  }));
   const polyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
-  polyline.setAttribute('points', points);
+  polyline.setAttribute('points', coordinates.map(({ x, y }) => (
+    `${x.toFixed(2)},${y.toFixed(2)}`
+  )).join(' '));
   polyline.setAttribute('fill', 'none');
   polyline.setAttribute('vector-effect', 'non-scaling-stroke');
   polyline.classList.add('atl-contribution-chart-line');
-  svg.append(polyline);
-  return svg;
+  const marker = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+  marker.classList.add('atl-contribution-chart-marker');
+  marker.setAttribute('r', '2.4');
+  marker.setAttribute('vector-effect', 'non-scaling-stroke');
+  marker.style.display = 'none';
+  svg.append(polyline, marker);
+
+  const tooltip = element('div', 'atl-contribution-chart-tooltip');
+  tooltip.hidden = true;
+  tooltip.setAttribute('role', 'status');
+  tooltip.setAttribute('aria-live', 'polite');
+  let activeIndex = Math.max(0, points.length - 1);
+  const hideTooltip = (): void => {
+    tooltip.hidden = true;
+    marker.style.display = 'none';
+  };
+  const showPoint = (index: number): void => {
+    const point = points[index];
+    const coordinate = coordinates[index];
+    if (point === undefined || coordinate === undefined) return;
+    activeIndex = index;
+    marker.setAttribute('cx', coordinate.x.toFixed(2));
+    marker.setAttribute('cy', coordinate.y.toFixed(2));
+    marker.style.display = '';
+    tooltip.textContent = `${point.date} · ${formatValue(point.value)} ${suffix}`;
+    tooltip.style.left = `${coordinate.x}%`;
+    tooltip.style.top = `${coordinate.y}%`;
+    tooltip.hidden = false;
+  };
+  plot.addEventListener('pointermove', (event) => {
+    if (points.length === 0) return;
+    const bounds = plot.getBoundingClientRect();
+    const ratio = bounds.width <= 0
+      ? 0
+      : Math.min(1, Math.max(0, (event.clientX - bounds.left) / bounds.width));
+    const index = Math.round(ratio * (points.length - 1));
+    showPoint(index);
+  });
+  plot.addEventListener('pointerleave', () => {
+    if (document.activeElement !== plot) hideTooltip();
+  });
+  plot.addEventListener('focus', () => {
+    if (points.length > 0) showPoint(activeIndex);
+  });
+  plot.addEventListener('keydown', (event) => {
+    if (points.length === 0) return;
+    let nextIndex = activeIndex;
+    if (event.key === 'ArrowLeft') nextIndex = Math.max(0, activeIndex - 1);
+    else if (event.key === 'ArrowRight') nextIndex = Math.min(points.length - 1, activeIndex + 1);
+    else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = points.length - 1;
+    else return;
+    event.preventDefault();
+    showPoint(nextIndex);
+  });
+  plot.addEventListener('blur', hideTooltip);
+  plot.append(svg, tooltip);
+  return plot;
 }
 
 function tokenStatusText(state: ContributionDashboardState): string {
@@ -105,10 +260,20 @@ function contributionStatusText(state: ContributionDashboardState): string {
   }
 }
 
+function pulseLevel(value: number, maximum: number): 0 | 1 | 2 | 3 | 4 {
+  if (value <= 0 || maximum <= 0) return 0;
+  return Math.min(4, Math.max(1, Math.ceil((value / maximum) * 4))) as 1 | 2 | 3 | 4;
+}
+
 export class WorkContributionView extends ItemView {
   private readonly dependencies: WorkContributionViewDependencies;
   private controller: ContributionDashboardController | null = null;
   private unsubscribe: (() => void) | null = null;
+  private state: ContributionDashboardState | null = null;
+  private activeTab: HomeTab = 'overview';
+  private pulseMode: PulseMode = 'ai';
+  private weeklyFocus: WeeklyFocusDocument | null = null;
+  private weeklyCoachDraft: WeeklyCoachSessionDraft | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -123,18 +288,24 @@ export class WorkContributionView extends ItemView {
   }
 
   getDisplayText(): string {
-    return '个人工作贡献';
+    return 'ClawVault 个人首页';
   }
 
   getIcon(): string {
-    return 'chart-no-axes-combined';
+    return 'layout-dashboard';
   }
 
   async onOpen(): Promise<void> {
     this.contentEl.classList.add('atl-contribution-view');
     this.controller = this.dependencies.createController();
-    this.unsubscribe = this.controller.subscribe((state) => this.render(state));
-    await this.controller.initialize();
+    this.unsubscribe = this.controller.subscribe((state) => {
+      this.state = state;
+      this.render(state);
+    });
+    await Promise.all([
+      this.controller.initialize(),
+      this.refreshWeeklyCoachState(),
+    ]);
   }
 
   async onClose(): Promise<void> {
@@ -142,6 +313,9 @@ export class WorkContributionView extends ItemView {
     this.unsubscribe = null;
     this.controller?.dispose();
     this.controller = null;
+    this.state = null;
+    this.weeklyFocus = null;
+    this.weeklyCoachDraft = null;
     this.contentEl.replaceChildren();
   }
 
@@ -149,26 +323,42 @@ export class WorkContributionView extends ItemView {
     return this.controller?.refreshContribution() ?? Promise.resolve();
   }
 
+  async refreshWeeklyCoachState(): Promise<void> {
+    const [weeklyFocus, weeklyCoachDraft] = await Promise.all([
+      this.dependencies.loadWeeklyFocus().catch(() => null),
+      this.dependencies.loadWeeklyCoachDraft().catch(() => null),
+    ]);
+    this.weeklyFocus = weeklyFocus;
+    this.weeklyCoachDraft = weeklyCoachDraft;
+    this.rerender();
+  }
+
   private render(state: ContributionDashboardState): void {
-    const root = element('div', 'atl-contribution-shell');
-    root.append(this.renderHeader(state));
-    root.append(this.renderKpis(state));
-    root.append(this.renderHeatmap(state));
-    root.append(this.renderTrends(state));
-    root.append(this.renderProjects(state));
-    root.append(this.renderOutputs(state));
+    const root = element('div', 'atl-contribution-shell atl-home-app-shell');
+    root.append(this.renderSidebar(state));
+    const main = element('div', 'atl-home-main');
+    const scroll = element('div', 'atl-home-main-scroll');
+    scroll.append(this.renderActiveView(state));
+    main.append(scroll);
+    root.append(main);
     this.contentEl.replaceChildren(root);
   }
 
-  private renderHeader(state: ContributionDashboardState): HTMLElement {
-    const header = element('header', 'atl-contribution-header');
+  private rerender(): void {
+    if (this.state !== null) this.render(this.state);
+  }
+
+  private renderSidebar(state: ContributionDashboardState): HTMLElement {
+    const sidebar = element('aside', 'atl-home-sidebar');
+    const brand = element('header', 'atl-home-sidebar-brand');
+    brand.append(element('span', 'atl-home-brand-mark', 'CV'));
     const identity = element('div', 'atl-contribution-identity');
-    identity.append(element('h1', 'atl-contribution-title', '个人工作贡献'));
-    identity.append(element(
-      'p',
-      'atl-contribution-subtitle',
-      '看见每天完成了什么，也看见时间花在了哪里。',
-    ));
+    identity.append(element('h1', 'atl-contribution-title', 'ClawVault'));
+    identity.append(element('p', 'atl-contribution-subtitle', '个人工作台'));
+    brand.append(identity);
+    sidebar.append(brand, this.renderTabs(state));
+
+    const footer = element('footer', 'atl-home-sidebar-footer');
     const sources = element('div', 'atl-contribution-sources');
     sources.append(element(
       'span',
@@ -180,21 +370,18 @@ export class WorkContributionView extends ItemView {
       `atl-contribution-source atl-contribution-source-${state.token.status}`,
       tokenStatusText(state),
     ));
-    identity.append(sources);
+    footer.append(sources);
 
-    const controls = element('div', 'atl-contribution-controls');
-    const ranges = element('div', 'atl-contribution-ranges');
-    ranges.setAttribute('role', 'group');
-    ranges.setAttribute('aria-label', '统计范围');
-    for (const option of RANGE_OPTIONS) {
-      const button = element('button', 'atl-contribution-range', option.label);
-      button.type = 'button';
-      button.setAttribute('aria-pressed', String(state.range === option.value));
-      button.addEventListener('click', () => {
-        void this.controller?.setRange(option.value);
-      });
-      ranges.append(button);
-    }
+    const actions = element('div', 'atl-home-sidebar-actions');
+    const settings = element('button', 'atl-home-settings');
+    settings.type = 'button';
+    settings.setAttribute('aria-label', '工作台设置');
+    setIcon(settings, 'sliders-horizontal');
+    settings.append(element('span', undefined, '工作台设置'));
+    settings.addEventListener('click', () => {
+      void this.dependencies.openSettings();
+    });
+
     const refresh = element('button', 'clickable-icon atl-contribution-refresh');
     refresh.type = 'button';
     refresh.setAttribute('aria-label', '刷新数据');
@@ -204,65 +391,173 @@ export class WorkContributionView extends ItemView {
     refresh.addEventListener('click', () => {
       void this.controller?.refreshAll();
     });
-    controls.append(ranges, refresh);
-    header.append(identity, controls);
-    return header;
+    actions.append(settings, refresh);
+    footer.append(actions);
+    sidebar.append(footer);
+    return sidebar;
   }
 
-  private renderKpis(state: ContributionDashboardState): HTMLElement {
-    const grid = element('section', 'atl-contribution-kpis');
-    const snapshot = state.contribution.snapshot;
-    const today = snapshot?.days.at(-1)?.date;
-    const tokenToday = state.token.snapshot?.days.find((day) => day.date === today);
-    const values = [
-      ['今日完成', snapshot === null ? '--' : formatNumber(snapshot.kpis.completedToday), '个任务'],
-      ['本周完成', snapshot === null ? '--' : formatNumber(snapshot.kpis.completedThisWeek), '周一至今'],
-      ['连续完成', snapshot === null ? '--' : formatNumber(snapshot.kpis.currentStreak), '天'],
-      [
-        '今日 Normalized Token',
-        tokenToday === undefined ? '--' : formatNumber(tokenToday.normalized),
-        tokenStatusText(state),
-      ],
-    ];
-    for (const [label, value, note] of values) {
-      const card = element('div', 'atl-contribution-kpi');
-      card.append(element('span', 'atl-contribution-kpi-label', label));
-      card.append(element('strong', 'atl-contribution-kpi-value', value));
-      card.append(element('span', 'atl-contribution-kpi-note', note));
-      grid.append(card);
+  private renderTabs(state: ContributionDashboardState): HTMLElement {
+    const tabs = element('nav', 'atl-home-tabs');
+    tabs.setAttribute('aria-label', '个人首页视图');
+    for (const option of TAB_OPTIONS) {
+      const button = element('button', 'atl-home-tab');
+      button.type = 'button';
+      button.setAttribute('aria-pressed', String(this.activeTab === option.value));
+      const icon = element('span', 'atl-home-tab-icon');
+      setIcon(icon, option.icon);
+      button.append(icon, element('span', 'atl-home-tab-label', option.label));
+      const count = option.value === 'input'
+        ? state.home.snapshot?.counts.inbox
+        : option.value === 'review'
+          ? state.home.snapshot?.counts.review
+          : undefined;
+      if (count !== undefined) {
+        button.append(element('span', 'atl-home-tab-count', formatNumber(count)));
+      }
+      button.addEventListener('click', () => {
+        this.activeTab = option.value;
+        this.rerender();
+      });
+      tabs.append(button);
     }
-    return grid;
+    return tabs;
+  }
+
+  private renderActiveView(state: ContributionDashboardState): HTMLElement {
+    switch (this.activeTab) {
+      case 'today': return this.renderToday(state);
+      case 'input': return this.renderInput(state);
+      case 'review': return this.renderReview(state);
+      case 'overview': return this.renderOverview(state);
+    }
+  }
+
+  private renderOverview(state: ContributionDashboardState): HTMLElement {
+    const view = element('main', 'atl-home-view atl-home-view-overview');
+    view.append(this.renderPulse(state));
+    view.append(this.renderFocus(state));
+    view.append(this.renderOverviewMetrics(state));
+    view.append(this.renderNextAction(state));
+    view.append(this.renderOverviewLower(state));
+    return view;
+  }
+
+  private renderPulse(state: ContributionDashboardState): HTMLElement {
+    const pulse = element('section', 'atl-home-pulse');
+    const heading = element('div', 'atl-home-pulse-heading');
+    const title = element('div');
+    title.append(element('p', 'atl-home-eyebrow', 'PERSONAL PULSE'));
+    title.append(element('h2', 'atl-home-pulse-title', '最近 26 周'));
+
+    const controls = element('div', 'atl-contribution-controls');
+    const modes = element('div', 'atl-pulse-modes');
+    modes.setAttribute('role', 'group');
+    modes.setAttribute('aria-label', '贡献类型');
+    for (const option of PULSE_OPTIONS) {
+      const button = element('button', 'atl-pulse-mode', option.label);
+      button.type = 'button';
+      button.setAttribute('aria-pressed', String(this.pulseMode === option.value));
+      button.addEventListener('click', () => {
+        this.pulseMode = option.value;
+        this.rerender();
+      });
+      modes.append(button);
+    }
+    controls.append(modes);
+    heading.append(title, controls);
+    pulse.append(heading);
+
+    const body = element('div', 'atl-home-pulse-body');
+    if (this.pulseMode === 'consumption') {
+      body.classList.add('is-consumption');
+      const pending = element('div', 'atl-home-consumption-pending');
+      pending.append(element('strong', undefined, '文章消费标记待接入'));
+      pending.append(element(
+        'span',
+        undefined,
+        '首页暂不推测文章是否被消费，后续以你的重要度与个人判断为准。',
+      ));
+      body.append(pending);
+    } else {
+      body.append(this.renderHeatmap(state), this.renderPulseSummary(state));
+    }
+    pulse.append(body);
+    if (this.pulseMode !== 'consumption') {
+      pulse.append(this.renderTrends(state));
+    }
+    return pulse;
   }
 
   private renderHeatmap(state: ContributionDashboardState): HTMLElement {
-    const area = section('工作贡献', 'atl-contribution-heatmap-section');
+    const wrapper = element('div', 'atl-contribution-heatmap-scroll');
     const snapshot = state.contribution.snapshot;
     if (snapshot === null) {
-      area.body.append(element(
+      wrapper.append(element(
         'p',
         'atl-contribution-empty',
         state.contribution.status === 'error'
           ? '暂时无法读取完成记录，请稍后刷新。'
           : '正在读取完成记录…',
       ));
-      return area.root;
+      return wrapper;
     }
-    const scroller = element('div', 'atl-contribution-heatmap-scroll');
+
+    const tokenByDate = new Map(
+      (state.token.snapshot?.days ?? []).map((day) => [day.date, day.normalized]),
+    );
+    const dayByDate = new Map(snapshot.days.map((day) => [day.date, day]));
+    const anchorDate = snapshot.days.at(-1)?.date ?? snapshot.selectedDate;
+    const anchorRow = mondayBasedWeekday(anchorDate);
+    const firstDate = addDays(anchorDate, -((HEATMAP_DAY_COUNT - 7) + anchorRow - 1));
+    const slotDates = Array.from(
+      { length: HEATMAP_DAY_COUNT },
+      (_, index) => addDays(firstDate, index),
+    );
+    const heatmapDays = slotDates.flatMap((date) => {
+      const day = dayByDate.get(date);
+      return day === undefined ? [] : [day];
+    });
+    const values = heatmapDays.map((day) => {
+      if (this.pulseMode === 'outputs') return day.outputCount;
+      if (this.pulseMode === 'ai') return tokenByDate.get(day.date) ?? 0;
+      return day.completed;
+    });
+    const maximum = Math.max(...values, 0);
     const grid = element('div', 'atl-contribution-heatmap');
-    grid.setAttribute('aria-label', '每日任务完成贡献图');
-    const firstDay = snapshot.days[0];
-    const firstRow = firstDay === undefined ? 1 : mondayBasedWeekday(firstDay.date);
-    for (const [index, day] of snapshot.days.entries()) {
-      const button = element('button', `atl-contribution-day atl-contribution-level-${day.level}`);
+    grid.dataset.range = '26w';
+    const mode = this.pulseMode === 'consumption' ? 'tasks' : this.pulseMode;
+    grid.setAttribute('aria-label', `${PULSE_HEATMAP_LABELS[mode]}每日贡献图`);
+    for (const [index, date] of slotDates.entries()) {
+      const row = (index % 7) + 1;
+      const column = Math.floor(index / 7) + 1;
+      const day = dayByDate.get(date);
+      if (day === undefined) {
+        grid.append(this.renderHeatmapPlaceholder(row, column));
+        continue;
+      }
+      const value = this.pulseMode === 'outputs'
+        ? day.outputCount
+        : this.pulseMode === 'ai'
+          ? tokenByDate.get(day.date) ?? 0
+          : day.completed;
+      const level = this.pulseMode === 'tasks'
+        ? day.level
+        : pulseLevel(value, maximum);
+      const button = element(
+        'button',
+        `atl-contribution-day atl-contribution-level-${level} atl-pulse-${this.pulseMode}`,
+      );
       button.type = 'button';
       button.dataset.date = day.date;
-      button.setAttribute(
-        'aria-label',
-        `${day.date}，${day.completed} 个完成任务，${day.projectCount} 个项目`,
-      );
-      button.title = `${day.date} · ${day.completed} 个完成任务`;
-      button.style.gridRow = String(mondayBasedWeekday(day.date));
-      button.style.gridColumn = String(Math.floor((firstRow - 1 + index) / 7) + 1);
+      const valueLabel = mode === 'tasks'
+        ? `${day.completed} 个完成任务，${day.projectCount} 个项目`
+        : mode === 'outputs'
+          ? `${value} 个有效产出`
+          : `${formatCompactToken(value)} Normalized Token`;
+      button.setAttribute('aria-label', `${day.date}，${valueLabel}`);
+      button.style.gridRow = String(row);
+      button.style.gridColumn = String(column);
       if (state.selectedDate === day.date) {
         button.classList.add('is-selected');
         button.setAttribute('aria-current', 'date');
@@ -272,54 +567,586 @@ export class WorkContributionView extends ItemView {
       });
       grid.append(button);
     }
-    scroller.append(grid);
-    area.body.append(scroller);
-    if (snapshot.coverage.historicalCompletionDateUnavailable > 0) {
-      area.body.append(element(
-        'p',
-        'atl-contribution-coverage',
-        `${snapshot.coverage.historicalCompletionDateUnavailable} 个历史完成任务缺少可核对日期，未计入贡献图。`,
-      ));
+    wrapper.append(grid);
+    return wrapper;
+  }
+
+  private renderHeatmapPlaceholder(row: number, column: number): HTMLElement {
+    const placeholder = element('span', 'atl-contribution-placeholder');
+    placeholder.setAttribute('aria-hidden', 'true');
+    placeholder.style.gridRow = String(row);
+    placeholder.style.gridColumn = String(column);
+    return placeholder;
+  }
+
+  private renderPulseSummary(state: ContributionDashboardState): HTMLElement {
+    const snapshot = state.contribution.snapshot;
+    const today = snapshot?.days.at(-1)?.date;
+    const tokenToday = state.token.snapshot?.days.find((day) => day.date === today);
+    const values = [
+      ['本周完成', snapshot === null ? '--' : `${formatNumber(snapshot.kpis.completedThisWeek)} 项`],
+      ['今日完成', snapshot === null ? '--' : `${formatNumber(snapshot.kpis.completedToday)} 项`],
+      ['今日 Token', tokenToday === undefined ? '--' : formatCompactToken(tokenToday.normalized)],
+    ];
+    const summary = element('div', 'atl-home-pulse-summary');
+    const hero = element('div', 'atl-home-pulse-hero');
+    hero.append(element(
+      'strong',
+      undefined,
+      snapshot === null ? '--' : `${formatNumber(snapshot.kpis.currentStreak)} 天`,
+    ));
+    hero.append(element('span', undefined, '当前连续推进'));
+    summary.append(hero);
+
+    const details = element('div', 'atl-home-pulse-details');
+    for (const [label, value] of values) {
+      const item = element('div', 'atl-home-pulse-detail');
+      item.append(element('span', undefined, label));
+      item.append(element('strong', undefined, value));
+      details.append(item);
     }
-    return area.root;
+    summary.append(details);
+    const tasksMissingCompletionDate = snapshot?.coverage.tasksMissingCompletionDate ?? [];
+    if (tasksMissingCompletionDate.length > 0) {
+      const backfill = element(
+        'button',
+        'atl-contribution-coverage-action',
+        `另有 ${tasksMissingCompletionDate.length} 个历史完成任务未记录完成日期 · 查看并补齐`,
+      );
+      backfill.type = 'button';
+      backfill.addEventListener('click', () => {
+        void this.dependencies.openCompletionDateBackfill(tasksMissingCompletionDate);
+      });
+      summary.append(backfill);
+    }
+    return summary;
   }
 
   private renderTrends(state: ContributionDashboardState): HTMLElement {
-    const area = section('趋势', 'atl-contribution-trends-section');
-    const taskDays = state.contribution.snapshot?.days ?? [];
+    const taskDays = daysForTrend(state.contribution.snapshot?.days ?? [], state.range);
     const tokenByDate = new Map(
       (state.token.snapshot?.days ?? []).map((day) => [day.date, day]),
     );
     const definitions = [
       {
-        title: '每日完成任务',
+        title: '完成任务',
         value: taskDays.reduce((sum, day) => sum + day.completed, 0),
-        values: taskDays.map((day) => day.completed),
+        points: taskDays.map((day) => ({ date: day.date, value: day.completed })),
+        suffix: '项',
         label: '每日完成任务趋势',
-        token: false,
+        className: 'is-task atl-contribution-chart',
       },
       {
-        title: '每日 Normalized Token',
+        title: '有效产出',
+        value: taskDays.reduce((sum, day) => sum + day.outputCount, 0),
+        points: taskDays.map((day) => ({ date: day.date, value: day.outputCount })),
+        suffix: '个',
+        label: '每日有效产出趋势',
+        className: 'is-output',
+      },
+      {
+        title: 'Normalized Token',
         value: taskDays.reduce((sum, day) => sum + (tokenByDate.get(day.date)?.normalized ?? 0), 0),
-        values: taskDays.map((day) => tokenByDate.get(day.date)?.normalized ?? 0),
+        points: taskDays.map((day) => ({
+          date: day.date,
+          value: tokenByDate.get(day.date)?.normalized ?? 0,
+        })),
+        suffix: 'Token',
+        formatValue: formatCompactToken,
         label: '每日 Normalized Token 趋势',
-        token: true,
+        className: 'is-token atl-contribution-chart',
       },
     ];
-    const grid = element('div', 'atl-contribution-trends');
+    const grid = element('div', 'atl-home-trends');
+    grid.dataset.range = state.range;
+    const heading = element('div', 'atl-home-trends-heading');
+    heading.append(element('span', 'atl-home-trends-title', '趋势'));
+    const ranges = element('div', 'atl-contribution-ranges');
+    ranges.setAttribute('role', 'group');
+    ranges.setAttribute('aria-label', '趋势范围');
+    for (const option of RANGE_OPTIONS) {
+      const button = element('button', 'atl-contribution-range', option.label);
+      button.type = 'button';
+      button.setAttribute('aria-pressed', String(state.range === option.value));
+      button.addEventListener('click', () => {
+        void this.controller?.setRange(option.value);
+      });
+      ranges.append(button);
+    }
+    heading.append(ranges);
+    grid.append(heading);
     for (const definition of definitions) {
-      const chart = element(
-        'div',
-        `atl-contribution-chart ${definition.token ? 'is-token' : 'is-task'}`,
-      );
+      const chart = element('div', `atl-home-trend ${definition.className}`);
+      chart.dataset.pointCount = String(definition.points.length);
       const caption = element('div', 'atl-contribution-chart-caption');
       caption.append(element('span', 'atl-contribution-chart-title', definition.title));
-      caption.append(element('strong', 'atl-contribution-chart-total', formatNumber(definition.value)));
-      chart.append(caption, lineChart(definition.values, definition.label));
+      caption.append(element(
+        'strong',
+        'atl-contribution-chart-total',
+        (definition.formatValue ?? formatNumber)(definition.value),
+      ));
+      chart.append(
+        caption,
+        lineChart(
+          definition.points,
+          definition.label,
+          definition.suffix,
+          definition.formatValue,
+        ),
+      );
       grid.append(chart);
     }
-    area.body.append(grid);
+    return grid;
+  }
+
+  private renderFocus(state: ContributionDashboardState): HTMLElement {
+    const confirmed = this.weeklyFocus?.record.status === '已确认'
+      ? this.weeklyFocus
+      : null;
+    const area = this.renderCommandSection(
+      confirmed === null ? 'CURRENT FOCUS · 系统候选' : 'CURRENT FOCUS · 用户确认',
+      '当前最值得推进的三件事',
+      'atl-home-focus',
+      this.weeklyFocus?.record.status === '已确认'
+        ? '查看本周判断'
+        : this.weeklyCoachDraft !== null || this.weeklyFocus?.record.status === '草稿'
+          ? '继续本周思考'
+          : '梳理本周重点',
+      () => {
+        void this.dependencies.openWeeklyCoach(() => {
+          void this.refreshWeeklyCoachState();
+        });
+      },
+    );
+    if (confirmed !== null) {
+      this.renderConfirmedFocus(area.body, confirmed);
+      return area.root;
+    }
+    const tasks = state.home.snapshot?.focusTasks ?? [];
+    if (tasks.length === 0) {
+      area.body.append(element('p', 'atl-contribution-empty', '当前没有执行中或待执行任务'));
+    } else {
+      const grid = element('div', 'atl-home-focus-grid');
+      for (const [index, task] of tasks.slice(0, 3).entries()) {
+        const card = element('button', 'atl-home-focus-card');
+        card.type = 'button';
+        card.dataset.taskId = task.taskId;
+        const top = element('span', 'atl-home-focus-top');
+        top.append(element(
+          'span',
+          'atl-home-focus-number',
+          String(index + 1).padStart(2, '0'),
+        ));
+        top.append(element(
+          'span',
+          `atl-home-task-status is-${task.status}`,
+          STATUS_LABELS[task.status] ?? task.status,
+        ));
+        const title = element(
+          'strong',
+          'atl-home-focus-name',
+          task.title.trim() === '' ? '未命名任务' : task.title,
+        );
+        const meta = element('span', 'atl-home-focus-meta');
+        meta.append(
+          element('span', undefined, task.projectName),
+          element('span', undefined, `${task.artifactCount} 个产出`),
+        );
+        card.append(top, title, meta);
+        card.addEventListener('click', () => {
+          void this.dependencies.openTask(task.taskId);
+        });
+        grid.append(card);
+      }
+      area.body.append(grid);
+    }
     return area.root;
+  }
+
+  private renderConfirmedFocus(
+    container: HTMLElement,
+    document: WeeklyFocusDocument,
+  ): void {
+    const { input } = document.record;
+    if (input.noNewFocus && input.focuses.length === 0) {
+      container.append(element(
+        'p',
+        'atl-contribution-empty',
+        '本周暂不新增重点，先完成既有承诺。',
+      ));
+      return;
+    }
+    const grid = element('div', 'atl-home-focus-grid');
+    for (const [index, focus] of input.focuses.slice(0, 3).entries()) {
+      const card = element('button', 'atl-home-focus-card atl-home-weekly-focus-card');
+      card.type = 'button';
+      card.dataset.weeklyFocusPath = document.path;
+      const top = element('span', 'atl-home-focus-top');
+      top.append(
+        element('span', 'atl-home-focus-number', String(index + 1).padStart(2, '0')),
+        element('span', 'atl-home-task-status is-confirmed', '用户确认'),
+      );
+      const title = element(
+        'strong',
+        'atl-home-focus-name',
+        focus.focus,
+      );
+      const meta = element('span', 'atl-home-focus-meta');
+      meta.append(
+        element('span', undefined, focus.outcome),
+        element('span', undefined, focus.whyThisWeek),
+      );
+      card.append(top, title, meta);
+      card.addEventListener('click', () => {
+        void this.dependencies.openWeeklyFocus(document.path);
+      });
+      grid.append(card);
+    }
+    container.append(grid);
+  }
+
+  private renderOverviewMetrics(state: ContributionDashboardState): HTMLElement {
+    const counts = state.home.snapshot?.counts;
+    const inboxTasks = state.home.snapshot?.inboxTasks ?? [];
+    const highPriority = inboxTasks.filter((task) => (
+      task.priority === 'urgent' || task.priority === 'high'
+    )).length;
+    const activeCount = counts === undefined
+      ? null
+      : counts.ready + counts.inProgress + counts.review;
+    const health = [
+      state.contribution.status === 'ready',
+      state.home.status === 'ready',
+      state.token.status === 'ready' || state.token.status === 'cached',
+    ];
+    const healthySources = health.filter(Boolean).length;
+    const attentionSources = health.length - healthySources;
+    const definitions = [
+      {
+        eyebrow: 'INPUT DEBT',
+        title: '输入积压',
+        icon: 'inbox',
+        value: counts === undefined ? '--' : formatNumber(counts.inbox),
+        tone: 'is-coral',
+        detail: counts === undefined
+          ? '正在读取收件箱'
+          : `${formatNumber(highPriority)} 条高优先级 · ${formatNumber(counts.inbox)} 条等待判断`,
+        action: '去处理输入',
+        tab: 'input' as const,
+      },
+      {
+        eyebrow: 'TASK FLOW',
+        title: '任务流转',
+        icon: 'workflow',
+        value: activeCount === null ? '--' : formatNumber(activeCount),
+        tone: 'is-green',
+        detail: counts === undefined
+          ? '正在读取任务状态'
+          : `${formatNumber(counts.ready)} 待执行 · ${formatNumber(counts.inProgress)} 执行中 · ${formatNumber(counts.review)} 待验收`,
+        action: '查看推进任务',
+        tab: 'today' as const,
+      },
+      {
+        eyebrow: 'SYSTEM STATUS',
+        title: '系统状态',
+        icon: 'activity',
+        value: `${healthySources}/${health.length}`,
+        tone: attentionSources === 0 ? 'is-green' : 'is-amber',
+        detail: attentionSources === 0
+          ? 'ATL、任务首页与 OpenToken 正常'
+          : `${formatNumber(attentionSources)} 个数据源需要关注`,
+        action: '查看运行状态',
+        tab: 'review' as const,
+      },
+    ];
+    const root = element('section', 'atl-contribution-section atl-home-metrics');
+    const grid = element('div', 'atl-home-metric-grid');
+    for (const definition of definitions) {
+      const card = element('button', 'atl-home-metric-cell');
+      card.type = 'button';
+      const heading = element('div', 'atl-home-metric-heading');
+      const copy = element('div');
+      copy.append(
+        element('p', 'atl-home-eyebrow', definition.eyebrow),
+        element('h2', 'atl-home-section-title', definition.title),
+      );
+      const icon = element('span', 'atl-home-metric-icon');
+      setIcon(icon, definition.icon);
+      heading.append(copy, icon);
+      card.append(
+        heading,
+        element('strong', `atl-home-metric-value ${definition.tone}`, definition.value),
+        element('p', 'atl-home-metric-detail', definition.detail),
+      );
+      const action = element('span', 'atl-home-mini-action', `${definition.action} →`);
+      card.addEventListener('click', () => {
+        this.activeTab = definition.tab;
+        this.rerender();
+      });
+      card.append(action);
+      grid.append(card);
+    }
+    root.append(grid);
+    return root;
+  }
+
+  private renderTaskFlow(state: ContributionDashboardState): HTMLElement {
+    const area = section('任务流', 'atl-home-task-flow-section');
+    const counts = state.home.snapshot?.counts;
+    const values: Array<[string, number | null]> = [
+      ['收件箱', counts?.inbox ?? null],
+      ['待执行', counts?.ready ?? null],
+      ['执行中', counts?.inProgress ?? null],
+      ['待验收', counts?.review ?? null],
+      ['已阻塞', counts?.blocked ?? null],
+    ];
+    const flow = element('div', 'atl-home-task-flow');
+    for (const [label, value] of values) {
+      const item = element('div', 'atl-home-task-flow-item');
+      item.append(element('strong', undefined, value === null ? '--' : formatNumber(value)));
+      item.append(element('span', undefined, label));
+      flow.append(item);
+    }
+    area.body.append(flow);
+    return area.root;
+  }
+
+  private renderNextAction(state: ContributionDashboardState): HTMLElement {
+    const area = this.renderCommandSection(
+      'NEXT ACTION',
+      '现在最值得做什么',
+      'atl-home-next-action',
+    );
+    const task = state.home.snapshot?.nextAction ?? null;
+    if (task === null) {
+      area.body.append(element('p', 'atl-contribution-empty', '先从收件箱确认一个任务'));
+    } else {
+      const card = element('div', 'atl-home-next-action-card');
+      const status = element(
+        'span',
+        `atl-home-task-status is-${task.status}`,
+        STATUS_LABELS[task.status] ?? task.status,
+      );
+      const copy = element('div', 'atl-home-next-action-copy');
+      copy.append(
+        element(
+          'strong',
+          'atl-home-next-action-title',
+          task.title.trim() === '' ? '未命名任务' : task.title,
+        ),
+        element(
+          'span',
+          'atl-home-next-action-meta',
+          `${task.projectName} · ${task.artifactCount} 个产出`,
+        ),
+      );
+      const action = element('button', 'atl-home-primary-action');
+      action.type = 'button';
+      setIcon(action, 'arrow-up-right');
+      action.append(element('span', undefined, '打开任务'));
+      action.addEventListener('click', () => {
+        void this.dependencies.openTask(task.taskId);
+      });
+      card.append(status, copy, action);
+      area.body.append(card);
+    }
+    return area.root;
+  }
+
+  private renderOverviewLower(state: ContributionDashboardState): HTMLElement {
+    const root = element('div', 'atl-home-overview-lower');
+    root.append(this.renderInboxQueue(state), this.renderTodayProgress(state));
+    return root;
+  }
+
+  private renderInboxQueue(state: ContributionDashboardState): HTMLElement {
+    const area = this.renderCommandSection(
+      'INPUT QUEUE',
+      '等待你判断',
+      'atl-home-queue-panel',
+      '查看全部',
+      () => {
+        this.activeTab = 'input';
+        this.rerender();
+      },
+    );
+    const tasks = state.home.snapshot?.inboxTasks ?? [];
+    if (tasks.length === 0) {
+      area.body.append(element('p', 'atl-contribution-empty', '收件箱当前为空'));
+    } else {
+      const list = element('div', 'atl-home-queue-list');
+      for (const task of tasks.slice(0, 3)) {
+        const row = element('button', 'atl-home-queue-row');
+        row.type = 'button';
+        row.dataset.taskId = task.taskId;
+        row.append(element(
+          'span',
+          `atl-home-priority is-${task.priority}`,
+          PRIORITY_LABELS[task.priority],
+        ));
+        const copy = element('span', 'atl-home-queue-copy');
+        copy.append(
+          element(
+            'strong',
+            'atl-home-queue-title',
+            task.title.trim() === '' ? '未命名任务' : task.title,
+          ),
+          element(
+            'span',
+            'atl-home-queue-meta',
+            `${task.projectName} · ${formatCompactDate(task.updatedAt)}`,
+          ),
+        );
+        row.append(copy, element('span', 'atl-home-row-action', '判断'));
+        row.addEventListener('click', () => {
+          void this.dependencies.openTask(task.taskId);
+        });
+        list.append(row);
+      }
+      area.body.append(list);
+    }
+    return area.root;
+  }
+
+  private renderTodayProgress(state: ContributionDashboardState): HTMLElement {
+    const area = this.renderCommandSection(
+      'CURRENT',
+      '当前推进任务',
+      'atl-home-progress-panel',
+      '完整列表',
+      () => {
+        this.activeTab = 'today';
+        this.rerender();
+      },
+    );
+    const tasks = state.home.snapshot?.focusTasks ?? [];
+    if (tasks.length === 0) {
+      area.body.append(element('p', 'atl-contribution-empty', '当前没有待推进任务'));
+    } else {
+      const list = element('div', 'atl-home-progress-list');
+      for (const task of tasks.slice(0, 4)) {
+        const row = element('button', 'atl-home-progress-row');
+        row.type = 'button';
+        row.dataset.taskId = task.taskId;
+        row.append(element('span', `atl-home-progress-dot is-${task.status}`));
+        const copy = element('span', 'atl-home-progress-copy');
+        copy.append(
+          element(
+            'strong',
+            'atl-home-progress-title',
+            task.title.trim() === '' ? '未命名任务' : task.title,
+          ),
+          element('span', 'atl-home-progress-meta', task.projectName),
+        );
+        row.append(
+          copy,
+          element(
+            'span',
+            `atl-home-progress-state is-${task.status}`,
+            STATUS_LABELS[task.status] ?? task.status,
+          ),
+        );
+        row.addEventListener('click', () => {
+          void this.dependencies.openTask(task.taskId);
+        });
+        list.append(row);
+      }
+      area.body.append(list);
+    }
+    return area.root;
+  }
+
+  private renderCommandSection(
+    eyebrow: string,
+    title: string,
+    className: string,
+    actionLabel?: string,
+    onAction?: () => void,
+  ): { root: HTMLElement; body: HTMLElement } {
+    const root = element('section', `atl-contribution-section ${className}`);
+    const heading = element('div', 'atl-home-section-head');
+    const copy = element('div');
+    copy.append(
+      element('p', 'atl-home-eyebrow', eyebrow),
+      element('h2', 'atl-home-section-title', title),
+    );
+    heading.append(copy);
+    if (actionLabel !== undefined && onAction !== undefined) {
+      const action = element('button', 'atl-home-section-link');
+      action.type = 'button';
+      action.append(element('span', undefined, actionLabel));
+      const icon = element('span', 'atl-home-section-link-icon');
+      setIcon(icon, 'arrow-right');
+      action.append(icon);
+      action.addEventListener('click', onAction);
+      heading.append(action);
+    }
+    const body = element('div', 'atl-contribution-section-body');
+    root.append(heading, body);
+    return { root, body };
+  }
+
+  private renderToday(state: ContributionDashboardState): HTMLElement {
+    const view = element('main', 'atl-home-view atl-home-view-today');
+    const area = section('当前可以推进', 'atl-home-today-tasks');
+    const tasks = state.home.snapshot?.focusTasks ?? [];
+    if (tasks.length === 0) {
+      area.body.append(element('p', 'atl-contribution-empty', '当前没有待推进任务'));
+    } else {
+      area.body.append(this.renderTaskList(tasks));
+    }
+    view.append(area.root, this.renderTaskFlow(state));
+    return view;
+  }
+
+  private renderInput(state: ContributionDashboardState): HTMLElement {
+    const view = element('main', 'atl-home-view atl-home-view-input');
+    const area = section('收件箱', 'atl-home-input-list');
+    const tasks = state.home.snapshot?.inboxTasks ?? [];
+    if (tasks.length === 0) {
+      area.body.append(element('p', 'atl-contribution-empty', '收件箱当前为空'));
+    } else {
+      area.body.append(this.renderTaskList(tasks));
+    }
+    view.append(area.root);
+    return view;
+  }
+
+  private renderReview(state: ContributionDashboardState): HTMLElement {
+    const view = element('main', 'atl-home-view atl-home-view-review');
+    view.append(this.renderProjects(state), this.renderOutputs(state));
+    return view;
+  }
+
+  private renderTaskList(tasks: PersonalHomeTask[]): HTMLElement {
+    const list = element('div', 'atl-home-task-list');
+    for (const task of tasks) {
+      const button = element('button', 'atl-home-task');
+      button.type = 'button';
+      button.dataset.taskId = task.taskId;
+      const status = element(
+        'span',
+        `atl-home-task-status is-${task.status}`,
+        STATUS_LABELS[task.status] ?? task.status,
+      );
+      const content = element('span', 'atl-home-task-content');
+      content.append(element(
+        'strong',
+        'atl-home-task-title',
+        task.title.trim() === '' ? '未命名任务' : task.title,
+      ));
+      content.append(element(
+        'span',
+        'atl-home-task-meta',
+        `${task.projectName} · ${task.artifactCount} 个产出`,
+      ));
+      button.append(status, content);
+      button.addEventListener('click', () => {
+        void this.dependencies.openTask(task.taskId);
+      });
+      list.append(button);
+    }
+    return list;
   }
 
   private renderProjects(state: ContributionDashboardState): HTMLElement {

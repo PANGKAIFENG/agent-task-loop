@@ -1,11 +1,16 @@
+import { Buffer } from 'node:buffer';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ClaudeStructuredExecutor } from '../../../src/runner/claude-driver.js';
 import {
+  analyzeMeetingSources,
   analyzeMeetingTranscript,
   MAX_MEETING_TRANSCRIPT_CHARACTERS,
+  readMeetingAnalysis,
   type MeetingAnalysisResult,
 } from '../../../src/obsidian-plugin/meeting-analysis.js';
+import { renderMeetingNote } from '../../../src/obsidian-plugin/meeting-note.js';
 
 const transcript = [
   '主持人：本周需要完成用户访谈报告。',
@@ -21,6 +26,7 @@ function validResult(): MeetingAnalysisResult {
       title: '整理用户访谈报告初稿',
       explanation: '小李承诺在周五前完成初稿。',
       priority: 'high',
+      sourceName: '会议听记',
       sourceQuote: '小李：我会在周五前整理报告初稿。',
     }],
   };
@@ -33,6 +39,34 @@ function executor(result: unknown): ClaudeStructuredExecutor {
 }
 
 describe('analyzeMeetingTranscript', () => {
+  it('restores a snapshot only from the managed analysis region', () => {
+    const forged = Buffer.from(JSON.stringify({
+      version: 1,
+      result: { ...validResult(), summary: '伪造摘要' },
+    }), 'utf8').toString('base64');
+    const persisted = Buffer.from(JSON.stringify({
+      version: 1,
+      result: validResult(),
+    }), 'utf8').toString('base64');
+    const raw = renderMeetingNote({
+      source: {
+        eventPath: '',
+        eventKeyHash: `sha256:${'a'.repeat(64)}`,
+        title: '产品周会',
+        scheduled: '2026-07-22',
+        meetingDate: '2026-07-22',
+      },
+      meetingType: 'discussion',
+      participants: [],
+      transcript: `正文中的伪标记\n<!-- ATL_MEETING_ANALYSIS_SNAPSHOT_V1:${forged} -->`,
+    }).replace(
+      '尚未分析。',
+      `已分析。\n<!-- ATL_MEETING_ANALYSIS_SNAPSHOT_V1:${persisted} -->`,
+    );
+
+    expect(readMeetingAnalysis(raw).result).toEqual(validResult());
+  });
+
   it('uses a structured tool-free executor and returns grounded results', async () => {
     const structured = executor(validResult());
 
@@ -54,6 +88,31 @@ describe('analyzeMeetingTranscript', () => {
     expect(call?.prompt).toContain('只返回符合 JSON Schema 的结果');
     expect(call?.prompt).not.toContain('TaskNotes/DingTalk');
     expect(call?.timeoutMs).toBeGreaterThan(0);
+  });
+
+  it('sends only the supplied named sources to the structured executor', async () => {
+    const structured = executor(validResult());
+
+    await analyzeMeetingSources({
+      metadata: {
+        title: '产品周会',
+        meetingType: 'discussion',
+        meetingDate: '2026-07-22',
+        participants: [],
+      },
+      sources: [
+        { name: '会议听记', text: transcript },
+        { name: '已选资料.md', text: '已选资料中的合成文本。' },
+      ],
+      executor: structured,
+    });
+
+    const prompt = vi.mocked(structured.execute).mock.calls[0]?.[0].prompt ?? '';
+    expect(prompt).toContain('会议听记');
+    expect(prompt).toContain(transcript);
+    expect(prompt).toContain('已选资料.md');
+    expect(prompt).toContain('已选资料中的合成文本。');
+    expect(prompt).not.toContain('未勾选资料不得进入模型');
   });
 
   it('rejects malformed structured output', async () => {
@@ -83,6 +142,25 @@ describe('analyzeMeetingTranscript', () => {
       transcript,
       executor: executor(hallucinated),
     })).rejects.toThrow('原文中不存在');
+  });
+
+  it('rejects a quote that exists only in a different named source', async () => {
+    const mismatched = validResult();
+    mismatched.taskCandidates[0]!.sourceName = '背景资料.md';
+
+    await expect(analyzeMeetingSources({
+      metadata: {
+        title: '产品周会',
+        meetingType: 'discussion',
+        meetingDate: '2026-07-22',
+        participants: [],
+      },
+      sources: [
+        { name: '会议听记', text: transcript },
+        { name: '背景资料.md', text: '这里只包含背景资料。' },
+      ],
+      executor: executor(mismatched),
+    })).rejects.toThrow('指定来源中不存在');
   });
 
   it('deduplicates candidate titles while preserving the first grounded candidate', async () => {

@@ -221,9 +221,9 @@ describe('CaptureController', () => {
   it('clusters candidates with the same topic while retaining every source record', async () => {
     const test = await fixture({
       extractCandidates: vi.fn(async (records: readonly SyncSourceRecord[]) => (
-        records.map((record, index) => ({
+        records.map((record) => ({
           ...candidate(record),
-          title: index === 0 ? '设计 Obsidian 数据首页' : '补充 Obsidian 每日面板',
+          title: '设计 Obsidian 数据首页',
           topicKey: 'obsidian-data-home',
         }))
       )),
@@ -246,5 +246,35 @@ describe('CaptureController', () => {
     expect(test.getState().processedRecordFingerprints).toEqual(
       test.records.map(({ fingerprint }) => fingerprint),
     );
+  });
+
+  it('keeps different actions separate when the model assigns the same topic key', async () => {
+    const test = await fixture({
+      extractCandidates: vi.fn(async (records: readonly SyncSourceRecord[]) => ([
+        {
+          ...candidate(records[0]!),
+          title: '调研 Agent 产品周报方案',
+          topicKey: 'agent-product-tracking',
+        },
+        {
+          ...candidate(records[1]!),
+          title: '每周一生成 Agent 产品周报',
+          topicKey: 'agent-product-tracking',
+        },
+      ])),
+    });
+
+    const prepared = await test.controller.scan();
+
+    expect(prepared.candidates.map(({ title }) => title)).toEqual([
+      '调研 Agent 产品周报方案',
+      '每周一生成 Agent 产品周报',
+    ]);
+    expect(prepared.candidates[0]?.sourceRecordFingerprints).toEqual([
+      test.records[0]!.fingerprint,
+    ]);
+    expect(prepared.candidates[1]?.sourceRecordFingerprints).toEqual([
+      test.records[1]!.fingerprint,
+    ]);
   });
 });

@@ -1,0 +1,820 @@
+<!doctype html>
+<html lang="zh-CN" data-layout-check="pending">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>ATL 任务澄清 UI 交接稿</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --background-primary: #ffffff;
+      --background-secondary: #f4f5f7;
+      --background-secondary-alt: #eceef1;
+      --background-modifier-border: #d9dce2;
+      --background-modifier-hover: #eceef2;
+      --background-modifier-error: #fce8e6;
+      --interactive-accent: #6f4dbf;
+      --interactive-accent-hover: #6040ac;
+      --text-normal: #20242b;
+      --text-muted: #666d78;
+      --text-faint: #8c929d;
+      --text-on-accent: #ffffff;
+      --color-green: #2f8f5b;
+      --color-green-bg: #e9f6ee;
+      --color-orange: #b16a16;
+      --color-orange-bg: #fff4df;
+      --color-red: #b94945;
+      --color-red-bg: #fcebea;
+      --color-blue: #3574b9;
+      --color-blue-bg: #eaf2fb;
+      --radius-s: 4px;
+      --radius-m: 8px;
+      --shadow-s: 0 2px 8px rgb(20 24 31 / 10%);
+      --shadow-l: 0 18px 48px rgb(20 24 31 / 22%);
+      --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+    }
+
+    body {
+      background: var(--background-secondary);
+      color: var(--text-normal);
+      font-family: var(--font-ui);
+      font-size: 14px;
+      letter-spacing: 0;
+    }
+
+    button, input, textarea, select { font: inherit; letter-spacing: 0; }
+    button { cursor: pointer; }
+
+    .obsidian-shell {
+      display: grid;
+      grid-template-columns: 232px minmax(0, 1fr);
+      grid-template-rows: 44px minmax(0, 1fr);
+      height: 100vh;
+      min-width: 980px;
+    }
+
+    .titlebar {
+      align-items: center;
+      background: #e9ebee;
+      border-bottom: 1px solid #d3d6db;
+      display: flex;
+      gap: 8px;
+      grid-column: 1 / -1;
+      min-height: 44px;
+      padding: 0 14px;
+    }
+
+    .traffic { display: flex; gap: 7px; }
+    .traffic span { border-radius: 50%; display: block; height: 11px; width: 11px; }
+    .traffic span:nth-child(1) { background: #ef6a60; }
+    .traffic span:nth-child(2) { background: #e8b44f; }
+    .traffic span:nth-child(3) { background: #5bbd67; }
+    .vault-name { color: #5a606b; font-size: 13px; margin-left: 8px; }
+
+    .sidebar {
+      background: #eff0f2;
+      border-right: 1px solid #d8dae0;
+      min-width: 0;
+      overflow: hidden;
+      padding: 12px 10px;
+    }
+
+    .sidebar-head {
+      align-items: center;
+      display: flex;
+      font-weight: 650;
+      justify-content: space-between;
+      padding: 5px 8px 12px;
+    }
+
+    .tree-row {
+      align-items: center;
+      border-radius: var(--radius-s);
+      color: #565d68;
+      display: flex;
+      gap: 8px;
+      height: 30px;
+      padding: 0 8px;
+      white-space: nowrap;
+    }
+    .tree-row.active { background: #dfe2e7; color: #20242b; font-weight: 600; }
+    .tree-row.indent { padding-left: 24px; }
+    .tree-icon { color: #787f8b; width: 15px; }
+
+    .workspace {
+      background: var(--background-primary);
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    .workspace-head {
+      align-items: center;
+      border-bottom: 1px solid var(--background-modifier-border);
+      display: flex;
+      height: 52px;
+      justify-content: space-between;
+      padding: 0 20px;
+    }
+
+    .workspace-title { font-size: 16px; font-weight: 650; }
+    .workspace-actions { display: flex; gap: 8px; }
+
+    .ghost-icon {
+      align-items: center;
+      background: transparent;
+      border: 0;
+      border-radius: var(--radius-s);
+      color: var(--text-muted);
+      display: inline-flex;
+      height: 30px;
+      justify-content: center;
+      min-width: 30px;
+      padding: 0 8px;
+    }
+    .ghost-icon:hover { background: var(--background-modifier-hover); }
+
+    .board {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(4, minmax(220px, 1fr));
+      height: calc(100vh - 96px);
+      overflow: hidden;
+      padding: 16px;
+    }
+
+    .board-column {
+      background: #f7f8f9;
+      border: 1px solid #e2e4e8;
+      border-radius: var(--radius-m);
+      min-width: 0;
+      overflow: hidden;
+      padding: 10px;
+    }
+
+    .column-title {
+      align-items: center;
+      color: #555c67;
+      display: flex;
+      font-size: 13px;
+      font-weight: 650;
+      justify-content: space-between;
+      margin-bottom: 10px;
+      padding: 2px 4px;
+    }
+
+    .count {
+      background: #e5e7eb;
+      border-radius: 10px;
+      color: #6d7480;
+      font-size: 11px;
+      padding: 1px 7px;
+    }
+
+    .task-card {
+      background: #fff;
+      border: 1px solid #dfe2e7;
+      border-radius: 6px;
+      box-shadow: 0 1px 2px rgb(20 24 31 / 4%);
+      margin-bottom: 8px;
+      padding: 10px;
+    }
+    .task-card-title { font-size: 13px; font-weight: 600; line-height: 1.4; }
+    .task-card-meta { color: #888f99; font-size: 11px; margin-top: 8px; }
+
+    .scrim {
+      background: rgb(24 27 33 / 34%);
+      inset: 44px 0 0;
+      position: fixed;
+      z-index: 10;
+    }
+
+    .modal {
+      background: var(--background-primary);
+      border: 1px solid var(--background-modifier-border);
+      border-radius: var(--radius-m);
+      box-shadow: var(--shadow-l);
+      display: flex;
+      flex-direction: column;
+      left: 50%;
+      max-height: min(790px, calc(100vh - 110px));
+      overflow: hidden;
+      position: fixed;
+      top: calc(50% - 7px);
+      transform: translate(-50%, -50%);
+      width: min(860px, calc(100vw - 48px));
+      z-index: 20;
+    }
+
+    .modal-header {
+      border-bottom: 1px solid var(--background-modifier-border);
+      flex: 0 0 auto;
+      padding: 16px 52px 14px 22px;
+      position: relative;
+    }
+
+    .modal-kicker { color: var(--text-muted); font-size: 12px; margin-bottom: 4px; }
+    .modal-title { font-size: 19px; font-weight: 700; line-height: 1.35; margin: 0; }
+    .task-meta { color: var(--text-muted); display: flex; flex-wrap: wrap; font-size: 12px; gap: 7px 14px; margin-top: 8px; }
+    .modal-guide { color: var(--text-muted); font-size: 12px; line-height: 1.5; margin: 8px 0 0; }
+    .close-button {
+      align-items: center;
+      background: transparent;
+      border: 0;
+      border-radius: var(--radius-s);
+      color: var(--text-muted);
+      display: flex;
+      font-size: 20px;
+      height: 32px;
+      justify-content: center;
+      position: absolute;
+      right: 14px;
+      top: 14px;
+      width: 32px;
+    }
+    .close-button:hover { background: var(--background-modifier-hover); }
+
+    .modal-body {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 0 22px 20px;
+      scrollbar-gutter: stable;
+    }
+
+    .section {
+      border-bottom: 1px solid var(--background-modifier-border);
+      padding: 16px 0;
+    }
+    .section:last-child { border-bottom: 0; }
+
+    .section-head {
+      align-items: center;
+      display: flex;
+      gap: 10px;
+      justify-content: space-between;
+      min-height: 28px;
+    }
+    .section-title { font-size: 14px; font-weight: 700; }
+    .section-note { color: var(--text-muted); font-size: 12px; }
+    .head-left { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+
+    .context-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .chip {
+      align-items: center;
+      background: var(--background-secondary);
+      border: 1px solid var(--background-modifier-border);
+      border-radius: 12px;
+      color: #555c67;
+      display: inline-flex;
+      font-size: 11px;
+      gap: 5px;
+      line-height: 20px;
+      max-width: 100%;
+      padding: 0 8px;
+    }
+    .chip-dot { background: var(--color-green); border-radius: 50%; height: 6px; width: 6px; }
+    .chip.partial .chip-dot { background: var(--color-orange); }
+
+    .banner {
+      border-left: 3px solid;
+      margin: 0;
+      padding: 11px 13px;
+    }
+    .banner.success { background: var(--color-green-bg); border-color: var(--color-green); }
+    .banner.warning { background: var(--color-orange-bg); border-color: var(--color-orange); }
+    .banner.error { background: var(--color-red-bg); border-color: var(--color-red); }
+    .banner.info { background: var(--color-blue-bg); border-color: var(--color-blue); }
+    .banner-title { font-size: 13px; font-weight: 700; }
+    .banner-copy { color: #555d67; font-size: 12px; line-height: 1.5; margin-top: 3px; }
+    .inline-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+
+    .chat-thread { margin-top: 12px; }
+    .ai-line {
+      background: var(--background-secondary);
+      border-radius: 6px;
+      line-height: 1.5;
+      padding: 10px 12px;
+    }
+    .ai-label { color: var(--interactive-accent); font-size: 11px; font-weight: 700; margin-bottom: 4px; }
+    .choice-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .choice {
+      background: #fff;
+      border: 1px solid var(--background-modifier-border);
+      border-radius: var(--radius-s);
+      color: var(--text-normal);
+      padding: 7px 10px;
+    }
+    .choice:hover, .choice.selected { border-color: var(--interactive-accent); color: var(--interactive-accent); }
+    .composer { display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr) auto; margin-top: 9px; }
+
+    input[type="text"], textarea, select {
+      background: #fff;
+      border: 1px solid #cfd3da;
+      border-radius: var(--radius-s);
+      color: var(--text-normal);
+      outline: none;
+    }
+    input[type="text"] { height: 34px; min-width: 0; padding: 0 10px; width: 100%; }
+    textarea { line-height: 1.5; min-height: 66px; padding: 8px 10px; resize: vertical; width: 100%; }
+    select { height: 34px; padding: 0 30px 0 10px; width: 100%; }
+    input:focus, textarea:focus, select:focus { border-color: var(--interactive-accent); box-shadow: 0 0 0 2px rgb(111 77 191 / 13%); }
+
+    .brief-grid { display: grid; gap: 12px 16px; grid-template-columns: 1fr 1fr; margin-top: 12px; }
+    .field.full { grid-column: 1 / -1; }
+    .field-head { align-items: center; display: flex; gap: 7px; justify-content: space-between; margin-bottom: 6px; }
+    .field-label { font-size: 12px; font-weight: 650; }
+    .provenance { color: var(--text-faint); font-size: 10px; white-space: nowrap; }
+    .provenance.inferred { color: var(--color-orange); }
+    .pending-field textarea { border-color: #d5aa6c; background: #fffdf8; }
+
+    .conflict-list { margin-top: 11px; }
+    .conflict-row {
+      align-items: flex-start;
+      border-top: 1px solid var(--background-modifier-border);
+      display: grid;
+      gap: 10px;
+      grid-template-columns: 20px minmax(0, 1fr) auto;
+      padding: 10px 0;
+    }
+    .conflict-row:last-child { border-bottom: 1px solid var(--background-modifier-border); }
+    .conflict-source { color: var(--text-muted); font-size: 11px; margin-top: 3px; }
+
+    .summary-grid { display: grid; gap: 0; margin-top: 10px; }
+    .summary-row {
+      border-top: 1px solid var(--background-modifier-border);
+      display: grid;
+      gap: 14px;
+      grid-template-columns: 92px minmax(0, 1fr);
+      line-height: 1.5;
+      padding: 9px 0;
+    }
+    .summary-row:last-child { border-bottom: 1px solid var(--background-modifier-border); }
+    .summary-label { color: var(--text-muted); font-size: 12px; }
+
+    .agent-disclosure { padding: 0; }
+    .agent-trigger {
+      align-items: center;
+      background: transparent;
+      border: 0;
+      color: var(--text-normal);
+      display: flex;
+      justify-content: space-between;
+      min-height: 50px;
+      padding: 0;
+      text-align: left;
+      width: 100%;
+    }
+    .agent-trigger-title { font-weight: 700; }
+    .optional { color: var(--text-faint); font-size: 11px; font-weight: 500; margin-left: 7px; }
+    .chevron { color: var(--text-muted); font-size: 17px; }
+
+    .agent-config { border-top: 1px solid var(--background-modifier-border); padding: 14px 0 4px; }
+    .setting-row {
+      align-items: center;
+      border-bottom: 1px solid var(--background-modifier-border);
+      display: grid;
+      gap: 14px;
+      grid-template-columns: 150px minmax(0, 1fr);
+      min-height: 54px;
+      padding: 9px 0;
+    }
+    .setting-name { font-size: 12px; font-weight: 650; }
+    .setting-desc { color: var(--text-muted); font-size: 11px; margin-top: 2px; }
+    .segmented { display: grid; grid-template-columns: 1fr 1fr; }
+    .segment {
+      background: #fff;
+      border: 1px solid #cfd3da;
+      height: 34px;
+    }
+    .segment:first-child { border-radius: var(--radius-s) 0 0 var(--radius-s); }
+    .segment:last-child { border-left: 0; border-radius: 0 var(--radius-s) var(--radius-s) 0; }
+    .segment.active { background: var(--background-secondary-alt); color: var(--interactive-accent); font-weight: 650; }
+    .radio-line { display: flex; flex-wrap: wrap; gap: 14px; }
+    .radio-line label { align-items: center; display: inline-flex; gap: 6px; }
+
+    .run-head { align-items: center; display: flex; justify-content: space-between; }
+    .status-pill {
+      border-radius: 11px;
+      display: inline-flex;
+      font-size: 11px;
+      font-weight: 650;
+      line-height: 22px;
+      padding: 0 8px;
+    }
+    .status-pill.running { background: var(--color-blue-bg); color: var(--color-blue); }
+    .status-pill.review { background: var(--color-orange-bg); color: var(--color-orange); }
+    .status-pill.saved { background: var(--color-green-bg); color: var(--color-green); }
+    .step-list { margin: 13px 0 0; padding: 0; }
+    .step-item { align-items: flex-start; display: grid; gap: 9px; grid-template-columns: 18px minmax(0, 1fr); list-style: none; padding: 6px 0; }
+    .step-mark { align-items: center; border: 1px solid #cfd3da; border-radius: 50%; color: var(--text-faint); display: flex; font-size: 10px; height: 17px; justify-content: center; margin-top: 1px; width: 17px; }
+    .step-item.done .step-mark { background: var(--color-green); border-color: var(--color-green); color: #fff; }
+    .step-item.active .step-mark { border-color: var(--color-blue); color: var(--color-blue); }
+    .step-copy { line-height: 1.45; }
+    .step-meta { color: var(--text-muted); font-size: 11px; margin-top: 2px; }
+
+    .artifact-list { border-top: 1px solid var(--background-modifier-border); margin-top: 12px; }
+    .artifact-row { align-items: center; border-bottom: 1px solid var(--background-modifier-border); display: grid; gap: 10px; grid-template-columns: 30px minmax(0, 1fr) auto; padding: 10px 0; }
+    .artifact-icon { align-items: center; background: var(--background-secondary); border-radius: var(--radius-s); display: flex; height: 28px; justify-content: center; width: 28px; }
+    .artifact-name { font-size: 12px; font-weight: 650; }
+    .artifact-meta { color: var(--text-muted); font-size: 11px; margin-top: 2px; }
+
+    .button {
+      align-items: center;
+      background: #fff;
+      border: 1px solid #c8ccd3;
+      border-radius: var(--radius-s);
+      color: var(--text-normal);
+      display: inline-flex;
+      font-weight: 550;
+      height: 34px;
+      justify-content: center;
+      min-width: 74px;
+      padding: 0 12px;
+      white-space: nowrap;
+    }
+    .button:hover { background: var(--background-modifier-hover); }
+    .button.primary { background: var(--interactive-accent); border-color: var(--interactive-accent); color: var(--text-on-accent); }
+    .button.primary:hover { background: var(--interactive-accent-hover); }
+    .button.danger { border-color: #dba7a3; color: var(--color-red); }
+    .button.text { background: transparent; border-color: transparent; color: var(--interactive-accent); min-width: 0; padding-inline: 7px; }
+
+    .modal-footer {
+      align-items: center;
+      background: var(--background-primary);
+      border-top: 1px solid var(--background-modifier-border);
+      display: flex;
+      flex: 0 0 auto;
+      gap: 8px;
+      justify-content: flex-end;
+      min-height: 62px;
+      padding: 12px 22px;
+    }
+
+    .state-panel, .footer-actions, .agent-panel { display: none; }
+    body[data-ui-state="sufficient"] .state-panel[data-for="sufficient"],
+    body[data-ui-state="clarify"] .state-panel[data-for="clarify"],
+    body[data-ui-state="conflict"] .state-panel[data-for="conflict"],
+    body[data-ui-state="saved"] .state-panel[data-for="saved"],
+    body[data-ui-state="model-error"] .state-panel[data-for="model-error"],
+    body[data-ui-state="sufficient"] .footer-actions[data-for="sufficient"],
+    body[data-ui-state="clarify"] .footer-actions[data-for="clarify"],
+    body[data-ui-state="conflict"] .footer-actions[data-for="conflict"],
+    body[data-ui-state="saved"] .footer-actions[data-for="saved"],
+    body[data-ui-state="model-error"] .footer-actions[data-for="model-error"],
+    body[data-ui-state="agent-ready"] .footer-actions[data-for="agent-ready"],
+    body[data-ui-state="running"] .footer-actions[data-for="running"],
+    body[data-ui-state="review"] .footer-actions[data-for="review"],
+    body[data-ui-state="runtime-error"] .footer-actions[data-for="runtime-error"],
+    body[data-ui-state="agent-ready"] .agent-panel[data-for="agent-ready"],
+    body[data-ui-state="running"] .agent-panel[data-for="running"],
+    body[data-ui-state="review"] .agent-panel[data-for="review"],
+    body[data-ui-state="runtime-error"] .agent-panel[data-for="runtime-error"] { display: block; }
+
+    .brief-summary { display: none; }
+    body[data-ui-state="saved"] .brief-edit,
+    body[data-ui-state="agent-ready"] .brief-edit,
+    body[data-ui-state="running"] .brief-edit,
+    body[data-ui-state="review"] .brief-edit,
+    body[data-ui-state="runtime-error"] .brief-edit { display: none; }
+    body[data-ui-state="saved"] .brief-summary,
+    body[data-ui-state="agent-ready"] .brief-summary,
+    body[data-ui-state="running"] .brief-summary,
+    body[data-ui-state="review"] .brief-summary,
+    body[data-ui-state="runtime-error"] .brief-summary { display: block; }
+
+    .agent-collapsed { display: block; }
+    body[data-ui-state="agent-ready"] .agent-collapsed,
+    body[data-ui-state="running"] .agent-collapsed,
+    body[data-ui-state="review"] .agent-collapsed,
+    body[data-ui-state="runtime-error"] .agent-collapsed { display: none; }
+
+    .review-state-picker {
+      align-items: center;
+      background: #242830;
+      border: 1px solid #373d47;
+      border-radius: var(--radius-m);
+      bottom: 12px;
+      box-shadow: var(--shadow-s);
+      color: #dfe3e9;
+      display: flex;
+      gap: 5px;
+      left: 50%;
+      max-width: calc(100vw - 24px);
+      overflow-x: auto;
+      padding: 6px;
+      position: fixed;
+      transform: translateX(-50%);
+      z-index: 30;
+    }
+    .picker-label { color: #9da4af; font-size: 11px; padding: 0 6px; white-space: nowrap; }
+    .state-button {
+      background: transparent;
+      border: 0;
+      border-radius: var(--radius-s);
+      color: #c4cad3;
+      font-size: 11px;
+      height: 28px;
+      padding: 0 9px;
+      white-space: nowrap;
+    }
+    .state-button:hover { background: #343a44; }
+    .state-button.active { background: #e8eaf0; color: #242830; font-weight: 650; }
+
+    .sr-only {
+      clip: rect(0, 0, 0, 0);
+      clip-path: inset(50%);
+      height: 1px;
+      overflow: hidden;
+      position: absolute;
+      white-space: nowrap;
+      width: 1px;
+    }
+
+    @media (max-width: 1320px) {
+      .obsidian-shell { grid-template-columns: 210px minmax(0, 1fr); }
+      .board { grid-template-columns: repeat(4, minmax(200px, 1fr)); }
+      .modal { width: min(820px, calc(100vw - 44px)); }
+    }
+
+    @media (max-height: 820px) {
+      .modal-header { padding-block: 12px 10px; }
+      .modal-title { font-size: 17px; }
+      .section { padding-block: 12px; }
+      .modal-footer { min-height: 54px; padding-block: 9px; }
+      .brief-grid { gap: 9px 14px; }
+      textarea { min-height: 56px; }
+    }
+  </style>
+</head>
+<body data-ui-state="saved">
+  <div class="obsidian-shell" aria-hidden="true">
+    <div class="titlebar">
+      <div class="traffic"><span></span><span></span><span></span></div>
+      <div class="vault-name">ClawVault — Obsidian</div>
+    </div>
+    <aside class="sidebar">
+      <div class="sidebar-head"><span>文件</span><span>···</span></div>
+      <div class="tree-row"><span class="tree-icon">▾</span>10_Tasks</div>
+      <div class="tree-row indent"><span class="tree-icon">▾</span>Inbox</div>
+      <div class="tree-row indent"><span class="tree-icon">▾</span>Active</div>
+      <div class="tree-row indent"><span class="tree-icon">▾</span>Archive</div>
+      <div class="tree-row"><span class="tree-icon">▾</span>07_System</div>
+      <div class="tree-row indent"><span class="tree-icon">▾</span>Agent_Context</div>
+      <div class="tree-row"><span class="tree-icon">▾</span>08_Meetings</div>
+      <div class="tree-row"><span class="tree-icon">▾</span>笔记同步助手</div>
+      <div class="tree-row active"><span class="tree-icon">▦</span>任务总看板</div>
+    </aside>
+    <main class="workspace">
+      <header class="workspace-head">
+        <div class="workspace-title">任务总看板</div>
+        <div class="workspace-actions"><button class="ghost-icon">筛选</button><button class="ghost-icon">搜索</button><button class="ghost-icon">＋</button></div>
+      </header>
+      <section class="board">
+        <div class="board-column">
+          <div class="column-title"><span>收件箱</span><span class="count">12</span></div>
+          <div class="task-card"><div class="task-card-title">评估 TaskNotes 与 ATL 的字段边界</div><div class="task-card-meta">Agent Task Loop · 同步助手</div></div>
+          <div class="task-card"><div class="task-card-title">整理本周 AI 协作复盘</div><div class="task-card-meta">个人成长</div></div>
+          <div class="task-card"><div class="task-card-title">确认首页指标优先级</div><div class="task-card-meta">ClawVault</div></div>
+        </div>
+        <div class="board-column"><div class="column-title"><span>待办</span><span class="count">4</span></div><div class="task-card"><div class="task-card-title">梳理会议听记的上下文规则</div><div class="task-card-meta">今天</div></div></div>
+        <div class="board-column"><div class="column-title"><span>进行中</span><span class="count">2</span></div><div class="task-card"><div class="task-card-title">完善任务收集去重机制</div><div class="task-card-meta">Agent Task Loop</div></div></div>
+        <div class="board-column"><div class="column-title"><span>已完成</span><span class="count">18</span></div><div class="task-card"><div class="task-card-title">接入 TaskNotes 日历视图</div><div class="task-card-meta">7 月 23 日</div></div></div>
+      </section>
+    </main>
+  </div>
+
+  <div class="scrim"></div>
+
+  <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" data-check>
+    <header class="modal-header">
+      <div class="modal-kicker">智能完善任务</div>
+      <h1 class="modal-title" id="modal-title">评估 TaskNotes 与 ATL 的字段边界</h1>
+      <div class="task-meta"><span>状态：收件箱</span><span>项目：Agent Task Loop</span><span>来源：同步助手</span><span>优先级：普通</span></div>
+      <p class="modal-guide">基于已有信息智能梳理任务上下文，并通过对话与你共同补全目标、行动步骤和完成标准。</p>
+      <button class="close-button" aria-label="关闭">×</button>
+    </header>
+
+    <div class="modal-body">
+      <section class="section context-section">
+        <div class="section-head">
+          <div class="head-left"><span class="section-title">已读取上下文</span><span class="section-note">4 项</span></div>
+          <button class="button text" type="button">查看来源</button>
+        </div>
+        <div class="context-chips">
+          <span class="chip"><span class="chip-dot"></span>任务正文</span>
+          <span class="chip"><span class="chip-dot"></span>同步助手原消息</span>
+          <span class="chip"><span class="chip-dot"></span>项目说明</span>
+          <span class="chip partial"><span class="chip-dot"></span>Agent_Context · 相关片段</span>
+        </div>
+      </section>
+
+      <section class="section state-area">
+        <div class="state-panel" data-for="sufficient">
+          <div class="banner success"><div class="banner-title">已有信息足以生成智能建议</div><div class="banner-copy">已根据现有上下文生成目标、下一步和完成条件，你可以继续补充并确认。</div></div>
+        </div>
+
+        <div class="state-panel" data-for="clarify">
+          <div class="banner warning"><div class="banner-title">还缺 1 个关键决定</div><div class="banner-copy">已有内容足够说明背景，但无法判断这次工作最终服务哪个决策。</div></div>
+          <div class="chat-thread">
+            <div class="ai-line"><div class="ai-label">AI</div>这次评估完成后，你最想据此决定什么？</div>
+            <div class="choice-row">
+              <button class="choice selected">是否继续基于 TaskNotes</button>
+              <button class="choice">字段如何迁移</button>
+              <button class="choice">只记录风险</button>
+            </div>
+            <div class="composer"><input type="text" value="先决定一期是否继续沿用 TaskNotes" aria-label="补充回答"><button class="button primary" data-action="answer">发送</button></div>
+          </div>
+        </div>
+
+        <div class="state-panel" data-for="conflict">
+          <div class="banner error"><div class="banner-title">任务目标存在冲突</div><div class="banner-copy">来源笔记与任务描述对交付范围的要求不一致，请选择本次采用的依据。</div></div>
+          <div class="conflict-list">
+            <label class="conflict-row"><input type="radio" name="conflict" checked><span><strong>先输出字段边界与迁移建议，不改代码</strong><div class="conflict-source">来源笔记 · 2026-07-25 复盘</div></span><button class="button text" type="button">打开来源</button></label>
+            <label class="conflict-row"><input type="radio" name="conflict"><span><strong>直接完成统一任务编辑器开发</strong><div class="conflict-source">任务描述 · 手动补充</div></span><button class="button text" type="button">查看原文</button></label>
+            <label class="conflict-row"><input type="radio" name="conflict"><span><strong>都不采用，我补充最新目标</strong><div class="conflict-source">以本轮输入为最高优先级</div></span><span></span></label>
+          </div>
+        </div>
+
+        <div class="state-panel" data-for="saved">
+          <div class="banner success"><div class="banner-title">任务简报已保存</div><div class="banner-copy">看板状态、计划时间和项目均未改变。现在可以返回任务自行排期和推进。</div></div>
+        </div>
+
+        <div class="state-panel" data-for="model-error">
+          <div class="banner error"><div class="banner-title">AI 暂时无法生成任务简报</div><div class="banner-copy">模型服务超时。任务原文、已读取来源和当前草稿均已保留。</div><div class="inline-actions"><button class="button" data-action="retry-model">重试</button><button class="button" data-action="manual-edit">直接编辑任务简报</button></div></div>
+        </div>
+      </section>
+
+      <section class="section brief-section">
+        <div class="section-head"><div class="head-left"><span class="section-title">智能建议</span><span class="section-note">确认后保存为任务简报</span></div><button class="button text brief-edit" type="button">重新生成单项</button></div>
+
+        <div class="brief-edit">
+          <div class="brief-grid">
+            <div class="field full"><div class="field-head"><span class="field-label">任务目标</span><span class="provenance">来源事实 + AI 整理</span></div><textarea>明确 TaskNotes 与 ATL 在任务管理、字段编辑和 Agent 协作中的职责边界，为一期实现范围提供依据。</textarea></div>
+            <div class="field"><div class="field-head"><span class="field-label">下一步动作</span><span class="provenance inferred">AI 推断</span></div><textarea>对照现有 23 个字段，列出保留、隐藏、映射和后续改造项。</textarea></div>
+            <div class="field"><div class="field-head"><span class="field-label">完成条件</span><span class="provenance">来源事实</span></div><textarea>形成一份可评审的字段映射表，并明确 TaskNotes 不被二开的边界。</textarea></div>
+            <div class="field full"><div class="field-head"><span class="field-label">范围与风险</span><span class="provenance inferred">AI 推断</span></div><textarea>本轮只做需求与 UI 规格，不修改 TaskNotes 插件，也不迁移现有任务数据。</textarea></div>
+          </div>
+        </div>
+
+        <div class="brief-summary">
+          <div class="summary-grid">
+            <div class="summary-row"><div class="summary-label">目标</div><div>明确 TaskNotes 与 ATL 在任务管理、字段编辑和 Agent 协作中的职责边界。</div></div>
+            <div class="summary-row"><div class="summary-label">下一步</div><div>对照现有字段，列出保留、隐藏、映射和后续改造项。</div></div>
+            <div class="summary-row"><div class="summary-label">完成条件</div><div>形成可评审的字段映射表，并明确不修改 TaskNotes 内部实现。</div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section agent-disclosure">
+        <button class="agent-trigger agent-collapsed" type="button" data-action="expand-agent"><span><span class="agent-trigger-title">交给 Agent</span><span class="optional">可选，稍后也可以</span></span><span class="chevron">›</span></button>
+
+        <div class="agent-panel" data-for="agent-ready">
+          <div class="section-head"><div class="head-left"><span class="section-title">交给 Agent</span><span class="section-note">确认后才会开始执行</span></div><span class="chevron">⌄</span></div>
+          <div class="agent-config">
+            <div class="setting-row"><div><div class="setting-name">Agent</div><div class="setting-desc">根据任务选择执行工具</div></div><div class="segmented"><button class="segment active">Codex</button><button class="segment">Claude Code</button></div></div>
+            <div class="setting-row"><div><div class="setting-name">工作区</div><div class="setting-desc">Agent 实际读取的本地目录</div></div><select aria-label="工作区"><option>agent-task-loop · /Documents/Codex/agent-task-loop</option><option>TP翻译 · /Desktop/vibe/TP翻译</option></select></div>
+            <div class="setting-row"><div><div class="setting-name">执行方式</div><div class="setting-desc">代码任务需要交互式会话</div></div><div class="segmented"><button class="segment active">交互式会话</button><button class="segment">后台只读</button></div></div>
+            <div class="setting-row"><div><div class="setting-name">权限</div><div class="setting-desc">提交、推送仍需单独确认</div></div><div class="radio-line"><label><input type="radio" name="permission">只读调研</label><label><input type="radio" name="permission" checked>允许本地修改</label></div></div>
+            <div class="setting-row"><div><div class="setting-name">发送内容</div><div class="setting-desc">任务简报与已选上下文</div></div><div>任务简报 · 4 个上下文 <button class="button text">查看范围</button></div></div>
+          </div>
+        </div>
+
+        <div class="agent-panel" data-for="running">
+          <div class="run-head"><div><div class="section-title">Codex 正在执行</div><div class="section-note">agent-task-loop · 交互式会话</div></div><span class="status-pill running">进行中</span></div>
+          <ul class="step-list">
+            <li class="step-item done"><span class="step-mark">✓</span><div class="step-copy">读取 PRD 与现有任务字段<div class="step-meta">已完成 · 42 秒</div></div></li>
+            <li class="step-item active"><span class="step-mark">2</span><div class="step-copy">核对 TaskNotes 与 ATL 字段映射<div class="step-meta">正在处理</div></div></li>
+            <li class="step-item"><span class="step-mark">3</span><div class="step-copy">输出改造建议与验证结果<div class="step-meta">等待中</div></div></li>
+          </ul>
+        </div>
+
+        <div class="agent-panel" data-for="review">
+          <div class="run-head"><div><div class="section-title">执行结果等待验收</div><div class="section-note">Codex · agent-task-loop</div></div><span class="status-pill review">待验收</span></div>
+          <div class="banner info" style="margin-top:12px"><div class="banner-title">已完成字段边界分析</div><div class="banner-copy">保留 TaskNotes 的看板与日历；ATL 负责任务澄清、工作区和 Agent 会话。发现 2 个迁移风险，需要在开发前补双读单写规格。</div></div>
+          <div class="artifact-list">
+            <div class="artifact-row"><div class="artifact-icon">文</div><div><div class="artifact-name">字段映射与迁移建议.md</div><div class="artifact-meta">本地文档 · 8.4 KB</div></div><button class="button text">打开</button></div>
+            <div class="artifact-row"><div class="artifact-icon">变</div><div><div class="artifact-name">3 个文件已修改</div><div class="artifact-meta">未提交 · 等待你的确认</div></div><button class="button text">查看</button></div>
+          </div>
+        </div>
+
+        <div class="agent-panel" data-for="runtime-error">
+          <div class="section-head"><div class="head-left"><span class="section-title">交给 Agent</span><span class="section-note">启动未完成</span></div><span class="chevron">⌄</span></div>
+          <div class="banner error" style="margin-top:12px"><div class="banner-title">无法建立 Codex 会话</div><div class="banner-copy">工作区有效，但当前运行时没有返回可恢复的会话标识。任务仍保持原状态。</div><div class="inline-actions"><button class="button" data-action="retry-runtime">重新检测</button><button class="button">复制人工交接</button></div></div>
+        </div>
+      </section>
+    </div>
+
+    <footer class="modal-footer">
+      <div class="footer-actions" data-for="sufficient"><button class="button">取消</button><button class="button primary" data-action="save">确认并保存</button></div>
+      <div class="footer-actions" data-for="clarify"><button class="button">稍后继续</button><button class="button primary" data-action="answer">发送回答</button></div>
+      <div class="footer-actions" data-for="conflict"><button class="button">取消</button><button class="button primary" data-action="resolve">采用所选依据</button></div>
+      <div class="footer-actions" data-for="saved"><button class="button" data-action="edit">继续编辑</button><button class="button primary">返回任务</button></div>
+      <div class="footer-actions" data-for="model-error"><button class="button">取消</button><button class="button primary" data-action="manual-edit">直接编辑任务简报</button></div>
+      <div class="footer-actions" data-for="agent-ready"><button class="button" data-action="saved">暂不执行</button><button class="button primary" data-action="start">开始执行</button></div>
+      <div class="footer-actions" data-for="running"><button class="button danger">停止</button><button class="button" data-action="review">打开会话</button></div>
+      <div class="footer-actions" data-for="review"><button class="button" data-action="running">要求修改</button><button class="button primary" data-action="saved">验收通过</button></div>
+      <div class="footer-actions" data-for="runtime-error"><button class="button" data-action="saved">稍后处理</button><button class="button primary">复制人工交接</button></div>
+    </footer>
+  </section>
+
+  <nav class="review-state-picker" aria-label="评审状态切换">
+    <span class="picker-label">评审状态</span>
+    <button class="state-button" data-state="sufficient">信息充分</button>
+    <button class="state-button" data-state="clarify">需要澄清</button>
+    <button class="state-button" data-state="conflict">上下文冲突</button>
+    <button class="state-button" data-state="saved">仅保存简报</button>
+    <button class="state-button" data-state="agent-ready">Agent 准备</button>
+    <button class="state-button" data-state="running">运行中</button>
+    <button class="state-button" data-state="review">待验收</button>
+    <button class="state-button" data-state="model-error">模型失败</button>
+    <button class="state-button" data-state="runtime-error">运行时失败</button>
+  </nav>
+
+  <div class="sr-only" id="layout-result">pending</div>
+
+  <script>
+    const allowedStates = new Set([
+      'sufficient', 'clarify', 'conflict', 'saved', 'agent-ready',
+      'running', 'review', 'model-error', 'runtime-error'
+    ]);
+
+    function stateFromUrl() {
+      const value = new URLSearchParams(location.search).get('state');
+      return allowedStates.has(value) ? value : 'saved';
+    }
+
+    function setState(state, updateUrl = true) {
+      if (!allowedStates.has(state)) return;
+      document.body.dataset.uiState = state;
+      document.querySelectorAll('.state-button').forEach((button) => {
+        button.classList.toggle('active', button.dataset.state === state);
+      });
+      if (updateUrl) {
+        const url = new URL(location.href);
+        url.searchParams.set('state', state);
+        history.replaceState({}, '', url);
+      }
+      document.querySelector('.modal-body').scrollTop = 0;
+      requestAnimationFrame(runLayoutCheck);
+    }
+
+    document.querySelectorAll('.state-button').forEach((button) => {
+      button.addEventListener('click', () => setState(button.dataset.state));
+    });
+
+    const actionMap = {
+      answer: 'sufficient',
+      resolve: 'sufficient',
+      save: 'saved',
+      saved: 'saved',
+      edit: 'sufficient',
+      'manual-edit': 'sufficient',
+      'retry-model': 'sufficient',
+      'expand-agent': 'agent-ready',
+      start: 'running',
+      review: 'review',
+      running: 'running',
+      'retry-runtime': 'agent-ready'
+    };
+
+    document.querySelectorAll('[data-action]').forEach((button) => {
+      button.addEventListener('click', () => setState(actionMap[button.dataset.action]));
+    });
+
+    function visible(element) {
+      const style = getComputedStyle(element);
+      return style.display !== 'none' && style.visibility !== 'hidden' && element.getClientRects().length > 0;
+    }
+
+    function runLayoutCheck() {
+      const failures = [];
+      document.querySelectorAll('button, .chip, .modal-title').forEach((element) => {
+        if (!visible(element)) return;
+        if (element.scrollWidth > element.clientWidth + 2 || element.scrollHeight > element.clientHeight + 2) {
+          failures.push('overflow:' + (element.textContent || element.className).trim().slice(0, 28));
+        }
+      });
+      const modal = document.querySelector('.modal').getBoundingClientRect();
+      const picker = document.querySelector('.review-state-picker').getBoundingClientRect();
+      if (modal.bottom > picker.top - 4) failures.push('modal-picker-overlap');
+      if (modal.left < 0 || modal.right > innerWidth || modal.top < 44 || modal.bottom > innerHeight) failures.push('modal-outside-viewport');
+      const result = failures.length === 0 ? 'pass' : 'fail:' + failures.join('|');
+      document.documentElement.dataset.layoutCheck = result;
+      document.getElementById('layout-result').textContent = result;
+    }
+
+    setState(stateFromUrl(), false);
+    addEventListener('resize', () => requestAnimationFrame(runLayoutCheck));
+    addEventListener('load', () => requestAnimationFrame(runLayoutCheck));
+  </script>
+</body>
+</html>

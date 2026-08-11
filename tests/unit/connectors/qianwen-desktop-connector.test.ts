@@ -72,7 +72,7 @@ function adapter(
   const queued = [...snapshots];
   return {
     snapshot: vi.fn(async () => queued.shift() ?? snapshot([])),
-    press: vi.fn(async () => ({ status: 'ok' as const })),
+    press: vi.fn<QianwenAccessibilityAdapter['press']>().mockResolvedValue({ status: 'ok' }),
   };
 }
 

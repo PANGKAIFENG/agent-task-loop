@@ -1,3 +1,6 @@
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -7,7 +10,85 @@ import {
   normalizeSettings,
 } from '../../../src/obsidian-plugin/settings.js';
 
+const taskNotesFieldLayoutBackup = {
+  version: 1,
+  fields: {
+    contexts: { visibleInCreation: true, visibleInEdit: false },
+    tags: { visibleInCreation: false, visibleInEdit: true },
+    projects: { visibleInCreation: true, visibleInEdit: false },
+    'blocked-by': { visibleInCreation: false, visibleInEdit: true },
+    blocking: { visibleInCreation: true, visibleInEdit: false },
+    atl_project_id: { visibleInCreation: false, visibleInEdit: true },
+    atl_review_state: { visibleInCreation: true, visibleInEdit: false },
+    atl_task_id: { visibleInCreation: false, visibleInEdit: true },
+    atl_review_feedback: { visibleInCreation: true, visibleInEdit: false },
+  },
+};
+
 describe('normalizeSettings', () => {
+  it('retains only normalized weekly coach draft state', () => {
+    const settings = normalizeSettings({
+      weeklyCoachDrafts: {
+        collectionVersion: 1,
+        byWeek: {
+          '2026-W32': {
+            draftVersion: 1,
+            week: '2026-W32',
+            topic: '判断本周是否应该发布插件',
+            selectedSources: ['目标', '项目', '任务'],
+            pendingInput: '',
+            keyAnswers: ['希望用户不使用终端也能完成安装。'],
+            sessionSummary: '已确认一个候选方向。',
+            pendingQuestion: '什么证据能证明安装体验已经成立？',
+            questionReason: '需要补齐完成证据。',
+            background: { facts: [], assumptions: [], gaps: [], sources: [] },
+            items: [{
+              id: 'focus-1',
+              focus: '发布插件',
+              outcome: '用户可完成安装',
+              whyThisWeek: '本周已经完成核心交互',
+              evidence: '',
+              fieldSources: {
+                focus: 'user', outcome: 'ai', whyThisWeek: 'ai', evidence: 'ai',
+              },
+              suggestions: {},
+              readiness: '仍需确认',
+              sourceDocuments: ['private.md'],
+            }],
+            deletedItems: [],
+            focusedItemId: null,
+            noNewFocus: false,
+            updatedAt: '2026-08-03T09:00:00.000Z',
+            messages: [{ role: 'user', text: '不得保存' }],
+          },
+        },
+      },
+    });
+
+    expect(settings.weeklyCoachDrafts.byWeek['2026-W32']).toMatchObject({
+      week: '2026-W32',
+      sessionSummary: '已确认一个候选方向。',
+      items: [expect.objectContaining({ id: 'focus-1' })],
+    });
+    expect(settings.weeklyCoachDrafts.byWeek['2026-W32']).not.toHaveProperty('messages');
+    expect(settings.weeklyCoachDrafts.byWeek['2026-W32']?.items[0])
+      .not.toHaveProperty('sourceDocuments');
+  });
+
+  it('retains a valid TaskNotes field-layout backup for controller restore', () => {
+    expect(normalizeSettings({
+      taskNotesFieldLayoutBackup,
+    }).taskNotesFieldLayoutBackup).toEqual(taskNotesFieldLayoutBackup);
+  });
+
+  it('retains a malformed TaskNotes field-layout backup so the controller fails closed', () => {
+    const malformedBackup = { version: 1, fields: { tags: {} } };
+
+    expect(normalizeSettings({
+      taskNotesFieldLayoutBackup: malformedBackup,
+    }).taskNotesFieldLayoutBackup).toEqual(malformedBackup);
+  });
+
   it('normalizes DingTalk calendar state without retaining persisted passwords', () => {
     const settings = normalizeSettings({
       dingtalkCalendar: {
@@ -24,6 +105,10 @@ describe('normalizeSettings', () => {
         lastSuccessfulSyncAt: '2026-07-20T01:00:00Z',
         lastError: 'offline',
         events: {},
+      },
+      weeklyCoachDrafts: {
+        collectionVersion: 1,
+        byWeek: {},
       },
     });
 
@@ -116,6 +201,10 @@ describe('normalizeSettings', () => {
         lastError: null,
         events: {},
       },
+      weeklyCoachDrafts: {
+        collectionVersion: 1,
+        byWeek: {},
+      },
     });
   });
 
@@ -181,6 +270,10 @@ describe('normalizeSettings', () => {
         lastResult: null,
         lastError: null,
         events: {},
+      },
+      weeklyCoachDrafts: {
+        collectionVersion: 1,
+        byWeek: {},
       },
     });
   });
@@ -307,6 +400,47 @@ describe('normalizeSettings', () => {
       reviewedFingerprints: [],
       processedRecordFingerprints: [],
     });
+  });
+});
+
+describe('TaskNotes editor field settings integration', () => {
+  it('keeps the TaskNotes field controls labeled in Chinese without reading plugin files', async () => {
+    const source = await readFile(resolve('src/obsidian-plugin/main.ts'), 'utf8');
+
+    expect(source).toContain('private readonly settingsWriter = new SerializedSettingsWriter');
+    expect(source).toContain('await this.settingsWriter.write(structuredClone(this.settings))');
+    expect(source).toContain(".setName('任务编辑字段')");
+    expect(source).toContain(".setButtonText('应用精简字段')");
+    expect(source).toContain(".setButtonText('恢复原字段')");
+    expect(source).not.toContain('tasknotes/data.json');
+  });
+});
+
+describe('weekly coach draft settings integration', () => {
+  it('routes plugin drafts through collection services and the serialized settings writer', async () => {
+    const source = await readFile(resolve('src/obsidian-plugin/main.ts'), 'utf8');
+
+    expect(source).toContain('getWeeklyCoachSessionDraft(this.settings.weeklyCoachDrafts, week)');
+    expect(source).toContain('putWeeklyCoachSessionDraft(');
+    expect(source).toContain('removeWeeklyCoachSessionDraft(');
+    expect(source).toMatch(/saveWeeklyCoachSessionDraft[\s\S]*await this\.saveSettings\(\)/u);
+    expect(source).toMatch(/clearWeeklyCoachSessionDraft[\s\S]*await this\.saveSettings\(\)/u);
+  });
+
+  it('freezes the ISO week when a coach modal opens', async () => {
+    const source = await readFile(resolve('src/obsidian-plugin/main.ts'), 'utf8');
+    const openWeeklyCoach = source.match(
+      /private openWeeklyCoach\([\s\S]*?(?=\n {2}private async openWeeklyFocus)/u,
+    )?.[0] ?? '';
+
+    expect(openWeeklyCoach).toContain('const week = currentIsoWeek(clock(), timeZone);');
+    expect(openWeeklyCoach).toContain('week,');
+    expect(openWeeklyCoach).toContain('this.loadWeeklyCoachSessionDraft(week)');
+    expect(openWeeklyCoach).toContain('this.clearWeeklyCoachSessionDraft(week)');
+    expect(openWeeklyCoach).toContain(
+      'currentWeek: () => currentIsoWeek(clock(), timeZone)',
+    );
+    expect(openWeeklyCoach.match(/currentIsoWeek\(clock\(\), timeZone\)/gu)).toHaveLength(2);
   });
 });
 

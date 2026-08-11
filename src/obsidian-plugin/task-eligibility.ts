@@ -1,3 +1,5 @@
+import { parseTaskDocument } from '../storage/frontmatter.js';
+
 const ATL_INBOX_PREFIX = '10_Tasks/Inbox/';
 const ATL_TASK_PREFIX = '10_Tasks/';
 const LIFECYCLE_FOLDERS = new Set(['Inbox', 'Active', 'Archive']);
@@ -23,6 +25,38 @@ export function isAtlTaskPath(path: string): boolean {
     && TASK_FILENAME.test(filename);
 }
 
+export function isTaskNotesTaskPath(
+  path: string,
+  frontmatter: Record<string, unknown> | string | null | undefined,
+): boolean {
+  if (!path.startsWith(ATL_TASK_PREFIX) || !hasSafeSegments(path)) {
+    return false;
+  }
+  const segments = path.slice(ATL_TASK_PREFIX.length).split('/');
+  const [lifecycle] = segments;
+  const filename = segments.at(-1) ?? '';
+  if (
+    lifecycle === undefined
+    || !LIFECYCLE_FOLDERS.has(lifecycle)
+    || segments.length < 2
+    || !filename.endsWith('.md')
+  ) {
+    return false;
+  }
+
+  let data: Record<string, unknown> | null = null;
+  if (typeof frontmatter === 'string') {
+    try {
+      data = parseTaskDocument(frontmatter).data;
+    } catch {
+      return false;
+    }
+  } else {
+    data = frontmatter ?? null;
+  }
+  return data?.type === 'task';
+}
+
 export function isAtlInboxTaskPath(path: string): boolean {
   if (
     !path.startsWith(ATL_INBOX_PREFIX)
@@ -43,4 +77,26 @@ export function taskIdFromPath(path: string): string | null {
   }
   const filename = path.split('/').at(-1);
   return filename === undefined ? null : filename.slice(0, -'.md'.length);
+}
+
+export function taskIdFromMetadata(
+  path: string,
+  frontmatter: Record<string, unknown> | string | null | undefined,
+): string | null {
+  const pathTaskId = taskIdFromPath(path);
+  if (pathTaskId === null) return null;
+  let data: Record<string, unknown> | null = null;
+  if (typeof frontmatter === 'string') {
+    try {
+      data = parseTaskDocument(frontmatter).data;
+    } catch {
+      data = null;
+    }
+  } else {
+    data = frontmatter ?? null;
+  }
+  const taskId = data?.task_id;
+  return typeof taskId === 'string' && taskId.trim() !== ''
+    ? taskId.trim()
+    : pathTaskId;
 }
