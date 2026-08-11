@@ -1,5 +1,6 @@
 import { isIP } from 'node:net';
 
+import { optionalDingTalkProfile } from '../dingtalk-profile.js';
 import type {
   BackgroundSettings,
   BackgroundState,
@@ -59,6 +60,7 @@ export const DEFAULT_BACKGROUND_SETTINGS: BackgroundSettings = {
   modelServiceMode: 'inherit',
   model: 'claude-sonnet-4-5',
   baseUrl: '',
+  dingtalkProfile: '',
   dailyLimit: 3,
 };
 
@@ -540,6 +542,7 @@ export function normalizeSettings(value: unknown): AtlPluginSettings {
       modelServiceMode,
       model,
       baseUrl,
+      dingtalkProfile: optionalDingTalkProfile(rawBackground.dingtalkProfile) ?? '',
       dailyLimit: Number.isSafeInteger(rawBackground.dailyLimit)
         && Number(rawBackground.dailyLimit) > 0
         ? Number(rawBackground.dailyLimit)

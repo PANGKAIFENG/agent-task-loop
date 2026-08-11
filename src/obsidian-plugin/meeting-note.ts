@@ -15,6 +15,8 @@ const ISO_DATE_PREFIX = /^(\d{4})-(\d{2})-(\d{2})(?:$|T)/u;
 
 export const MEETING_TRANSCRIPT_START = '<!-- ATL_MEETING_TRANSCRIPT_START -->';
 export const MEETING_TRANSCRIPT_END = '<!-- ATL_MEETING_TRANSCRIPT_END -->';
+export const QIANWEN_SUMMARY_START = '<!-- ATL_QIANWEN_SUMMARY_START -->';
+export const QIANWEN_SUMMARY_END = '<!-- ATL_QIANWEN_SUMMARY_END -->';
 export const MEETING_ANALYSIS_START = '<!-- ATL_MEETING_ANALYSIS_START -->';
 export const MEETING_ANALYSIS_END = '<!-- ATL_MEETING_ANALYSIS_END -->';
 
@@ -26,6 +28,18 @@ export interface DingTalkMeetingSource {
   title: string;
   scheduled: string;
   meetingDate: string;
+  durationMinutes?: number;
+  participants?: readonly string[];
+  projectEntities?: readonly string[];
+}
+
+export interface QianwenMeetingEvidence {
+  recordingId: string;
+  title: string;
+  createdAt: string;
+  durationSeconds: number;
+  sourceUrl: string;
+  summary: string;
 }
 
 export interface RenderMeetingNoteInput {
@@ -33,6 +47,7 @@ export interface RenderMeetingNoteInput {
   meetingType: MeetingType;
   participants: readonly string[];
   transcript: string;
+  qianwen?: QianwenMeetingEvidence;
   attachments?: readonly MeetingAttachment[];
 }
 
@@ -41,7 +56,15 @@ export interface CreateMeetingNoteInput {
   meetingType: MeetingType;
   participants: readonly string[];
   transcript: string;
+  qianwen?: QianwenMeetingEvidence;
   attachments?: readonly MeetingAttachment[];
+}
+
+export interface CreateStandaloneMeetingNoteInput {
+  meetingType: MeetingType;
+  participants: readonly string[];
+  transcript: string;
+  qianwen: QianwenMeetingEvidence;
 }
 
 export interface MeetingNoteFileSystem {
@@ -50,6 +73,7 @@ export interface MeetingNoteFileSystem {
   listMarkdownFiles(path: string): Promise<string[]>;
   ensureDirectory(path: string): Promise<void>;
   create(path: string, content: string): Promise<void>;
+  removeIfContentMatches(path: string, expected: string): Promise<boolean>;
   process(path: string, transform: (content: string) => string): Promise<string>;
 }
 
@@ -98,6 +122,11 @@ export function parseDingTalkMeetingSource(
     : '';
   const hashMatch = EVENT_KEY_HASH.exec(eventKeyHash);
   const dateMatch = ISO_DATE_PREFIX.exec(scheduled);
+  const durationMinutes = typeof data.timeEstimate === 'number'
+    && Number.isFinite(data.timeEstimate)
+    && data.timeEstimate > 0
+    ? data.timeEstimate
+    : undefined;
   if (
     data.origin !== 'dingtalk_caldav'
     || title === ''
@@ -115,6 +144,7 @@ export function parseDingTalkMeetingSource(
     title,
     scheduled,
     meetingDate: `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`,
+    ...(durationMinutes === undefined ? {} : { durationMinutes }),
   };
 }
 
@@ -129,6 +159,25 @@ export function buildMeetingNotePath(source: DingTalkMeetingSource): string {
   if (hash === undefined || !validDate(source.meetingDate)) invalidSource();
   const month = source.meetingDate.slice(0, 7);
   return `08_Meetings/${month}/${source.meetingDate}-${titleSlug(source.title)}-${hash}.md`;
+}
+
+function validQianwenEvidence(qianwen: QianwenMeetingEvidence): boolean {
+  return qianwen.recordingId.trim() !== ''
+    && qianwen.title.trim() !== ''
+    && validDate(qianwen.createdAt)
+    && Number.isInteger(qianwen.durationSeconds)
+    && qianwen.durationSeconds > 0
+    && qianwen.sourceUrl.trim() !== '';
+}
+
+export function buildStandaloneMeetingNotePath(qianwen: QianwenMeetingEvidence): string {
+  if (!validQianwenEvidence(qianwen)) throw new Error('千问听记证据无效');
+  const meetingDate = qianwen.createdAt.slice(0, 10);
+  const recordingHash = createHash('sha256')
+    .update(qianwen.recordingId)
+    .digest('hex')
+    .slice(0, 16);
+  return `08_Meetings/${meetingDate.slice(0, 7)}/${meetingDate}-${titleSlug(qianwen.title)}-${recordingHash}.md`;
 }
 
 function normalizedParticipants(participants: readonly string[]): string[] {
@@ -253,6 +302,70 @@ export function extractMeetingTranscript(raw: string): string {
   return lines.map((line) => line.slice(2)).join('\n');
 }
 
+function managedQianwenSummary(summary: string): string {
+  return summary
+    .replaceAll(QIANWEN_SUMMARY_START, '&lt;!-- ATL_QIANWEN_SUMMARY_START --&gt;')
+    .replaceAll(QIANWEN_SUMMARY_END, '&lt;!-- ATL_QIANWEN_SUMMARY_END --&gt;');
+}
+
+function qianwenSummaryRegion(qianwen?: QianwenMeetingEvidence): string[] {
+  if (qianwen === undefined) return [];
+  return [
+    QIANWEN_SUMMARY_START,
+    '## 千问 AI 纪要',
+    '',
+    managedQianwenSummary(qianwen.summary),
+    QIANWEN_SUMMARY_END,
+    '',
+  ];
+}
+
+export function extractQianwenSummary(raw: string): string {
+  const body = parseTaskDocument(raw).body;
+  const start = body.indexOf(QIANWEN_SUMMARY_START);
+  const end = body.indexOf(QIANWEN_SUMMARY_END, start + QIANWEN_SUMMARY_START.length);
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error('千问 AI 纪要区域无效');
+  }
+  const region = body
+    .slice(start + QIANWEN_SUMMARY_START.length, end)
+    .replace(/^\n## 千问 AI 纪要\n\n/u, '')
+    .replace(/\n$/u, '');
+  return region;
+}
+
+function removeManagedRegion(body: string, startMarker: string, endMarker: string): string {
+  const start = body.indexOf(startMarker);
+  const end = body.indexOf(endMarker, start + startMarker.length);
+  if (start === -1 && end === -1) return body;
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error('会议笔记托管区域无效');
+  }
+  return `${body.slice(0, start)}${body.slice(end + endMarker.length)}`;
+}
+
+export function extractMeetingProgressContent(raw: string): string {
+  const document = parseTaskDocument(raw);
+  let unmanaged = removeManagedRegion(
+    document.body,
+    MEETING_TRANSCRIPT_START,
+    MEETING_TRANSCRIPT_END,
+  );
+  unmanaged = removeManagedRegion(unmanaged, QIANWEN_SUMMARY_START, QIANWEN_SUMMARY_END);
+  unmanaged = removeManagedRegion(unmanaged, MEETING_ANALYSIS_START, MEETING_ANALYSIS_END)
+    .replace(/^\s*#\s+[^\n]+\n?/u, '')
+    .trim();
+
+  let summary = '';
+  try {
+    summary = extractQianwenSummary(raw).trim();
+  } catch {
+    // Legacy meeting notes can still contribute their persisted transcript.
+  }
+  const persisted = [summary, unmanaged].filter((value) => value !== '').join('\n\n');
+  return persisted === '' ? extractMeetingTranscript(raw).trim() : persisted;
+}
+
 export function renderMeetingNote(input: RenderMeetingNoteInput): string {
   if (input.transcript.trim() === '') {
     throw new Error('会议听记不能为空');
@@ -267,6 +380,13 @@ export function renderMeetingNote(input: RenderMeetingNoteInput): string {
     participants: normalizedParticipants(input.participants),
     attachments: normalizedAttachments(input.attachments).map(attachmentFrontmatter),
     analysis_status: 'pending',
+    ...(input.qianwen === undefined ? {} : {
+      qianwen_recording_id: input.qianwen.recordingId,
+      qianwen_title: input.qianwen.title,
+      qianwen_created_at: input.qianwen.createdAt,
+      qianwen_duration_seconds: input.qianwen.durationSeconds,
+      qianwen_source_url: input.qianwen.sourceUrl,
+    }),
   };
   const body = [
     '',
@@ -276,6 +396,44 @@ export function renderMeetingNote(input: RenderMeetingNoteInput): string {
     transcriptCallout(input.transcript),
     MEETING_TRANSCRIPT_END,
     '',
+    ...qianwenSummaryRegion(input.qianwen),
+    MEETING_ANALYSIS_START,
+    '## AI 分析',
+    '',
+    '尚未分析。',
+    MEETING_ANALYSIS_END,
+    '',
+  ].join('\n');
+  return serializeTaskDocument(data, body);
+}
+
+export function renderStandaloneMeetingNote(input: CreateStandaloneMeetingNoteInput): string {
+  if (input.transcript.trim() === '') throw new Error('会议听记不能为空');
+  if (!validQianwenEvidence(input.qianwen)) throw new Error('千问听记证据无效');
+  const data: Record<string, unknown> = {
+    type: 'meeting',
+    title: input.qianwen.title,
+    meeting_type: input.meetingType,
+    meeting_date: input.qianwen.createdAt.slice(0, 10),
+    calendar_event: null,
+    match_status: 'no_calendar',
+    participants: normalizedParticipants(input.participants),
+    analysis_status: 'pending',
+    qianwen_recording_id: input.qianwen.recordingId,
+    qianwen_title: input.qianwen.title,
+    qianwen_created_at: input.qianwen.createdAt,
+    qianwen_duration_seconds: input.qianwen.durationSeconds,
+    qianwen_source_url: input.qianwen.sourceUrl,
+  };
+  const body = [
+    '',
+    `# ${input.qianwen.title}`,
+    '',
+    MEETING_TRANSCRIPT_START,
+    transcriptCallout(input.transcript),
+    MEETING_TRANSCRIPT_END,
+    '',
+    ...qianwenSummaryRegion(input.qianwen),
     MEETING_ANALYSIS_START,
     '## AI 分析',
     '',
@@ -302,6 +460,34 @@ function replaceTranscriptRegion(body: string, transcript: string): string {
     transcriptCallout(transcript),
     '\n',
     body.slice(end),
+  ].join('');
+}
+
+function replaceQianwenSummaryRegion(
+  body: string,
+  qianwen: QianwenMeetingEvidence,
+): string {
+  const start = body.indexOf(QIANWEN_SUMMARY_START);
+  const end = body.indexOf(QIANWEN_SUMMARY_END, start + QIANWEN_SUMMARY_START.length);
+  const summary = qianwenSummaryRegion(qianwen).slice(0, -1).join('\n');
+  if (start !== -1 && end !== -1 && end > start) {
+    return [
+      body.slice(0, start),
+      summary,
+      body.slice(end + QIANWEN_SUMMARY_END.length),
+    ].join('');
+  }
+  if (start !== -1 || end !== -1) throw new Error('千问 AI 纪要区域无效');
+
+  const analysisStart = body.lastIndexOf(MEETING_ANALYSIS_START);
+  if (analysisStart === -1) throw new Error('会议分析区域无效');
+  const before = body.slice(0, analysisStart);
+  return [
+    before,
+    before.endsWith('\n') ? '' : '\n',
+    summary,
+    '\n\n',
+    body.slice(analysisStart),
   ].join('');
 }
 
@@ -346,6 +532,9 @@ function existingInputHash(
 
 export function updateMeetingNote(raw: string, input: RenderMeetingNoteInput): string {
   if (input.transcript.trim() === '') throw new Error('会议听记不能为空');
+  if (input.qianwen !== undefined && !validQianwenEvidence(input.qianwen)) {
+    throw new Error('千问听记证据无效');
+  }
   const document = parseTaskDocument(raw);
   const expectedCalendarEvent = `[[${input.source.eventPath.slice(0, -3)}]]`;
   if (
@@ -382,12 +571,61 @@ export function updateMeetingNote(raw: string, input: RenderMeetingNoteInput): s
     participants: normalizedParticipants(input.participants),
     attachments: normalizedAttachments(input.attachments).map(attachmentFrontmatter),
     analysis_status: analysisStatus,
+    ...(input.qianwen === undefined ? {} : {
+      qianwen_recording_id: input.qianwen.recordingId,
+      qianwen_title: input.qianwen.title,
+      qianwen_created_at: input.qianwen.createdAt,
+      qianwen_duration_seconds: input.qianwen.durationSeconds,
+      qianwen_source_url: input.qianwen.sourceUrl,
+    }),
   };
-  return serializeTaskDocument(data, replaceTranscriptRegion(document.body, input.transcript));
+  const body = replaceTranscriptRegion(document.body, input.transcript);
+  return serializeTaskDocument(
+    data,
+    input.qianwen === undefined ? body : replaceQianwenSummaryRegion(body, input.qianwen),
+  );
 }
 
 export class MeetingNoteController {
+  private readonly rollbacks = new WeakMap<
+    CreateMeetingNoteResult,
+    | { kind: 'update'; path: string; before: string; after: string }
+    | { kind: 'create'; path: string; after: string }
+  >();
+
   constructor(private readonly fileSystem: MeetingNoteFileSystem) {}
+
+  private async updateExisting(
+    path: string,
+    input: RenderMeetingNoteInput,
+  ): Promise<CreateMeetingNoteResult> {
+    let before = '';
+    let after = '';
+    await this.fileSystem.process(path, (raw) => {
+      before = raw;
+      after = updateMeetingNote(raw, input);
+      return after;
+    });
+    const result: CreateMeetingNoteResult = { created: false, path };
+    this.rollbacks.set(result, { kind: 'update', path, before, after });
+    return result;
+  }
+
+  async rollback(result: CreateMeetingNoteResult): Promise<void> {
+    const rollback = this.rollbacks.get(result);
+    if (rollback === undefined) return;
+    try {
+      if (rollback.kind === 'create') {
+        await this.fileSystem.removeIfContentMatches(rollback.path, rollback.after);
+      } else {
+        await this.fileSystem.process(rollback.path, (current) => (
+          current === rollback.after ? rollback.before : current
+        ));
+      }
+    } finally {
+      this.rollbacks.delete(result);
+    }
+  }
 
   private async existingNotePath(source: DingTalkMeetingSource): Promise<string | null> {
     const calendarEvent = `[[${source.eventPath.slice(0, -3)}]]`;
@@ -412,8 +650,28 @@ export class MeetingNoteController {
     return null;
   }
 
+  private async existingRecordingNotePath(recordingId: string): Promise<string | null> {
+    const paths = await this.fileSystem.listMarkdownFiles('08_Meetings');
+    for (const path of paths.sort()) {
+      if (!path.startsWith('08_Meetings/') || !path.endsWith('.md')) continue;
+      try {
+        const data = parseTaskDocument(await this.fileSystem.read(path)).data;
+        if (data.type === 'meeting' && data.qianwen_recording_id === recordingId) {
+          return path;
+        }
+      } catch {
+        // A malformed unrelated note must not block recording evidence creation.
+      }
+    }
+    return null;
+  }
+
   async findExistingPath(source: DingTalkMeetingSource): Promise<string | null> {
     return this.existingNotePath(source);
+  }
+
+  async findExistingRecordingPath(recordingId: string): Promise<string | null> {
+    return this.existingRecordingNotePath(recordingId);
   }
 
   async create(input: CreateMeetingNoteInput): Promise<CreateMeetingNoteResult> {
@@ -427,32 +685,56 @@ export class MeetingNoteController {
     const existingPath = await this.existingNotePath(source);
     const updateInput = { ...input, source };
     if (existingPath !== null) {
-      await this.fileSystem.process(existingPath, (raw) => updateMeetingNote(raw, updateInput));
-      return { created: false, path: existingPath };
+      return this.updateExisting(existingPath, updateInput);
     }
     const path = buildMeetingNotePath(source);
     if (await this.fileSystem.exists(path)) {
-      await this.fileSystem.process(path, (raw) => updateMeetingNote(raw, updateInput));
-      return { created: false, path };
+      return this.updateExisting(path, updateInput);
     }
     const directory = path.slice(0, path.lastIndexOf('/'));
     await this.fileSystem.ensureDirectory(directory);
-    try {
-      await this.fileSystem.create(path, renderMeetingNote({
+    const content = renderMeetingNote({
         source,
         meetingType: input.meetingType,
         participants: input.participants,
         transcript: input.transcript,
+        ...(input.qianwen === undefined ? {} : { qianwen: input.qianwen }),
         attachments: input.attachments ?? [],
-      }));
+      });
+    try {
+      await this.fileSystem.create(path, content);
     } catch (error) {
       const racedPath = await this.existingNotePath(source);
       if (racedPath !== null) {
-        await this.fileSystem.process(racedPath, (raw) => updateMeetingNote(raw, updateInput));
-        return { created: false, path: racedPath };
+        return this.updateExisting(racedPath, updateInput);
       }
       throw error;
     }
-    return { created: true, path };
+    const result: CreateMeetingNoteResult = { created: true, path };
+    this.rollbacks.set(result, { kind: 'create', path, after: content });
+    return result;
+  }
+
+  async createStandalone(
+    input: CreateStandaloneMeetingNoteInput,
+  ): Promise<CreateMeetingNoteResult> {
+    if (input.transcript.trim() === '') throw new Error('会议听记不能为空');
+    if (!validQianwenEvidence(input.qianwen)) throw new Error('千问听记证据无效');
+    const existingPath = await this.existingRecordingNotePath(input.qianwen.recordingId);
+    if (existingPath !== null) return { created: false, path: existingPath };
+    const path = buildStandaloneMeetingNotePath(input.qianwen);
+    if (await this.fileSystem.exists(path)) return { created: false, path };
+    await this.fileSystem.ensureDirectory(path.slice(0, path.lastIndexOf('/')));
+    const content = renderStandaloneMeetingNote(input);
+    try {
+      await this.fileSystem.create(path, content);
+    } catch (error) {
+      const racedPath = await this.existingRecordingNotePath(input.qianwen.recordingId);
+      if (racedPath !== null) return { created: false, path: racedPath };
+      throw error;
+    }
+    const result: CreateMeetingNoteResult = { created: true, path };
+    this.rollbacks.set(result, { kind: 'create', path, after: content });
+    return result;
   }
 }

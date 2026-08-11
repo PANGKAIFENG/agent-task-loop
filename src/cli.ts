@@ -5,6 +5,7 @@ import { delimiter, isAbsolute, join } from 'node:path';
 
 import { Command, CommanderError } from 'commander';
 
+import { QianwenDesktopConnector } from './connectors/qianwen-desktop-connector.js';
 import { loadConfig, assertWriteEnabled, type AtlConfig } from './config.js';
 import {
   PRIORITIES,
@@ -16,6 +17,7 @@ import {
   CLAUDE_RESEARCH_TIMEOUT_MS,
   createClaudeResearchDriver,
 } from './runner/claude-driver.js';
+import { runHourlyCycle } from './runner/hourly-cycle.js';
 import {
   createRunnerController,
   getRunnerStatus,
@@ -29,21 +31,29 @@ import {
   captureTask,
   type CaptureTaskInput,
 } from './services/capture-task.js';
+import { createAcceptanceNotifier } from './services/acceptance-notifier-factory.js';
 import { claimTask } from './services/claim-task.js';
 import { confirmTask } from './services/confirm-task.js';
 import { createProject } from './services/create-project.js';
+import { generateWeeklyReport } from './services/generate-weekly-report.js';
 import { listTasks, peekNextTask } from './services/query-tasks.js';
 import { reopenTask } from './services/reopen-task.js';
 import { reviewTask, type ReviewTaskInput } from './services/review-task.js';
 import { createTaskId, type ServiceContext } from './services/service-context.js';
 import { stopTask } from './services/stop-task.js';
 import { submitArtifact } from './services/submit-artifact.js';
+import { syncQianwenSource } from './services/sync-qianwen-source.js';
 import { unblockTask } from './services/unblock-task.js';
 import { validateStorage } from './services/validate-storage.js';
 import { FileAuditLog } from './storage/audit-log.js';
 import { MarkdownArtifactRepository } from './storage/markdown-artifact-repository.js';
 import { MarkdownProjectRepository } from './storage/markdown-project-repository.js';
+import { MarkdownProgressRepository } from './storage/markdown-progress-repository.js';
 import { MarkdownTaskRepository } from './storage/markdown-task-repository.js';
+import { MarkdownWeeklyReportRepository } from './storage/markdown-weekly-report-repository.js';
+import { FileQianwenSourceStateRepository } from './storage/qianwen-source-state-repository.js';
+import { createVaultWriteAuthorization } from './storage/task-paths.js';
+import { qianwenRuntimeRoot } from './qianwen-runtime-root.js';
 import { ATL_VERSION } from './version.js';
 
 class CliUsageError extends Error {
@@ -61,6 +71,32 @@ function required(value: string | undefined, flag: string): string {
     throw new CliUsageError(`${flag} is required`);
   }
   return value;
+}
+
+function isoDate(value: string | undefined, flag: string): string {
+  const candidate = required(value, flag);
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(candidate);
+  if (match === null) throw new CliUsageError(`${flag} must use YYYY-MM-DD`);
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  if (
+    parsed.getUTCFullYear() !== year
+    || parsed.getUTCMonth() !== month - 1
+    || parsed.getUTCDate() !== day
+  ) {
+    throw new CliUsageError(`${flag} must be a valid date`);
+  }
+  return candidate;
+}
+
+function weekKey(value: string | undefined): string {
+  const candidate = required(value, '--week-key');
+  if (!/^\d{4}-W(?:0[1-9]|[1-4]\d|5[0-3])$/u.test(candidate)) {
+    throw new CliUsageError('--week-key must use YYYY-Www');
+  }
+  return candidate;
 }
 
 function jsonRecord(value: unknown): Record<string, unknown> {
@@ -154,6 +190,10 @@ function collect(value: string, previous: string[]): string[] {
 }
 
 function createContext(config: AtlConfig): ServiceContext {
+  const notifyAcceptance = createAcceptanceNotifier({
+    vaultRoot: config.vaultRoot,
+    profile: config.dingtalkProfile,
+  });
   return {
     tasks: new MarkdownTaskRepository(config.vaultRoot),
     artifacts: new MarkdownArtifactRepository(config.vaultRoot),
@@ -161,6 +201,7 @@ function createContext(config: AtlConfig): ServiceContext {
     audit: new FileAuditLog(config.vaultRoot, { timeZone: 'Asia/Shanghai' }),
     clock: () => new Date(),
     id: () => createTaskId(),
+    ...(notifyAcceptance === undefined ? {} : { notifyAcceptance }),
   };
 }
 
@@ -205,6 +246,19 @@ async function runnerController(driverName: string) {
     timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
     agent: driver.name,
     runId: () => `run-${createTaskId()}`,
+  });
+}
+
+async function synchronizeQianwen(mode: 'scheduled' | 'manual') {
+  const runtimeRoot = qianwenRuntimeRoot({ cwd: process.cwd() });
+  return syncQianwenSource({
+    repository: new FileQianwenSourceStateRepository(runtimeRoot, {
+      writeAuthorization: createVaultWriteAuthorization(runtimeRoot),
+    }),
+    connector: new QianwenDesktopConnector(),
+    now: new Date(),
+    timeZone: 'Asia/Shanghai',
+    mode,
   });
 }
 
@@ -588,7 +642,10 @@ function buildProgram(): Command {
     .option('--json')
     .action(async (options: { driver: string; json?: boolean }) => {
       const controller = await runnerController(options.driver);
-      output(await controller.runAndWait({ mode: 'automatic' }), options);
+      output(await runHourlyCycle({
+        syncQianwen: () => synchronizeQianwen('scheduled'),
+        runTask: () => controller.runAndWait({ mode: 'automatic' }),
+      }), options);
     });
 
   runner
@@ -615,6 +672,51 @@ function buildProgram(): Command {
       const { config, ctx } = contextForRead();
       output(await getRunnerStatus(ctx, {
         dailyLimit: config.dailyLimit,
+      }), options);
+    });
+
+  const qianwen = program.command('qianwen');
+  qianwen
+    .command('sync')
+    .description('Synchronize Qianwen recordings now')
+    .option('--json')
+    .action(async (options: { json?: boolean }) => {
+      contextForWrite();
+      output(await synchronizeQianwen('manual'), options);
+    });
+
+  const weekly = program.command('weekly');
+  weekly
+    .command('generate')
+    .description('Generate an immutable weekly progress snapshot')
+    .requiredOption('--week-key <key>')
+    .requiredOption('--start-date <date>')
+    .requiredOption('--end-date <date>')
+    .option('--json')
+    .action(async (options: {
+      weekKey: string;
+      startDate: string;
+      endDate: string;
+      json?: boolean;
+    }) => {
+      const { config } = contextForWrite();
+      const startDate = isoDate(options.startDate, '--start-date');
+      const endDate = isoDate(options.endDate, '--end-date');
+      if (startDate > endDate) {
+        throw new CliUsageError('--start-date must not be after --end-date');
+      }
+      const notifyAcceptance = createAcceptanceNotifier({
+        vaultRoot: config.vaultRoot,
+        profile: config.dingtalkProfile,
+      });
+      output(await generateWeeklyReport({
+        progressRepository: new MarkdownProgressRepository(config.vaultRoot),
+        weeklyRepository: new MarkdownWeeklyReportRepository(config.vaultRoot),
+        clock: () => new Date(),
+        ...(notifyAcceptance === undefined ? {} : { notifyAcceptance }),
+      }, {
+        weekKey: weekKey(options.weekKey),
+        week: { startDate, endDate },
       }), options);
     });
 

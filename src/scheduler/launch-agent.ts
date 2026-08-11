@@ -17,6 +17,8 @@ import { delimiter, dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
+import { optionalDingTalkProfile } from '../dingtalk-profile.js';
+
 export const LAUNCH_AGENT_LABEL = 'ai.agent-task-loop.runner';
 export const LAUNCH_AGENT_FILE_NAME = `${LAUNCH_AGENT_LABEL}.plist`;
 const MINIMAL_PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
@@ -91,6 +93,7 @@ export interface RenderedLaunchAgent {
     ATL_CLAUDE_CONFIG_DIR: string;
     ATL_CLAUDE_MODEL?: string;
     ANTHROPIC_BASE_URL?: string;
+    ATL_DINGTALK_PROFILE?: string;
     ATL_ALLOWED_LOCAL_ROOTS: string;
     ATL_DAILY_LIMIT: string;
     HOME: string;
@@ -323,6 +326,16 @@ function baseUrl(value: string | undefined): string | undefined {
   }
 }
 
+function dingtalkProfile(value: string | undefined): string | undefined {
+  const profile = optionalDingTalkProfile(value);
+  if (value !== undefined && value !== '' && profile === null) {
+    throw new LaunchAgentError(
+      'ATL_DINGTALK_PROFILE must contain one explicit DingTalk profile',
+    );
+  }
+  return profile ?? undefined;
+}
+
 function plistArray(values: readonly string[], indent: string): string[] {
   return [
     `${indent}<array>`,
@@ -428,6 +441,7 @@ export async function renderLaunchAgent(
   );
   const model = modelName(environment.ATL_CLAUDE_MODEL);
   const anthropicBaseUrl = baseUrl(environment.ANTHROPIC_BASE_URL);
+  const notificationProfile = dingtalkProfile(environment.ATL_DINGTALK_PROFILE);
   const result = {
     label: LAUNCH_AGENT_LABEL,
     programArguments: [
@@ -448,6 +462,9 @@ export async function renderLaunchAgent(
       ...(anthropicBaseUrl === undefined
         ? {}
         : { ANTHROPIC_BASE_URL: anthropicBaseUrl }),
+      ...(notificationProfile === undefined
+        ? {}
+        : { ATL_DINGTALK_PROFILE: notificationProfile }),
       ATL_ALLOWED_LOCAL_ROOTS: await allowedLocalRoots(
         environment.ATL_ALLOWED_LOCAL_ROOTS,
       ),

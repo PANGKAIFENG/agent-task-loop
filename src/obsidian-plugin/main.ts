@@ -1,6 +1,6 @@
-import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { readFile as readExternalFile, stat as statExternalFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { basename, extname, join, relative, sep } from 'node:path';
 
 import {
@@ -20,10 +20,50 @@ import {
 
 import './styles.css';
 
+import { QianwenDesktopConnector } from '../connectors/qianwen-desktop-connector.js';
+import { DwsMaterialSearchConnector } from '../connectors/dws-material-search.js';
+import { optionalDingTalkProfile } from '../dingtalk-profile.js';
+import type { ProgressDraft } from '../domain/progress.js';
+import {
+  currentIsoWeekPeriod,
+  isoWeekPeriodForOccurredAt,
+} from '../domain/week-period.js';
 import { createClaudeStructuredExecutor } from '../runner/claude-driver.js';
+import { createAcceptanceNotifier } from '../services/acceptance-notifier-factory.js';
 import { captureTask } from '../services/capture-task.js';
-import { recordTaskCompletionDate } from '../services/record-task-completion-date.js';
+import { createMaterialGap } from '../services/create-material-gap.js';
+import { createProgressVersion } from '../services/create-progress-version.js';
+import {
+  listRelatedMaterialSources,
+  prepareMaterialGapRequest,
+  type PrepareMaterialGapRequestInput,
+} from '../services/prepare-material-gap-request.js';
+import {
+  confirmMeetingMatchWithEvidence,
+  markRecordingWithoutCalendarWithEvidence,
+} from '../services/materialize-meeting-match.js';
+import { queryWorkProgressHub } from '../services/query-work-progress-hub.js';
+import {
+  acceptWeeklyReport,
+  deferWeeklyReport,
+  rejectWeeklyReportWithFeedback,
+} from '../services/review-weekly-report.js';
+import { revokeMeetingMatchDecision } from '../services/decide-meeting-match.js';
+import { ensureWorkProgressEntry } from '../services/ensure-work-progress-entry.js';
+import { generateWeeklyReport } from '../services/generate-weekly-report.js';
+import { syncQianwenSource } from '../services/sync-qianwen-source.js';
 import type { ServiceContext } from '../services/service-context.js';
+import { MarkdownMaterialGapRepository } from '../storage/markdown-material-gap-repository.js';
+import { MarkdownProgressRepository } from '../storage/markdown-progress-repository.js';
+import { MarkdownWeeklyReportRepository } from '../storage/markdown-weekly-report-repository.js';
+import { FileMeetingMatchDecisionRepository } from '../storage/meeting-match-decision-repository.js';
+import { FileQianwenSourceStateRepository } from '../storage/qianwen-source-state-repository.js';
+import { FileAcceptanceNotificationLedger } from '../storage/file-acceptance-notification-ledger.js';
+import { qianwenRuntimeRoot } from '../qianwen-runtime-root.js';
+import { FileWeeklyReviewDecisionRepository } from '../storage/weekly-review-decision-repository.js';
+import { MarkdownTaskRepository } from '../storage/markdown-task-repository.js';
+import { MarkdownProjectRepository } from '../storage/markdown-project-repository.js';
+import { recordTaskCompletionDate } from '../services/record-task-completion-date.js';
 import {
   collectWeeklyCoachContext,
   type WeeklyCoachContextGateway,
@@ -120,11 +160,33 @@ import { runWithPersistentFeedback } from './persistent-operation-feedback.js';
 import { enrichTask } from './task-enrichment.js';
 import { createMeetingAttachmentDraft } from './meeting-attachment.js';
 import { MeetingAttachmentsWorkflow } from './meeting-attachments-workflow.js';
-import { assertMeetingDocumentSize } from './meeting-document-parser.js';
+import {
+  assertMeetingDocumentSize,
+  meetingDocumentKind,
+  parseMeetingDocument,
+} from './meeting-document-parser.js';
 import { MeetingCandidateController } from './meeting-candidate-controller.js';
-import { parseDingTalkMeetingSource } from './meeting-note.js';
+import { MeetingNoteController, parseDingTalkMeetingSource } from './meeting-note.js';
 import { MeetingPluginLifecycle } from './meeting-plugin-lifecycle.js';
 import { MeetingTranscriptModal } from './meeting-transcript-modal.js';
+import { QianwenSyncPluginLifecycle } from './qianwen-sync-plugin.js';
+import {
+  WorkProgressHubController,
+  type WorkProgressHubSnapshot,
+} from './work-progress-hub-controller.js';
+import {
+  isSafeWorkProgressPath,
+  WorkProgressPluginLifecycle,
+} from './work-progress-plugin.js';
+import {
+  WORK_PROGRESS_VIEW_TYPE,
+  WorkProgressView,
+} from './work-progress-view.js';
+import {
+  MaterialGapEntryModal,
+  ProgressEntryModal,
+} from './work-progress-entry-modal.js';
+import { WeeklyFeedbackModal } from './weekly-feedback-modal.js';
 import { LegacyTaskTitleRepairController } from './legacy-task-title-repair-controller.js';
 import { LegacyTaskTitleRepairModal } from './legacy-task-title-repair-modal.js';
 import { WeeklyThinkingCoachModal } from './weekly-thinking-coach-modal.js';
@@ -211,6 +273,12 @@ function isContributionDataPath(path: string): boolean {
     || /^05_Reviews\/Weekly\/\d{4}-W\d{2} 周度重点\.md$/u.test(path);
 }
 
+function isWorkProgressDataPath(path: string): boolean {
+  return path.startsWith('08_Meetings/')
+    || path.startsWith('09_Progress/')
+    || path.startsWith('TaskNotes/DingTalk/');
+}
+
 export default class AgentTaskLoopPlugin extends Plugin {
   settings: AtlPluginSettings = DEFAULT_SETTINGS;
   readonly boardAppearance = new BoardAppearanceController();
@@ -221,6 +289,7 @@ export default class AgentTaskLoopPlugin extends Plugin {
   private unifiedCalendarOpenInFlight: Promise<void> | null = null;
   private taskLifecycleReconciliation: TaskLifecycleReconciliationController | null = null;
   private contributionRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private workProgressRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private dingtalkCalendarController: DingTalkCalendarController | null = null;
   private dingtalkCalendarLifecycle: DingTalkCalendarPluginLifecycle | null = null;
   private dingtalkCredentialStore: DingTalkCredentialStore | null = null;
@@ -238,6 +307,10 @@ export default class AgentTaskLoopPlugin extends Plugin {
       WORK_CONTRIBUTION_VIEW_TYPE,
       (leaf) => this.createContributionView(leaf),
     );
+    this.registerView(
+      WORK_PROGRESS_VIEW_TYPE,
+      (leaf) => this.createWorkProgressView(leaf),
+    );
 
     this.addRibbonIcon('square-pen', 'ATL：新建任务', () => {
       this.openQuickCapture();
@@ -253,6 +326,15 @@ export default class AgentTaskLoopPlugin extends Plugin {
         this.addCommand(command);
       },
       open: () => this.openUnifiedCalendar(),
+    }).start();
+    new WorkProgressPluginLifecycle({
+      addRibbonIcon: (icon, title, callback) => {
+        this.addRibbonIcon(icon, title, callback);
+      },
+      addCommand: (command) => {
+        this.addCommand(command);
+      },
+      open: () => this.activateWorkProgressView(),
     }).start();
     this.addRibbonIcon('layout-dashboard', 'ATL：个人首页', () => {
       void this.activateContributionView();
@@ -284,6 +366,22 @@ export default class AgentTaskLoopPlugin extends Plugin {
         void this.openLegacyTaskTitleRepair();
       },
     });
+
+    new QianwenSyncPluginLifecycle({
+      addCommand: (command) => this.addCommand(command),
+      canSync: () => this.settings.allowVaultManagement,
+      sync: () => this.syncQianwenNow(),
+      onSuccess: (result) => {
+        if (result.status === 'not_due') {
+          new Notice('千问听记今天已同步');
+          return;
+        }
+        new Notice(
+          `千问听记同步完成：可用 ${result.available}，等待 ${result.waiting}，失败 ${result.failed}`,
+        );
+      },
+      onError: (message) => new Notice(message),
+    }).start();
 
     new MeetingPluginLifecycle({
       addCommand: (command) => {
@@ -390,21 +488,32 @@ export default class AgentTaskLoopPlugin extends Plugin {
 
     this.registerEvent(this.app.vault.on('modify', (file) => {
       this.scheduleContributionRefresh(file.path);
+      this.scheduleWorkProgressRefresh(file.path);
     }));
     this.registerEvent(this.app.vault.on('create', (file) => {
       this.scheduleContributionRefresh(file.path);
+      this.scheduleWorkProgressRefresh(file.path);
     }));
     this.registerEvent(this.app.vault.on('delete', (file) => {
       this.scheduleContributionRefresh(file.path);
+      this.scheduleWorkProgressRefresh(file.path);
     }));
     this.registerEvent(this.app.vault.on('rename', (file, oldPath) => {
       this.scheduleContributionRefresh(file.path);
       this.scheduleContributionRefresh(oldPath);
+      this.scheduleWorkProgressRefresh(file.path);
+      this.scheduleWorkProgressRefresh(oldPath);
     }));
     this.register(() => {
       if (this.contributionRefreshTimer !== null) {
         clearTimeout(this.contributionRefreshTimer);
         this.contributionRefreshTimer = null;
+      }
+    });
+    this.register(() => {
+      if (this.workProgressRefreshTimer !== null) {
+        clearTimeout(this.workProgressRefreshTimer);
+        this.workProgressRefreshTimer = null;
       }
     });
 
@@ -461,6 +570,218 @@ export default class AgentTaskLoopPlugin extends Plugin {
       ),
       openWeeklyCoach: (onChanged) => this.openWeeklyCoach(onChanged),
       openWeeklyFocus: (path) => this.openWeeklyFocus(path),
+    });
+  }
+
+  private createWorkProgressView(leaf: WorkspaceLeaf): WorkProgressView {
+    return new WorkProgressView(leaf, {
+      createController: () => this.createWorkProgressController(),
+      openPath: (path) => this.openWorkProgressPath(path),
+      requestWeeklyFeedback: (report) => this.requestWeeklyFeedback(report),
+      requestProgressDraft: (initial) => this.requestProgressDraft(initial),
+      requestMaterialGap: (progress) => this.requestMaterialGap(progress),
+    });
+  }
+
+  private createWorkProgressController(): WorkProgressHubController {
+    const paths = this.localPluginPaths();
+    if (paths === null || !Platform.isDesktopApp) {
+      throw new Error('Agent Task Loop 工作沉淀仅支持桌面版本地 Vault');
+    }
+    const root = paths.root;
+    const runtimeRoot = qianwenRuntimeRoot({ runnerPath: paths.runnerPath });
+    const sourceRepository = new FileQianwenSourceStateRepository(runtimeRoot);
+    const decisionRepository = new FileMeetingMatchDecisionRepository(root);
+    const progressRepository = new MarkdownProgressRepository(root);
+    const materialGapRepository = new MarkdownMaterialGapRepository(root);
+    const weeklyRepository = new MarkdownWeeklyReportRepository(root);
+    const weeklyDecisionRepository = new FileWeeklyReviewDecisionRepository(root);
+    const taskRepository = new MarkdownTaskRepository(root);
+    const projectRepository = new MarkdownProjectRepository(root);
+
+    const writeContext = () => {
+      if (!this.settings.allowVaultManagement) {
+        const error = new Error('请先允许 ATL 管理此 Vault') as Error & { code: string };
+        error.code = 'work_progress_vault_management_required';
+        throw error;
+      }
+      const writeAuthorization = createVaultWriteAuthorization(root);
+      return {
+        decisionRepository: new FileMeetingMatchDecisionRepository(root, {
+          writeAuthorization,
+        }),
+        weeklyRepository: new MarkdownWeeklyReportRepository(root, {
+          writeAuthorization,
+        }),
+        weeklyDecisionRepository: new FileWeeklyReviewDecisionRepository(root, {
+          writeAuthorization,
+        }),
+        progressRepository: new MarkdownProgressRepository(root, {
+          writeAuthorization,
+        }),
+        materialGapRepository: new MarkdownMaterialGapRepository(root, {
+          writeAuthorization,
+        }),
+      };
+    };
+    const meetingNotes = new MeetingNoteController(this.workProgressMeetingFileSystem());
+    const materializeContext = () => {
+      const writable = writeContext();
+      return {
+        sourceRepository,
+        decisionRepository: writable.decisionRepository,
+        meetingNotes,
+        listCalendarSources: () => this.listWorkProgressCalendarSources(),
+        readCalendarSource: (path: string) => this.app.vault.adapter.read(path),
+        readMeetingNote: (path: string) => this.app.vault.adapter.read(path),
+        clock: () => new Date(),
+        id: randomUUID,
+      };
+    };
+
+    return new WorkProgressHubController({
+      loadSnapshot: () => queryWorkProgressHub({
+        sourceRepository,
+        decisionRepository,
+        progressRepository,
+        materialGapRepository,
+        weeklyRepository,
+        weeklyDecisionRepository,
+        taskRepository,
+        notificationLedger: new FileAcceptanceNotificationLedger(join(root, '.atl-runtime')),
+        listCalendarSources: () => this.listWorkProgressCalendarSources(),
+        findMeetingPath: (recordingId) => meetingNotes.findExistingRecordingPath(recordingId),
+        readMeetingNote: async (path) => (
+          await this.app.vault.adapter.exists(path)
+            ? this.app.vault.adapter.read(path)
+            : null
+        ),
+      }),
+      confirmMatch: (input) => confirmMeetingMatchWithEvidence(materializeContext(), input),
+      markNoCalendar: (input) => markRecordingWithoutCalendarWithEvidence(
+        materializeContext(),
+        input,
+      ),
+      revokeMatch: (input) => {
+        const writable = writeContext();
+        return revokeMeetingMatchDecision({
+          repository: writable.decisionRepository,
+          clock: () => new Date(),
+          id: randomUUID,
+        }, input);
+      },
+      acceptWeekly: (input) => {
+        const writable = writeContext();
+        return acceptWeeklyReport({
+          weeklyRepository: writable.weeklyRepository,
+          decisionRepository: writable.weeklyDecisionRepository,
+          clock: () => new Date(),
+          id: randomUUID,
+        }, input);
+      },
+      rejectWeekly: (input) => {
+        const writable = writeContext();
+        return rejectWeeklyReportWithFeedback({
+          weeklyRepository: writable.weeklyRepository,
+          decisionRepository: writable.weeklyDecisionRepository,
+          clock: () => new Date(),
+          id: randomUUID,
+        }, input);
+      },
+      deferWeekly: (input) => {
+        const writable = writeContext();
+        return deferWeeklyReport({
+          weeklyRepository: writable.weeklyRepository,
+          decisionRepository: writable.weeklyDecisionRepository,
+          clock: () => new Date(),
+          id: randomUUID,
+        }, input);
+      },
+      generateWeekly: () => {
+        const writable = writeContext();
+        const period = currentIsoWeekPeriod(new Date(), 'Asia/Shanghai');
+        const notifyAcceptance = createAcceptanceNotifier({
+          vaultRoot: root,
+          profile: optionalDingTalkProfile(this.settings.background.dingtalkProfile),
+        });
+        return generateWeeklyReport({
+          progressRepository,
+          weeklyRepository: writable.weeklyRepository,
+          clock: () => new Date(),
+          ...(notifyAcceptance === undefined ? {} : { notifyAcceptance }),
+        }, {
+          weekKey: period.weekKey,
+          week: {
+            startDate: period.startDate,
+            endDate: period.endDate,
+          },
+        });
+      },
+      createProgress: (draft) => {
+        const writable = writeContext();
+        const period = isoWeekPeriodForOccurredAt(draft.occurredAt, 'Asia/Shanghai');
+        return createProgressVersion({
+          repository: writable.progressRepository,
+          clock: () => new Date(),
+          id: randomUUID,
+        }, {
+          draft,
+          week: {
+            startDate: period.startDate,
+            endDate: period.endDate,
+          },
+        });
+      },
+      createMaterialGap: (input) => {
+        const writable = writeContext();
+        const materialSearch = new DwsMaterialSearchConnector({
+          profile: optionalDingTalkProfile(this.settings.background.dingtalkProfile),
+        });
+        const readSource = async (path: string): Promise<string | null> => {
+          const adapter = this.app.vault.adapter;
+          if (!(await adapter.exists(path))) return null;
+          const kind = meetingDocumentKind(path);
+          if (kind === 'pdf' || kind === 'docx' || kind === 'csv' || kind === 'xlsx') {
+            return parseMeetingDocument({
+              name: path,
+              data: new Uint8Array(await adapter.readBinary(path)),
+            });
+          }
+          return adapter.read(path);
+        };
+        return prepareMaterialGapRequest({
+          loadProgress: async (progressId, version) => (
+            (await progressRepository.listVersions(progressId))
+              .find((candidate) => candidate.version === version) ?? null
+          ),
+          readSource,
+          listRelatedSources: (progress) => listRelatedMaterialSources({
+            readSource,
+            loadProject: async (projectId) => {
+              try {
+                return await projectRepository.get(projectId);
+              } catch {
+                return null;
+              }
+            },
+            listTasks: () => taskRepository.list(),
+          }, progress),
+          searchExternalSources: (progress, request) => materialSearch.search({
+            query: [...new Set([
+              progress.topic.trim(),
+              request.missing.description.trim(),
+            ].filter((value) => value !== ''))].join(' '),
+            occurredAt: progress.occurredAt,
+            projectId: progress.primaryProjectId,
+          }),
+          clock: () => new Date(),
+        }, input).then((prepared) => createMaterialGap({
+          repository: writable.materialGapRepository,
+          clock: () => new Date(),
+          id: randomUUID,
+        }, prepared));
+      },
+      syncSource: () => this.syncQianwenNow(),
     });
   }
 
@@ -740,6 +1061,26 @@ export default class AgentTaskLoopPlugin extends Plugin {
     await this.app.workspace.revealLeaf(leaf);
   }
 
+  private async activateWorkProgressView(): Promise<void> {
+    if (this.settings.allowVaultManagement) {
+      try {
+        await ensureWorkProgressEntry({
+          exists: (path) => this.app.vault.adapter.exists(path),
+          ensureDirectory: (path) => this.ensureVaultDirectory(path),
+          create: async (path, content) => {
+            await this.app.vault.create(path, content);
+          },
+        });
+      } catch (error) {
+        new Notice(errorMessage(error, '无法创建工作沉淀文件入口'));
+      }
+    }
+    const existing = this.app.workspace.getLeavesOfType(WORK_PROGRESS_VIEW_TYPE)[0];
+    const leaf = existing ?? this.app.workspace.getLeaf('tab');
+    await leaf.setViewState({ type: WORK_PROGRESS_VIEW_TYPE, active: true });
+    await this.app.workspace.revealLeaf(leaf);
+  }
+
   private scheduleContributionRefresh(path: string): void {
     if (!isContributionDataPath(path)) return;
     if (this.contributionRefreshTimer !== null) clearTimeout(this.contributionRefreshTimer);
@@ -755,6 +1096,144 @@ export default class AgentTaskLoopPlugin extends Plugin {
         }
       }
     }, 250);
+  }
+
+  private scheduleWorkProgressRefresh(path: string): void {
+    if (!isWorkProgressDataPath(path)) return;
+    if (this.workProgressRefreshTimer !== null) clearTimeout(this.workProgressRefreshTimer);
+    this.workProgressRefreshTimer = setTimeout(() => {
+      this.workProgressRefreshTimer = null;
+      this.refreshWorkProgressViews();
+    }, 250);
+  }
+
+  private refreshWorkProgressViews(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(WORK_PROGRESS_VIEW_TYPE)) {
+      const view = leaf.view;
+      if (view instanceof WorkProgressView) void view.refresh();
+    }
+  }
+
+  private async openWorkProgressPath(path: string): Promise<void> {
+    if (!isSafeWorkProgressPath(path)) {
+      new Notice('工作沉淀链接无效');
+      return;
+    }
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile)) {
+      new Notice('找不到这项工作沉淀');
+      return;
+    }
+    await this.app.workspace.getLeaf(false).openFile(file);
+  }
+
+  private requestWeeklyFeedback(
+    report: WorkProgressHubSnapshot['weeklyReports'][number],
+  ): Promise<string | null> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const settle = (feedback: string | null) => {
+        if (settled) return;
+        settled = true;
+        resolve(feedback);
+      };
+      new WeeklyFeedbackModal(
+        this.app,
+        { weekKey: report.weekKey, version: report.version },
+        async (feedback) => settle(feedback),
+        () => settle(null),
+      ).open();
+    });
+  }
+
+  private requestProgressDraft(initial?: ProgressDraft): Promise<ProgressDraft | null> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const settle = (draft: ProgressDraft | null) => {
+        if (settled) return;
+        settled = true;
+        resolve(draft);
+      };
+      new ProgressEntryModal(
+        this.app,
+        async (draft) => settle(draft),
+        () => settle(null),
+        () => new Date(),
+        initial,
+      ).open();
+    });
+  }
+
+  private requestMaterialGap(
+    progress: WorkProgressHubSnapshot['progress'],
+  ): Promise<PrepareMaterialGapRequestInput | null> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const settle = (input: PrepareMaterialGapRequestInput | null) => {
+        if (settled) return;
+        settled = true;
+        resolve(input);
+      };
+      new MaterialGapEntryModal(
+        this.app,
+        progress,
+        async (input) => settle(input),
+        () => settle(null),
+      ).open();
+    });
+  }
+
+  private workProgressMeetingFileSystem() {
+    return {
+      exists: (path: string) => this.app.vault.adapter.exists(path),
+      read: (path: string) => this.app.vault.adapter.read(path),
+      listMarkdownFiles: async (path: string) => this.app.vault
+        .getMarkdownFiles()
+        .map((file) => file.path)
+        .filter((filePath) => filePath.startsWith(`${path}/`)),
+      ensureDirectory: (path: string) => this.ensureVaultDirectory(path),
+      create: async (path: string, content: string) => {
+        await this.app.vault.create(path, content);
+      },
+      removeIfContentMatches: async (path: string, expected: string) => {
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (!(file instanceof TFile)) return false;
+        if (await this.app.vault.cachedRead(file) !== expected) return false;
+        await this.app.vault.delete(file);
+        return true;
+      },
+      process: async (path: string, transform: (content: string) => string) => {
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (!(file instanceof TFile)) throw new Error('会议笔记不存在');
+        return this.app.vault.process(file, transform);
+      },
+    };
+  }
+
+  private async ensureVaultDirectory(path: string): Promise<void> {
+    let directory = '';
+    for (const segment of path.split('/').filter((value) => value !== '')) {
+      directory = directory === '' ? segment : `${directory}/${segment}`;
+      if (!(await this.app.vault.adapter.exists(directory))) {
+        await this.app.vault.adapter.mkdir(directory);
+      }
+    }
+  }
+
+  private async listWorkProgressCalendarSources() {
+    const sources = await Promise.all(this.app.vault.getMarkdownFiles()
+      .filter((file) => file.path.startsWith('TaskNotes/DingTalk/'))
+      .map(async (file) => {
+        try {
+          return parseDingTalkMeetingSource(
+            file.path,
+            await this.app.vault.adapter.read(file.path),
+          );
+        } catch {
+          return null;
+        }
+      }));
+    return sources.filter((source) => source !== null);
   }
 
   private async openContributionTask(taskId: string): Promise<void> {
@@ -893,6 +1372,42 @@ export default class AgentTaskLoopPlugin extends Plugin {
 
   syncDingTalkCalendarNow(): Promise<void> {
     return this.dingtalkCalendarLifecycle?.run('manual') ?? Promise.resolve();
+  }
+
+  private async syncQianwenNow(): Promise<
+    | { status: 'not_due' }
+    | {
+      status: 'completed';
+      available: number;
+      waiting: number;
+      failed: number;
+    }
+  > {
+    if (!this.settings.allowVaultManagement) {
+      throw new Error('请先允许 ATL 管理此 Vault');
+    }
+    const paths = this.localPluginPaths();
+    if (paths === null || !Platform.isDesktopApp) {
+      throw new Error('千问听记同步仅支持 Obsidian 桌面版');
+    }
+    const runtimeRoot = qianwenRuntimeRoot({ runnerPath: paths.runnerPath });
+    const result = await syncQianwenSource({
+      repository: new FileQianwenSourceStateRepository(runtimeRoot, {
+        writeAuthorization: createVaultWriteAuthorization(runtimeRoot),
+      }),
+      connector: new QianwenDesktopConnector(),
+      now: new Date(),
+      timeZone: resolveSystemTimeZone(),
+      mode: 'manual',
+    });
+    this.refreshWorkProgressViews();
+    if (result.status === 'not_due') return result;
+    return {
+      status: 'completed',
+      available: result.snapshot.recordings.filter(({ status }) => status === 'available').length,
+      waiting: result.snapshot.recordings.filter(({ status }) => status === 'waiting').length,
+      failed: result.snapshot.recordings.filter(({ status }) => status === 'failed').length,
+    };
   }
 
   openUnifiedCalendar(): Promise<void> {
@@ -1054,6 +1569,13 @@ export default class AgentTaskLoopPlugin extends Plugin {
       },
       create: async (path: string, content: string) => {
         await this.app.vault.create(path, content);
+      },
+      removeIfContentMatches: async (path: string, expected: string) => {
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (!(file instanceof TFile)) return false;
+        if (await this.app.vault.cachedRead(file) !== expected) return false;
+        await this.app.vault.delete(file);
+        return true;
       },
       createBinary: async (path: string, data: Uint8Array) => {
         await this.app.vault.createBinary(path, new Uint8Array(data).buffer);
@@ -1652,6 +2174,25 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
           await this.atlPlugin.saveSettings();
           this.display();
         }));
+
+    const notificationSetting = new Setting(containerEl)
+      .setName('待验收通知')
+      .setDesc('填写 DingTalk profile 后，新的 Artifact 和周报会通知你本人；留空则关闭钉钉通知。');
+    notificationSetting.addText((input) => input
+      .setPlaceholder('例如 default')
+      .setValue(background.dingtalkProfile)
+      .onChange(async (value) => {
+        const normalized = value.trim();
+        if (normalized !== '' && optionalDingTalkProfile(normalized) === null) {
+          notificationSetting.setDesc('请输入一个明确的 DingTalk profile，不能包含逗号或换行。');
+          return;
+        }
+        background.dingtalkProfile = normalized;
+        await this.atlPlugin.saveSettings();
+        notificationSetting.setDesc(
+          '填写 DingTalk profile 后，新的 Artifact 和周报会通知你本人；留空则关闭钉钉通知。',
+        );
+      }));
 
     const modelFields = modelServiceFieldState(background);
     if (modelFields.showCustomFields) {

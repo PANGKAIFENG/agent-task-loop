@@ -8,6 +8,8 @@ import {
   MAX_MEETING_DOCUMENT_CHARACTERS,
   MAX_MEETING_PDF_PAGES,
   MAX_MEETING_PDF_TEXT_ITEMS,
+  MAX_MEETING_SPREADSHEET_COLUMNS,
+  MAX_MEETING_SPREADSHEET_ROWS,
   meetingDocumentKind,
   parseMeetingDocument,
 } from '../../../src/obsidian-plugin/meeting-document-parser.js';
@@ -37,6 +39,77 @@ async function syntheticDocx(text: string): Promise<Uint8Array> {
     '</w:document>',
   ].join(''));
   return zip.generateAsync({ type: 'uint8array' });
+}
+
+function xmlEscaped(value: string): string {
+  return value
+    .replace(/&/gu, '&amp;')
+    .replace(/</gu, '&lt;')
+    .replace(/>/gu, '&gt;')
+    .replace(/"/gu, '&quot;')
+    .replace(/'/gu, '&apos;');
+}
+
+function spreadsheetColumnName(index: number): string {
+  let column = '';
+  let remainder = index;
+  while (remainder > 0) {
+    remainder -= 1;
+    column = String.fromCharCode(65 + (remainder % 26)) + column;
+    remainder = Math.floor(remainder / 26);
+  }
+  return column;
+}
+
+async function syntheticXlsx(
+  sheets: Array<{ name: string; rows: Array<Array<string | number>> }>,
+): Promise<Uint8Array> {
+  const zip = new JSZip();
+  zip.file('[Content_Types].xml', [
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">',
+    '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>',
+    '<Default Extension="xml" ContentType="application/xml"/>',
+    '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>',
+    ...sheets.map((_, index) => `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`),
+    '</Types>',
+  ].join(''));
+  zip.file('_rels/.rels', [
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">',
+    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>',
+    '</Relationships>',
+  ].join(''));
+  zip.file('xl/workbook.xml', [
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+    '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">',
+    '<sheets>',
+    ...sheets.map((sheet, index) => `<sheet name="${xmlEscaped(sheet.name)}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`),
+    '</sheets></workbook>',
+  ].join(''));
+  zip.file('xl/_rels/workbook.xml.rels', [
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">',
+    ...sheets.map((_, index) => `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${index + 1}.xml"/>`),
+    '</Relationships>',
+  ].join(''));
+  sheets.forEach((sheet, sheetIndex) => {
+    const rows = sheet.rows.map((row, rowIndex) => {
+      const cells = row.map((value, columnIndex) => {
+        const reference = `${spreadsheetColumnName(columnIndex + 1)}${rowIndex + 1}`;
+        return typeof value === 'number'
+          ? `<c r="${reference}"><v>${value}</v></c>`
+          : `<c r="${reference}" t="inlineStr"><is><t>${xmlEscaped(value)}</t></is></c>`;
+      }).join('');
+      return `<row r="${rowIndex + 1}">${cells}</row>`;
+    }).join('');
+    zip.file(`xl/worksheets/sheet${sheetIndex + 1}.xml`, [
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+      '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+      `<sheetData>${rows}</sheetData></worksheet>`,
+    ].join(''));
+  });
+  return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
 }
 
 function syntheticPdf(text: string): Uint8Array {
@@ -107,6 +180,8 @@ describe('meeting document parser', () => {
     ['notes.md', 'md'],
     ['interview.DocX', 'docx'],
     ['brief.PDF', 'pdf'],
+    ['metrics.CSV', 'csv'],
+    ['acceptance.XLSX', 'xlsx'],
     ['recording.mp3', null],
     ['no-extension', null],
   ])('classifies %s as %s', (name, expected) => {
@@ -137,6 +212,89 @@ describe('meeting document parser', () => {
       .resolves.toBe('PDF 资料');
     expect(extractDocx).toHaveBeenCalledOnce();
     expect(extractPdf).toHaveBeenCalledOnce();
+  });
+
+  it('parses quoted CSV cells without flattening row boundaries', async () => {
+    const parse = createMeetingDocumentParser({
+      extractDocx: vi.fn(),
+      extractPdf: vi.fn(),
+    });
+
+    await expect(parse({
+      name: 'acceptance.csv',
+      data: encoder.encode('项目,数量\r\n"精恭纺,验收",12\r\n"含\n换行",8\r\n'),
+    })).resolves.toBe('项目\t数量\n精恭纺,验收\t12\n含 换行\t8');
+  });
+
+  it('stops CSV parsing at the row limit before reading a malformed tail', async () => {
+    const parse = createMeetingDocumentParser({
+      extractDocx: vi.fn(),
+      extractPdf: vi.fn(),
+    });
+    const overLimitThenMalformed = `${'x\n'.repeat(MAX_MEETING_SPREADSHEET_ROWS + 1)}"`;
+
+    await expect(parse({
+      name: 'too-many-rows.csv',
+      data: encoder.encode(overLimitThenMalformed),
+    })).rejects.toThrow(`不能超过 ${MAX_MEETING_SPREADSHEET_ROWS.toLocaleString('en-US')} 行`);
+  });
+
+  it('stops CSV parsing at the column limit before reading a malformed tail', async () => {
+    const parse = createMeetingDocumentParser({
+      extractDocx: vi.fn(),
+      extractPdf: vi.fn(),
+    });
+    const overLimitThenMalformed = `${Array.from(
+      { length: MAX_MEETING_SPREADSHEET_COLUMNS + 1 },
+      (_, index) => `column-${index}`,
+    ).join(',')}\n"`;
+
+    await expect(parse({
+      name: 'too-many-columns.csv',
+      data: encoder.encode(overLimitThenMalformed),
+    })).rejects.toThrow(`不能超过 ${MAX_MEETING_SPREADSHEET_COLUMNS} 列`);
+  });
+
+  it('stops CSV parsing at the character budget before reading a malformed tail', async () => {
+    const parse = createMeetingDocumentParser({
+      extractDocx: vi.fn(),
+      extractPdf: vi.fn(),
+    });
+    const overLimitThenMalformed = `${'0123456789\n'.repeat(9_092)}"`;
+
+    await expect(parse({
+      name: 'too-much-text.csv',
+      data: encoder.encode(overLimitThenMalformed),
+    })).rejects.toThrow(MAX_MEETING_DOCUMENT_CHARACTERS.toLocaleString('en-US'));
+  });
+
+  it('routes XLSX bytes through the bounded workbook extractor', async () => {
+    const extractXlsx = vi.fn(async () => '分类\t数量\n第一类\t12');
+    const parse = createMeetingDocumentParser({
+      extractDocx: vi.fn(),
+      extractPdf: vi.fn(),
+      extractXlsx,
+    });
+    const bytes = new Uint8Array([1, 2, 3]);
+
+    await expect(parse({ name: 'acceptance.xlsx', data: bytes }))
+      .resolves.toBe('分类\t数量\n第一类\t12');
+    expect(extractXlsx).toHaveBeenCalledOnce();
+  });
+
+  it('extracts rows from an actual XLSX workbook with the production parser', async () => {
+    const workbook = await syntheticXlsx([{
+      name: '验收',
+      rows: [
+        ['验收分类数量', '第一类', '第二类'],
+        ['数量', 12, 8],
+      ],
+    }]);
+
+    await expect(parseMeetingDocument({
+      name: 'acceptance.xlsx',
+      data: workbook,
+    })).resolves.toBe('验收分类数量\t第一类\t第二类\n数量\t12\t8');
   });
 
   it('rejects unsupported, invalid UTF-8, blank and oversized documents', async () => {
@@ -279,6 +437,26 @@ describe('meeting document parser', () => {
 
     await expect(docxExpandedSize(forgeZipUncompressedSizes(compressed, 1), 1_024))
       .rejects.toThrow('1,024');
+  });
+
+  it('identifies XLSX archives correctly when their expanded content is too large', async () => {
+    const module = await import('../../../src/obsidian-plugin/meeting-document-parser.js');
+    const docxExpandedSize = (module as unknown as {
+      docxExpandedSize(
+        data: Uint8Array,
+        maximumBytes: number,
+        documentKind: 'DOCX' | 'XLSX',
+      ): Promise<number>;
+    }).docxExpandedSize;
+    const zip = new JSZip();
+    zip.file('xl/worksheets/sheet1.xml', 'x'.repeat(4_096));
+    const compressed = await zip.generateAsync({
+      type: 'uint8array',
+      compression: 'DEFLATE',
+    });
+
+    await expect(docxExpandedSize(compressed, 1_024, 'XLSX'))
+      .rejects.toThrow('XLSX 解压后内容不能超过 1,024 bytes');
   });
 
   it('extracts text from an actual synthetic DOCX with the production parser', async () => {

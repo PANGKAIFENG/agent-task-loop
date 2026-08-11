@@ -1,4 +1,5 @@
 import type { ArtifactResult } from '../domain/artifact.js';
+import { projectAcceptanceObjects } from '../domain/acceptance-object.js';
 import type { Task } from '../domain/task.js';
 import { assertTransition } from '../domain/transitions.js';
 import { TaskSavedIndexStaleError } from '../storage/markdown-task-repository.js';
@@ -114,6 +115,14 @@ export async function submitArtifact(
     }
     if (staleIndexError !== null) {
       throw staleIndexError;
+    }
+    const acceptance = projectAcceptanceObjects([saved], [])[0];
+    if (acceptance !== undefined && ctx.notifyAcceptance !== undefined) {
+      try {
+        await ctx.notifyAcceptance(acceptance);
+      } catch {
+        // Notification is a post-commit side effect; the local review state is authoritative.
+      }
     }
     return saved;
   });

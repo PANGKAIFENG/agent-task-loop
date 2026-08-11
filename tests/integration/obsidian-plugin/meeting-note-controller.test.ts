@@ -53,6 +53,13 @@ function nodeFileSystem(): MeetingNoteFileSystem {
       await mkdir(dirname(join(root, path)), { recursive: true });
       await writeFile(join(root, path), content, { encoding: 'utf8', flag: 'wx' });
     },
+    removeIfContentMatches: async (path, expected) => {
+      const fullPath = join(root, path);
+      const current = await readFile(fullPath, 'utf8').catch(() => null);
+      if (current !== expected) return false;
+      await rm(fullPath);
+      return true;
+    },
     process: async (path, transform) => {
       const fullPath = join(root, path);
       const next = transform(await readFile(fullPath, 'utf8'));
@@ -219,6 +226,35 @@ describe('MeetingNoteController', () => {
       participants: [],
       transcript: '内容',
     })).rejects.toThrow('有效的钉钉日程');
+  });
+
+  it('creates one idempotent standalone meeting note for a recording without calendar', async () => {
+    const controller = new MeetingNoteController(nodeFileSystem());
+    const input = {
+      meetingType: 'discussion' as const,
+      participants: [],
+      transcript: '发言人：确认验收分类。',
+      qianwen: {
+        recordingId: 'recording-no-calendar',
+        title: '精恭纺验收推进会议',
+        createdAt: '2026-08-10T17:42:00+08:00',
+        durationSeconds: 1200,
+        sourceUrl: 'qianwen.com/chat/recording-no-calendar',
+        summary: '确认验收分类。',
+      },
+    };
+
+    const first = await controller.createStandalone(input);
+    const second = await controller.createStandalone({
+      ...input,
+      transcript: '不应覆盖的内容',
+    });
+
+    expect(first.created).toBe(true);
+    expect(second).toEqual({ created: false, path: first.path });
+    const raw = await readFile(join(root, first.path), 'utf8');
+    expect(raw).toContain('发言人：确认验收分类。');
+    expect(raw).not.toContain('不应覆盖的内容');
   });
 
   it('persists analysis in its managed region while preserving the transcript', async () => {

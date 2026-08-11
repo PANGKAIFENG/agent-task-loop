@@ -231,6 +231,38 @@ describe('artifact review loop', () => {
     expect(auditText).not.toContain(artifactResult().findings[0]);
   });
 
+  it('keeps the submitted Artifact in Review when the acceptance notification fails', async () => {
+    const context = await makeContext();
+    const task = inProgressTask({ taskId: 'task-20260714-notify-failed' });
+    await context.ctx.tasks.save(task);
+    const notified: string[] = [];
+    context.ctx.notifyAcceptance = async (object) => {
+      notified.push(`${object.objectType}:${object.objectId}:${object.version}`);
+      throw new Error('synthetic notification failure');
+    };
+
+    const submitted = await submitArtifact(context.ctx, task.taskId, {
+      runId: task.claim?.runId ?? '',
+      result: artifactResult(),
+    });
+
+    const ref = `Artifacts/${task.taskId}/attempt-001.md`;
+    expect(notified).toEqual([`artifact:${task.taskId}:1`]);
+    expect(submitted).toMatchObject({
+      status: 'review',
+      claim: null,
+      artifactRefs: [ref],
+    });
+    await expect(context.ctx.tasks.get(task.taskId)).resolves.toMatchObject({
+      status: 'review',
+      claim: null,
+      artifactRefs: [ref],
+    });
+    await expect(context.ctx.artifacts.readSummary(ref)).resolves.toMatchObject({
+      summary: artifactResult().summary,
+    });
+  });
+
   it('requires matching ownership and HTTPS evidence before writing an Artifact', async () => {
     const context = await makeContext();
     const task = inProgressTask({ taskId: 'task-20260714-validation' });

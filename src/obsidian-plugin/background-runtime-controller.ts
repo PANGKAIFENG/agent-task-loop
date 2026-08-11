@@ -28,6 +28,7 @@ export interface BackgroundSettings {
   modelServiceMode: 'inherit' | 'custom';
   model: string;
   baseUrl: string;
+  dingtalkProfile: string;
   dailyLimit: number;
 }
 
@@ -268,6 +269,9 @@ export class BackgroundRuntimeController {
         ...(modelService.baseUrl === undefined
           ? {}
           : { ANTHROPIC_BASE_URL: modelService.baseUrl }),
+        ...(settings.dingtalkProfile === ''
+          ? {}
+          : { ATL_DINGTALK_PROFILE: settings.dingtalkProfile }),
         ATL_ALLOWED_LOCAL_ROOTS: [meetingNotesRoot, ...allowedLocalRoots].join(delimiter),
         ATL_DAILY_LIMIT: String(settings.dailyLimit),
       },
