@@ -1,7 +1,12 @@
 import { z } from 'zod';
 
 export type MaterialGapKind = 'numeric' | 'document' | 'status';
-export type MaterialSearchStatus = 'found' | 'not_found' | 'permission_denied';
+export type MaterialSearchStatus =
+  | 'found'
+  | 'not_found'
+  | 'permission_denied'
+  | 'not_connected'
+  | 'failed';
 export type MaterialSearchSource =
   | 'meeting_link'
   | 'project_context'
@@ -69,7 +74,13 @@ const materialSearchAttemptSchema = z.object({
     'code_artifact',
   ]),
   target: nonEmptyString,
-  status: z.enum(['found', 'not_found', 'permission_denied']),
+  status: z.enum([
+    'found',
+    'not_found',
+    'permission_denied',
+    'not_connected',
+    'failed',
+  ]),
   searchedAt: z.iso.datetime({ offset: true }),
   sourceRef: nonEmptyString.nullable(),
 }).strict();

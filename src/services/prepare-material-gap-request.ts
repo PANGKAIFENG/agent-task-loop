@@ -1,4 +1,5 @@
 import type {
+  MaterialSearchStatus,
   MaterialSearchSource,
   SuggestedMaterialContact,
 } from '../domain/material-gap.js';
@@ -18,7 +19,33 @@ export interface PrepareMaterialGapRequestContext {
   loadProgress(progressId: string, version: number): Promise<ProgressVersion | null>;
   readSource(path: string): Promise<string | null>;
   listRelatedSources?(progress: ProgressVersion): Promise<MaterialSourceCandidate[]>;
+  searchExternalSources?(
+    progress: ProgressVersion,
+    input: PrepareMaterialGapRequestInput,
+  ): Promise<ExternalMaterialSearchOutcome[]>;
   clock(): Date;
+}
+
+export interface MaterialContactCandidate extends SuggestedMaterialContact {
+  priority: number;
+}
+
+export interface ExternalMaterialSearchOutcome {
+  source: Extract<
+    MaterialSearchSource,
+    | 'dingtalk_message'
+    | 'dingtalk_doc'
+    | 'dingtalk_aitable'
+    | 'dingtalk_drive'
+    | 'yunxiao'
+  >;
+  target: string;
+  status: Exclude<MaterialSearchStatus, 'found'>;
+  materials: readonly {
+    sourceRef: string;
+    content: string;
+  }[];
+  contacts: readonly MaterialContactCandidate[];
 }
 
 export interface MaterialSourceCandidate {
@@ -87,7 +114,6 @@ function searchSource(path: string): MaterialSearchSource | null {
 }
 
 const INLINE_NUMERIC_VALUE = /(?:\d+(?:\.\d+)?%?|百分之[一二三四五六七八九十百千万亿]+|[一二三四五六七八九十百千万亿]+(?:项|个|类|条|份|人|次|天|周|月|年|元))/u;
-const UNIT_NUMERIC_VALUE = /(?:\d+(?:\.\d+)?(?:%|项|个|类|条|份|人|次|天|周|月|年|元)|百分之[一二三四五六七八九十百千万亿]+|[一二三四五六七八九十百千万亿]+(?:项|个|类|条|份|人|次|天|周|月|年|元))/u;
 const UNRESOLVED_MATERIAL = /(?:待补齐|待确认|待提供|待统计|尚未|未找到|未提供|未统计|暂无|缺失|未知|没有)/u;
 const DATE_OR_TIME = /\b\d{4}-\d{1,2}-\d{1,2}(?:[T ]\d{1,2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?)?|\b\d{1,2}:\d{2}(?::\d{2})?\b/gu;
 
@@ -100,21 +126,10 @@ function searchableContent(content: string): string {
 }
 
 function numericEvidence(content: string, description: string): boolean {
-  const lines = content.split(/\r?\n/u);
-  for (const [index, line] of lines.entries()) {
+  for (const line of content.split(/\r?\n/u)) {
     if (!line.includes(description) || UNRESOLVED_MATERIAL.test(line)) continue;
     const inline = line.replaceAll(description, '').replace(DATE_OR_TIME, '');
     if (INLINE_NUMERIC_VALUE.test(inline)) return true;
-    for (let offset = 1; offset <= 4; offset += 1) {
-      const nearby = lines[index + offset];
-      if (
-        nearby === undefined
-        || nearby.trim() === ''
-        || /^\s{0,3}#{1,6}\s/u.test(nearby)
-        || UNRESOLVED_MATERIAL.test(nearby)
-      ) break;
-      if (UNIT_NUMERIC_VALUE.test(nearby.replace(DATE_OR_TIME, ''))) return true;
-    }
   }
   return false;
 }
@@ -221,17 +236,25 @@ export async function listRelatedMaterialSources(
   return candidates;
 }
 
-function structuredContact(
+function contactPriority(reason: string): number {
+  if (/材料(?:维护|负责)人/u.test(reason)) return 10;
+  if (/项目负责人/u.test(reason)) return 20;
+  if (/日程组织者|会议组织者/u.test(reason)) return 25;
+  return 40;
+}
+
+function structuredContacts(
   content: string,
   sourceRef: string,
-): SuggestedMaterialContact | null {
+): MaterialContactCandidate[] {
   let contacts: unknown;
   try {
     contacts = parseTaskDocument(content).data.material_contacts;
   } catch {
-    return null;
+    return [];
   }
-  if (!Array.isArray(contacts)) return null;
+  if (!Array.isArray(contacts)) return [];
+  const candidates: MaterialContactCandidate[] = [];
   for (const contact of contacts) {
     if (typeof contact !== 'object' || contact === null || Array.isArray(contact)) continue;
     const value = contact as Record<string, unknown>;
@@ -240,15 +263,56 @@ function structuredContact(
       && typeof value.displayName === 'string' && value.displayName.trim() !== ''
       && typeof value.reason === 'string' && value.reason.trim() !== ''
     ) {
-      return {
+      const reason = value.reason.trim();
+      candidates.push({
         userId: value.userId.trim(),
         displayName: value.displayName.trim(),
-        reason: value.reason.trim(),
+        reason,
         sourceRef,
-      };
+        priority: contactPriority(reason),
+      });
     }
   }
-  return null;
+  return candidates;
+}
+
+function suggestedContact(
+  candidates: readonly MaterialContactCandidate[],
+): SuggestedMaterialContact | null {
+  const valid = candidates.filter((candidate) => (
+    Number.isSafeInteger(candidate.priority)
+    && candidate.priority >= 0
+    && candidate.userId.trim() !== ''
+    && candidate.displayName.trim() !== ''
+    && candidate.reason.trim() !== ''
+    && candidate.sourceRef.trim() !== ''
+  ));
+  const bestPriority = Math.min(...valid.map(({ priority }) => priority));
+  if (!Number.isFinite(bestPriority)) return null;
+  const best = valid.filter(({ priority }) => priority === bestPriority);
+  const identities = new Set(best.map(({ userId }) => userId));
+  if (identities.size !== 1) return null;
+  const candidate = best[0];
+  if (candidate === undefined) return null;
+  return {
+    userId: candidate.userId,
+    displayName: candidate.displayName,
+    reason: candidate.reason,
+    sourceRef: candidate.sourceRef,
+  };
+}
+
+function safeExternalValue(value: string): string | null {
+  const normalized = value.trim();
+  if (
+    normalized === ''
+    || normalized.length > 20_000
+    || [...normalized].some((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint <= 0x1f || codePoint === 0x7f;
+    })
+  ) return null;
+  return normalized;
 }
 
 export async function prepareMaterialGapRequest(
@@ -258,7 +322,7 @@ export async function prepareMaterialGapRequest(
   const progress = await context.loadProgress(input.progressId, input.progressVersion);
   if (progress === null) throw new Error('工作进展版本不存在');
   const searches: CreateMaterialGapInput['searches'] = [];
-  let suggestedContact: SuggestedMaterialContact | null = null;
+  const contactCandidates: MaterialContactCandidate[] = [];
   const related = await context.listRelatedSources?.(progress) ?? [];
   const candidates: MaterialSourceCandidate[] = progress.sources.flatMap((target) => {
     const source = searchSource(target);
@@ -289,9 +353,38 @@ export async function prepareMaterialGapRequest(
       searchedAt: context.clock().toISOString(),
       sourceRef: found ? target : null,
     });
-    if (!found && content !== null && suggestedContact === null) {
-      suggestedContact = structuredContact(content, target);
+    if (!found && content !== null) {
+      contactCandidates.push(...structuredContacts(content, target));
     }
   }
-  return { ...input, searches, suggestedContact };
+
+  if (!searches.some(({ status }) => status === 'found')) {
+    const external = await context.searchExternalSources?.(progress, input) ?? [];
+    for (const outcome of external) {
+      if (searches.length >= MAX_MATERIAL_SEARCHES) break;
+      const target = safeExternalValue(outcome.target);
+      if (target === null) continue;
+      const identity = `${outcome.source}:${target}`;
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      const found = outcome.materials.find((material) => (
+        safeExternalValue(material.sourceRef) !== null
+        && materialFound(material.content, input)
+      ));
+      searches.push({
+        source: outcome.source,
+        target,
+        status: found === undefined ? outcome.status : 'found',
+        searchedAt: context.clock().toISOString(),
+        sourceRef: found === undefined ? null : safeExternalValue(found.sourceRef),
+      });
+      if (found === undefined) contactCandidates.push(...outcome.contacts);
+    }
+  }
+
+  return {
+    ...input,
+    searches,
+    suggestedContact: suggestedContact(contactCandidates),
+  };
 }

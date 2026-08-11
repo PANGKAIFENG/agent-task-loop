@@ -94,4 +94,31 @@ describe('material gap preparation', () => {
     expect(gap.status).toBe('needs_contact');
     expect(gap.messageDraft).toBeNull();
   });
+
+  it.each(['not_connected', 'failed'] as const)(
+    'preserves the %s external search status',
+    (status) => {
+      const gap = prepareMaterialGap({
+        gapId: `gap-${status}`,
+        progressId: 'progress-a',
+        progressVersion: 1,
+        missing: {
+          kind: 'document',
+          description: '验收分类表',
+          purpose: '周报',
+        },
+        searches: [{
+          source: status === 'not_connected' ? 'yunxiao' : 'dingtalk_drive',
+          target: 'query:验收分类表',
+          status,
+          searchedAt: '2026-08-12T02:00:00.000Z',
+          sourceRef: null,
+        }],
+        suggestedContact: null,
+        createdAt: '2026-08-12T02:00:00.000Z',
+      });
+
+      expect(gap.searches[0]?.status).toBe(status);
+    },
+  );
 });

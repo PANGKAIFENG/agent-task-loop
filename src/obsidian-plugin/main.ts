@@ -21,6 +21,7 @@ import {
 import './styles.css';
 
 import { QianwenDesktopConnector } from '../connectors/qianwen-desktop-connector.js';
+import { DwsMaterialSearchConnector } from '../connectors/dws-material-search.js';
 import { optionalDingTalkProfile } from '../dingtalk-profile.js';
 import type { ProgressDraft } from '../domain/progress.js';
 import {
@@ -733,11 +734,14 @@ export default class AgentTaskLoopPlugin extends Plugin {
       },
       createMaterialGap: (input) => {
         const writable = writeContext();
+        const materialSearch = new DwsMaterialSearchConnector({
+          profile: optionalDingTalkProfile(this.settings.background.dingtalkProfile),
+        });
         const readSource = async (path: string): Promise<string | null> => {
           const adapter = this.app.vault.adapter;
           if (!(await adapter.exists(path))) return null;
           const kind = meetingDocumentKind(path);
-          if (kind === 'pdf' || kind === 'docx') {
+          if (kind === 'pdf' || kind === 'docx' || kind === 'csv' || kind === 'xlsx') {
             return parseMeetingDocument({
               name: path,
               data: new Uint8Array(await adapter.readBinary(path)),
@@ -762,6 +766,14 @@ export default class AgentTaskLoopPlugin extends Plugin {
             },
             listTasks: () => taskRepository.list(),
           }, progress),
+          searchExternalSources: (progress, request) => materialSearch.search({
+            query: [...new Set([
+              progress.topic.trim(),
+              request.missing.description.trim(),
+            ].filter((value) => value !== ''))].join(' '),
+            occurredAt: progress.occurredAt,
+            projectId: progress.primaryProjectId,
+          }),
           clock: () => new Date(),
         }, input).then((prepared) => createMaterialGap({
           repository: writable.materialGapRepository,

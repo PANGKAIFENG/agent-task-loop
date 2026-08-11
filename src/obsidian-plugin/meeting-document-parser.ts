@@ -1,16 +1,22 @@
 import mammoth from 'mammoth';
 import { Buffer } from 'node:buffer';
 import type { Readable } from 'node:stream';
+import { parse as parseCsv } from 'csv-parse/sync';
 import JSZip from 'jszip';
+import readXlsxFile from 'read-excel-file/node';
 import * as PDFJS from 'unpdf/pdfjs';
 
 export const MAX_MEETING_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 export const MAX_MEETING_DOCUMENT_CHARACTERS = 100_000;
 export const MAX_MEETING_DOCX_EXPANDED_BYTES = 64 * 1024 * 1024;
+export const MAX_MEETING_XLSX_EXPANDED_BYTES = 128 * 1024 * 1024;
 export const MAX_MEETING_PDF_PAGES = 500;
 export const MAX_MEETING_PDF_TEXT_ITEMS = 100_000;
+export const MAX_MEETING_SPREADSHEET_ROWS = 10_000;
+export const MAX_MEETING_SPREADSHEET_COLUMNS = 256;
+export const MAX_MEETING_SPREADSHEET_SHEETS = 20;
 
-export type MeetingDocumentKind = 'txt' | 'md' | 'docx' | 'pdf';
+export type MeetingDocumentKind = 'txt' | 'md' | 'docx' | 'pdf' | 'csv' | 'xlsx';
 
 export interface MeetingDocumentInput {
   name: string;
@@ -20,6 +26,7 @@ export interface MeetingDocumentInput {
 export interface MeetingDocumentParserDependencies {
   extractDocx(data: Uint8Array): Promise<string>;
   extractPdf(data: Uint8Array): Promise<string>;
+  extractXlsx?(data: Uint8Array): Promise<string>;
 }
 
 export type MeetingDocumentParser = (
@@ -134,16 +141,22 @@ export async function extractMeetingPdfText(
   return pages.join('\n').replace(/\s+/gu, ' ');
 }
 
-function docxExpandedTooLargeError(maximumBytes: number): Error {
-  const label = maximumBytes === MAX_MEETING_DOCX_EXPANDED_BYTES
+function expandedTooLargeError(
+  maximumBytes: number,
+  documentKind: 'DOCX' | 'XLSX',
+): Error {
+  const label = documentKind === 'DOCX' && maximumBytes === MAX_MEETING_DOCX_EXPANDED_BYTES
     ? '64 MiB'
-    : `${maximumBytes.toLocaleString('en-US')} bytes`;
-  return new Error(`DOCX 解压后内容不能超过 ${label}`);
+    : documentKind === 'XLSX' && maximumBytes === MAX_MEETING_XLSX_EXPANDED_BYTES
+      ? '128 MiB'
+      : `${maximumBytes.toLocaleString('en-US')} bytes`;
+  return new Error(`${documentKind} 解压后内容不能超过 ${label}`);
 }
 
 export async function docxExpandedSize(
   data: Uint8Array,
   maximumBytes = MAX_MEETING_DOCX_EXPANDED_BYTES,
+  documentKind: 'DOCX' | 'XLSX' = 'DOCX',
 ): Promise<number> {
   const archive = await JSZip.loadAsync(data);
   let total = 0;
@@ -158,13 +171,13 @@ export async function docxExpandedSize(
         if (!Number.isSafeInteger(total)) {
           settled = true;
           stream.destroy();
-          reject(new Error('DOCX 解压后大小无效'));
+          reject(new Error(`${documentKind} 解压后大小无效`));
           return;
         }
         if (total > maximumBytes) {
           settled = true;
           stream.destroy();
-          reject(docxExpandedTooLargeError(maximumBytes));
+          reject(expandedTooLargeError(maximumBytes, documentKind));
         }
       });
       stream.on('error', (error) => {
@@ -188,7 +201,7 @@ export function createMeetingDocxExtractor(
   return async (data) => {
     const expandedSize = await dependencies.expandedSize(data);
     if (expandedSize > MAX_MEETING_DOCX_EXPANDED_BYTES) {
-      throw docxExpandedTooLargeError(MAX_MEETING_DOCX_EXPANDED_BYTES);
+      throw expandedTooLargeError(MAX_MEETING_DOCX_EXPANDED_BYTES, 'DOCX');
     }
     return dependencies.extractRawText(data);
   };
@@ -202,6 +215,8 @@ export function meetingDocumentKind(name: string): MeetingDocumentKind | null {
     || extension === 'md'
     || extension === 'docx'
     || extension === 'pdf'
+    || extension === 'csv'
+    || extension === 'xlsx'
     ? extension
     : null;
 }
@@ -226,6 +241,70 @@ function validatedText(value: string): string {
   return normalized;
 }
 
+function normalizedSpreadsheetCell(value: string): string {
+  return value.replace(/\s+/gu, ' ').trim();
+}
+
+function spreadsheetCellText(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (value instanceof Date) return value.toISOString();
+  return String(value);
+}
+
+function spreadsheetRowsText(rows: readonly (readonly string[])[]): string {
+  if (rows.length > MAX_MEETING_SPREADSHEET_ROWS) {
+    throw new Error(`表格不能超过 ${MAX_MEETING_SPREADSHEET_ROWS.toLocaleString('en-US')} 行`);
+  }
+  const lines: string[] = [];
+  let characters = 0;
+  for (const row of rows) {
+    if (row.length > MAX_MEETING_SPREADSHEET_COLUMNS) {
+      throw new Error(`表格不能超过 ${MAX_MEETING_SPREADSHEET_COLUMNS} 列`);
+    }
+    const line = row.map(normalizedSpreadsheetCell).join('\t').replace(/\t+$/u, '');
+    if (line === '') continue;
+    characters += line.length + (lines.length === 0 ? 0 : 1);
+    if (characters > MAX_MEETING_DOCUMENT_CHARACTERS) throw documentTooLongError();
+    lines.push(line);
+  }
+  return lines.join('\n');
+}
+
+export function parseMeetingCsvText(value: string): string {
+  let rows: string[][];
+  try {
+    rows = parseCsv(value, {
+      bom: true,
+      relax_column_count: true,
+      skip_empty_lines: true,
+      max_record_size: MAX_MEETING_DOCUMENT_CHARACTERS,
+    }) as string[][];
+  } catch {
+    throw new Error('CSV 文件结构无效');
+  }
+  return spreadsheetRowsText(rows);
+}
+
+export async function extractMeetingXlsxText(data: Uint8Array): Promise<string> {
+  await docxExpandedSize(data, MAX_MEETING_XLSX_EXPANDED_BYTES, 'XLSX');
+  const sheets = await readXlsxFile(Buffer.from(data));
+  if (sheets.length > MAX_MEETING_SPREADSHEET_SHEETS) {
+    throw new Error(`XLSX 不能超过 ${MAX_MEETING_SPREADSHEET_SHEETS} 个工作表`);
+  }
+  const rows: string[][] = [];
+  for (const sheet of sheets) {
+    if (sheet.data.length > MAX_MEETING_SPREADSHEET_ROWS - rows.length) {
+      throw new Error(`表格不能超过 ${MAX_MEETING_SPREADSHEET_ROWS.toLocaleString('en-US')} 行`);
+    }
+    if (sheet.data.some((row) => row.length > MAX_MEETING_SPREADSHEET_COLUMNS)) {
+      throw new Error(`表格不能超过 ${MAX_MEETING_SPREADSHEET_COLUMNS} 列`);
+    }
+    if (sheets.length > 1) rows.push([`工作表：${sheet.sheet}`]);
+    rows.push(...sheet.data.map((row) => row.map(spreadsheetCellText)));
+  }
+  return spreadsheetRowsText(rows);
+}
+
 export function createMeetingDocumentParser(
   dependencies: MeetingDocumentParserDependencies,
 ): MeetingDocumentParser {
@@ -236,19 +315,24 @@ export function createMeetingDocumentParser(
       throw new Error('暂不支持解析此文件格式');
     }
 
-    if (kind === 'txt' || kind === 'md') {
+    if (kind === 'txt' || kind === 'md' || kind === 'csv') {
       let text: string;
       try {
         text = new TextDecoder('utf-8', { fatal: true }).decode(input.data);
       } catch {
         throw new Error('文本文件必须使用 UTF-8 编码');
       }
-      return validatedText(text);
+      return validatedText(kind === 'csv' ? parseMeetingCsvText(text) : text);
     }
 
-    const text = kind === 'docx'
-      ? await dependencies.extractDocx(input.data)
-      : await dependencies.extractPdf(input.data);
+    let text: string;
+    if (kind === 'docx') text = await dependencies.extractDocx(input.data);
+    else if (kind === 'pdf') text = await dependencies.extractPdf(input.data);
+    else if (dependencies.extractXlsx !== undefined) {
+      text = await dependencies.extractXlsx(input.data);
+    } else {
+      throw new Error('暂不支持解析此文件格式');
+    }
     return validatedText(text);
   };
 }
@@ -263,6 +347,7 @@ const extractMeetingDocxText = createMeetingDocxExtractor({
 
 export const parseMeetingDocument = createMeetingDocumentParser({
   extractDocx: extractMeetingDocxText,
+  extractXlsx: extractMeetingXlsxText,
   extractPdf: async (data) => {
     const document = await getPdfDocument({
       data,

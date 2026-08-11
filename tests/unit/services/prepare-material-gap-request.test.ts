@@ -112,6 +112,57 @@ describe('prepare material gap request', () => {
     });
   });
 
+  it('does not borrow unrelated nearby numbers as numeric evidence', async () => {
+    const input = await prepareMaterialGapRequest({
+      loadProgress: async () => progress,
+      readSource: async () => [
+        '验收分类数量',
+        '附件清单：3项。',
+        '参会人数：8人。',
+        '后续计划：5天内完成。',
+      ].join('\n'),
+      clock: () => new Date('2026-08-12T02:00:00.000Z'),
+    }, {
+      progressId: progress.progressId,
+      progressVersion: progress.version,
+      missing: {
+        kind: 'numeric',
+        description: '验收分类数量',
+        purpose: '精恭纺验收周报',
+      },
+    });
+
+    expect(input.searches[0]).toMatchObject({
+      status: 'not_found',
+      sourceRef: null,
+    });
+  });
+
+  it('accepts a numeric value in the same markdown table row as the material label', async () => {
+    const input = await prepareMaterialGapRequest({
+      loadProgress: async () => progress,
+      readSource: async () => [
+        '| 指标 | 第一类 | 第二类 |',
+        '| --- | ---: | ---: |',
+        '| 验收分类数量 | 12 项 | 8 项 |',
+      ].join('\n'),
+      clock: () => new Date('2026-08-12T02:00:00.000Z'),
+    }, {
+      progressId: progress.progressId,
+      progressVersion: progress.version,
+      missing: {
+        kind: 'numeric',
+        description: '验收分类数量',
+        purpose: '精恭纺验收周报',
+      },
+    });
+
+    expect(input.searches[0]).toMatchObject({
+      status: 'found',
+      sourceRef: '08_Meetings/2026-08/meeting.md',
+    });
+  });
+
   it('records bounded related meeting, project, task, and artifact sources in the ledger', async () => {
     const calendarPath = `TaskNotes/DingTalk/sha256-${'a'.repeat(64)}.md`;
     const attachmentPath = `08_Meetings/2026-08/attachments/${'a'.repeat(64)}/evidence.md`;
@@ -190,5 +241,124 @@ describe('prepare material gap request', () => {
       status: 'found',
       sourceRef: artifactPath,
     });
+  });
+
+  it('records every external source and resolves evidence returned by a read-only connector', async () => {
+    const input = await prepareMaterialGapRequest({
+      loadProgress: async () => progress,
+      readSource: async () => '验收分类数量仍待补齐。',
+      searchExternalSources: async () => [{
+        source: 'dingtalk_message',
+        target: 'query:精恭纺验收分类',
+        status: 'not_found',
+        materials: [{
+          sourceRef: 'dingtalk-message:message-a',
+          content: '验收分类数量：第一类 12 项，第二类 8 项。',
+        }],
+        contacts: [],
+      }, {
+        source: 'dingtalk_doc',
+        target: 'query:精恭纺验收分类',
+        status: 'permission_denied',
+        materials: [],
+        contacts: [],
+      }, {
+        source: 'dingtalk_aitable',
+        target: 'query:精恭纺验收分类',
+        status: 'not_found',
+        materials: [],
+        contacts: [],
+      }, {
+        source: 'dingtalk_drive',
+        target: 'query:精恭纺验收分类',
+        status: 'failed',
+        materials: [],
+        contacts: [],
+      }, {
+        source: 'yunxiao',
+        target: 'project:project-jgf',
+        status: 'not_connected',
+        materials: [],
+        contacts: [],
+      }],
+      clock: () => new Date('2026-08-12T02:00:00.000Z'),
+    }, {
+      progressId: progress.progressId,
+      progressVersion: progress.version,
+      missing: {
+        kind: 'numeric',
+        description: '验收分类数量',
+        purpose: '精恭纺验收周报',
+      },
+    });
+
+    expect(input.searches.slice(1)).toEqual([{
+      source: 'dingtalk_message',
+      target: 'query:精恭纺验收分类',
+      status: 'found',
+      searchedAt: '2026-08-12T02:00:00.000Z',
+      sourceRef: 'dingtalk-message:message-a',
+    }, {
+      source: 'dingtalk_doc',
+      target: 'query:精恭纺验收分类',
+      status: 'permission_denied',
+      searchedAt: '2026-08-12T02:00:00.000Z',
+      sourceRef: null,
+    }, {
+      source: 'dingtalk_aitable',
+      target: 'query:精恭纺验收分类',
+      status: 'not_found',
+      searchedAt: '2026-08-12T02:00:00.000Z',
+      sourceRef: null,
+    }, {
+      source: 'dingtalk_drive',
+      target: 'query:精恭纺验收分类',
+      status: 'failed',
+      searchedAt: '2026-08-12T02:00:00.000Z',
+      sourceRef: null,
+    }, {
+      source: 'yunxiao',
+      target: 'project:project-jgf',
+      status: 'not_connected',
+      searchedAt: '2026-08-12T02:00:00.000Z',
+      sourceRef: null,
+    }]);
+  });
+
+  it('does not suggest a recipient when equally ranked evidence identifies different people', async () => {
+    const input = await prepareMaterialGapRequest({
+      loadProgress: async () => progress,
+      readSource: async () => '验收分类表仍待提供。',
+      searchExternalSources: async () => [{
+        source: 'dingtalk_message',
+        target: 'query:精恭纺验收分类',
+        status: 'not_found',
+        materials: [],
+        contacts: [{
+          userId: 'user-a',
+          displayName: '联系人甲',
+          reason: '相关钉钉消息发送人',
+          sourceRef: 'dingtalk-message:a',
+          priority: 30,
+        }, {
+          userId: 'user-b',
+          displayName: '联系人乙',
+          reason: '相关钉钉消息发送人',
+          sourceRef: 'dingtalk-message:b',
+          priority: 30,
+        }],
+      }],
+      clock: () => new Date('2026-08-12T02:00:00.000Z'),
+    }, {
+      progressId: progress.progressId,
+      progressVersion: progress.version,
+      missing: {
+        kind: 'document',
+        description: '验收分类表',
+        purpose: '精恭纺验收周报',
+      },
+    });
+
+    expect(input.suggestedContact).toBeNull();
   });
 });
