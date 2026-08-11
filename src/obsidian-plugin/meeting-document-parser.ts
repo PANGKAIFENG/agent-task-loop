@@ -72,8 +72,12 @@ function isPdfTextItem(value: unknown): value is PdfTextItem {
     && typeof value.hasEOL === 'boolean';
 }
 
-function documentTooLongError(maximumCharacters = MAX_MEETING_DOCUMENT_CHARACTERS): Error {
-  return new Error(
+class MeetingDocumentLimitError extends Error {}
+
+function documentTooLongError(
+  maximumCharacters = MAX_MEETING_DOCUMENT_CHARACTERS,
+): MeetingDocumentLimitError {
+  return new MeetingDocumentLimitError(
     `解析后文本不能超过 ${maximumCharacters.toLocaleString('en-US')} 个字符`,
   );
 }
@@ -251,15 +255,29 @@ function spreadsheetCellText(value: unknown): string {
   return String(value);
 }
 
+class MeetingSpreadsheetLimitError extends Error {}
+
+function spreadsheetRowsExceededError(): MeetingSpreadsheetLimitError {
+  return new MeetingSpreadsheetLimitError(
+    `表格不能超过 ${MAX_MEETING_SPREADSHEET_ROWS.toLocaleString('en-US')} 行`,
+  );
+}
+
+function spreadsheetColumnsExceededError(): MeetingSpreadsheetLimitError {
+  return new MeetingSpreadsheetLimitError(
+    `表格不能超过 ${MAX_MEETING_SPREADSHEET_COLUMNS} 列`,
+  );
+}
+
 function spreadsheetRowsText(rows: readonly (readonly string[])[]): string {
   if (rows.length > MAX_MEETING_SPREADSHEET_ROWS) {
-    throw new Error(`表格不能超过 ${MAX_MEETING_SPREADSHEET_ROWS.toLocaleString('en-US')} 行`);
+    throw spreadsheetRowsExceededError();
   }
   const lines: string[] = [];
   let characters = 0;
   for (const row of rows) {
     if (row.length > MAX_MEETING_SPREADSHEET_COLUMNS) {
-      throw new Error(`表格不能超过 ${MAX_MEETING_SPREADSHEET_COLUMNS} 列`);
+      throw spreadsheetColumnsExceededError();
     }
     const line = row.map(normalizedSpreadsheetCell).join('\t').replace(/\t+$/u, '');
     if (line === '') continue;
@@ -272,14 +290,35 @@ function spreadsheetRowsText(rows: readonly (readonly string[])[]): string {
 
 export function parseMeetingCsvText(value: string): string {
   let rows: string[][];
+  let rowCount = 0;
+  let characters = 0;
   try {
     rows = parseCsv(value, {
       bom: true,
       relax_column_count: true,
       skip_empty_lines: true,
       max_record_size: MAX_MEETING_DOCUMENT_CHARACTERS,
+      on_record: (record: string[]) => {
+        rowCount += 1;
+        if (rowCount > MAX_MEETING_SPREADSHEET_ROWS) {
+          throw spreadsheetRowsExceededError();
+        }
+        if (record.length > MAX_MEETING_SPREADSHEET_COLUMNS) {
+          throw spreadsheetColumnsExceededError();
+        }
+        const line = record.map(normalizedSpreadsheetCell).join('\t').replace(/\t+$/u, '');
+        if (line !== '') {
+          characters += line.length + (characters === 0 ? 0 : 1);
+          if (characters > MAX_MEETING_DOCUMENT_CHARACTERS) throw documentTooLongError();
+        }
+        return record;
+      },
     }) as string[][];
-  } catch {
+  } catch (error) {
+    if (
+      error instanceof MeetingSpreadsheetLimitError
+      || error instanceof MeetingDocumentLimitError
+    ) throw error;
     throw new Error('CSV 文件结构无效');
   }
   return spreadsheetRowsText(rows);

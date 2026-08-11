@@ -240,46 +240,6 @@ export async function listRelatedMaterialSources(
   return candidates;
 }
 
-function contactPriority(reason: string): number {
-  if (/材料(?:维护|负责)人/u.test(reason)) return 10;
-  if (/项目负责人/u.test(reason)) return 20;
-  if (/日程组织者|会议组织者/u.test(reason)) return 25;
-  return 40;
-}
-
-function structuredContacts(
-  content: string,
-  sourceRef: string,
-): MaterialContactCandidate[] {
-  let contacts: unknown;
-  try {
-    contacts = parseTaskDocument(content).data.material_contacts;
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(contacts)) return [];
-  const candidates: MaterialContactCandidate[] = [];
-  for (const contact of contacts) {
-    if (typeof contact !== 'object' || contact === null || Array.isArray(contact)) continue;
-    const value = contact as Record<string, unknown>;
-    if (
-      typeof value.userId === 'string' && value.userId.trim() !== ''
-      && typeof value.displayName === 'string' && value.displayName.trim() !== ''
-      && typeof value.reason === 'string' && value.reason.trim() !== ''
-    ) {
-      const reason = value.reason.trim();
-      candidates.push({
-        userId: value.userId.trim(),
-        displayName: value.displayName.trim(),
-        reason,
-        sourceRef,
-        priority: contactPriority(reason),
-      });
-    }
-  }
-  return candidates;
-}
-
 function suggestedContact(
   candidates: readonly MaterialContactCandidate[],
 ): SuggestedMaterialContact | null {
@@ -357,9 +317,6 @@ export async function prepareMaterialGapRequest(
       searchedAt: context.clock().toISOString(),
       sourceRef: found ? target : null,
     });
-    if (!found && content !== null) {
-      contactCandidates.push(...structuredContacts(content, target));
-    }
   }
 
   if (!searches.some(({ status }) => status === 'found')) {

@@ -8,6 +8,8 @@ import {
   MAX_MEETING_DOCUMENT_CHARACTERS,
   MAX_MEETING_PDF_PAGES,
   MAX_MEETING_PDF_TEXT_ITEMS,
+  MAX_MEETING_SPREADSHEET_COLUMNS,
+  MAX_MEETING_SPREADSHEET_ROWS,
   meetingDocumentKind,
   parseMeetingDocument,
 } from '../../../src/obsidian-plugin/meeting-document-parser.js';
@@ -222,6 +224,48 @@ describe('meeting document parser', () => {
       name: 'acceptance.csv',
       data: encoder.encode('项目,数量\r\n"精恭纺,验收",12\r\n"含\n换行",8\r\n'),
     })).resolves.toBe('项目\t数量\n精恭纺,验收\t12\n含 换行\t8');
+  });
+
+  it('stops CSV parsing at the row limit before reading a malformed tail', async () => {
+    const parse = createMeetingDocumentParser({
+      extractDocx: vi.fn(),
+      extractPdf: vi.fn(),
+    });
+    const overLimitThenMalformed = `${'x\n'.repeat(MAX_MEETING_SPREADSHEET_ROWS + 1)}"`;
+
+    await expect(parse({
+      name: 'too-many-rows.csv',
+      data: encoder.encode(overLimitThenMalformed),
+    })).rejects.toThrow(`不能超过 ${MAX_MEETING_SPREADSHEET_ROWS.toLocaleString('en-US')} 行`);
+  });
+
+  it('stops CSV parsing at the column limit before reading a malformed tail', async () => {
+    const parse = createMeetingDocumentParser({
+      extractDocx: vi.fn(),
+      extractPdf: vi.fn(),
+    });
+    const overLimitThenMalformed = `${Array.from(
+      { length: MAX_MEETING_SPREADSHEET_COLUMNS + 1 },
+      (_, index) => `column-${index}`,
+    ).join(',')}\n"`;
+
+    await expect(parse({
+      name: 'too-many-columns.csv',
+      data: encoder.encode(overLimitThenMalformed),
+    })).rejects.toThrow(`不能超过 ${MAX_MEETING_SPREADSHEET_COLUMNS} 列`);
+  });
+
+  it('stops CSV parsing at the character budget before reading a malformed tail', async () => {
+    const parse = createMeetingDocumentParser({
+      extractDocx: vi.fn(),
+      extractPdf: vi.fn(),
+    });
+    const overLimitThenMalformed = `${'0123456789\n'.repeat(9_092)}"`;
+
+    await expect(parse({
+      name: 'too-much-text.csv',
+      data: encoder.encode(overLimitThenMalformed),
+    })).rejects.toThrow(MAX_MEETING_DOCUMENT_CHARACTERS.toLocaleString('en-US'));
   });
 
   it('routes XLSX bytes through the bounded workbook extractor', async () => {

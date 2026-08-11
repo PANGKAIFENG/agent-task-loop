@@ -51,7 +51,7 @@ describe('prepare material gap request', () => {
     expect(input.suggestedContact).toBeNull();
   });
 
-  it('creates a contact suggestion only from a structured source identity', async () => {
+  it('does not trust a local frontmatter contact as a message recipient', async () => {
     const input = await prepareMaterialGapRequest({
       loadProgress: async () => progress,
       readSource: async () => [
@@ -75,12 +75,7 @@ describe('prepare material gap request', () => {
     });
 
     expect(input.searches[0]?.status).toBe('not_found');
-    expect(input.suggestedContact).toEqual({
-      userId: 'user-maintainer',
-      displayName: '材料维护人',
-      reason: '会议材料维护人',
-      sourceRef: '08_Meetings/2026-08/meeting.md',
-    });
+    expect(input.suggestedContact).toBeNull();
   });
 
   it('does not treat frontmatter or unrelated dates as numeric evidence', async () => {
@@ -381,5 +376,41 @@ describe('prepare material gap request', () => {
     });
 
     expect(input.suggestedContact).toBeNull();
+  });
+
+  it('suggests a recipient identified by a read-only external connector', async () => {
+    const input = await prepareMaterialGapRequest({
+      loadProgress: async () => progress,
+      readSource: async () => '验收分类表仍待提供。',
+      searchExternalSources: async () => [{
+        source: 'dingtalk_message',
+        target: 'query:精恭纺验收分类',
+        status: 'not_found',
+        materials: [],
+        contacts: [{
+          userId: 'verified-user',
+          displayName: '已核验联系人',
+          reason: '相关钉钉消息发送人',
+          sourceRef: 'dingtalk-message:verified-message',
+          priority: 30,
+        }],
+      }],
+      clock: () => new Date('2026-08-12T02:00:00.000Z'),
+    }, {
+      progressId: progress.progressId,
+      progressVersion: progress.version,
+      missing: {
+        kind: 'document',
+        description: '验收分类表',
+        purpose: '精恭纺验收周报',
+      },
+    });
+
+    expect(input.suggestedContact).toEqual({
+      userId: 'verified-user',
+      displayName: '已核验联系人',
+      reason: '相关钉钉消息发送人',
+      sourceRef: 'dingtalk-message:verified-message',
+    });
   });
 });
