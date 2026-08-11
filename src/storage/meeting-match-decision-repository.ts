@@ -30,7 +30,6 @@ export class InvalidMeetingMatchDecisionError extends Error {
     this.name = 'InvalidMeetingMatchDecisionError';
   }
 }
-
 function progressRoot(root: string): string {
   return join(root, '09_Progress');
 }
@@ -129,4 +128,3 @@ implements MeetingMatchDecisionRepository {
     return activeMeetingMatchDecisions(await this.list());
   }
 }
-

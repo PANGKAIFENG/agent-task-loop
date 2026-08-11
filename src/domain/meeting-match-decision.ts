@@ -24,4 +24,3 @@ export const meetingMatchDecisionSchema = z.object({
 });
 
 export type MeetingMatchDecision = z.infer<typeof meetingMatchDecisionSchema>;
-

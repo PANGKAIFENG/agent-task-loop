@@ -1,4 +1,7 @@
-import type { DingTalkMeetingSource } from '../obsidian-plugin/meeting-note.js';
+import {
+  extractMeetingProgressContent,
+  type DingTalkMeetingSource,
+} from '../obsidian-plugin/meeting-note.js';
 import {
   buildQianwenMeetingPreview,
   type QianwenMatchCandidate,
@@ -44,6 +47,7 @@ export interface QueryWorkProgressHubContext {
   notificationLedger?: Pick<AcceptanceNotificationLedger, 'list'>;
   listCalendarSources(): Promise<DingTalkMeetingSource[]>;
   findMeetingPath?(recordingId: string): Promise<string | null>;
+  readMeetingNote?(path: string): Promise<string | null>;
 }
 
 function currentRecording(
@@ -188,6 +192,7 @@ export async function queryWorkProgressHub(
       activeDecision !== undefined
       && recording !== null
       && context.findMeetingPath !== undefined
+      && context.readMeetingNote !== undefined
     ) {
       const meetingPath = await context.findMeetingPath(version.id);
       if (meetingPath !== null) {
@@ -196,12 +201,19 @@ export async function queryWorkProgressHub(
             eventKeyHash === activeDecision.eventKeyHash
           ))
           : undefined;
-        progressDrafts = prepareMeetingProgressDrafts({
-          meetingTitle: calendar?.title ?? recording.title,
-          occurredAt: calendar?.scheduled ?? recording.createdAt,
-          sourceRef: meetingPath,
-          summary: recording.summary.trim() === '' ? recording.transcript : recording.summary,
-        });
+        try {
+          const meetingNote = await context.readMeetingNote(meetingPath);
+          if (meetingNote !== null) {
+            progressDrafts = prepareMeetingProgressDrafts({
+              meetingTitle: calendar?.title ?? recording.title,
+              occurredAt: calendar?.scheduled ?? recording.createdAt,
+              sourceRef: meetingPath,
+              summary: extractMeetingProgressContent(meetingNote),
+            });
+          }
+        } catch {
+          // Persisted meeting evidence is authoritative; unreadable evidence yields no draft.
+        }
       }
     }
     return {

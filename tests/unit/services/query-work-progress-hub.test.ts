@@ -6,7 +6,10 @@ import type { ProgressVersion } from '../../../src/domain/progress.js';
 import type { WeeklyReportVersion } from '../../../src/domain/weekly-report.js';
 import type { WeeklyReviewDecision } from '../../../src/domain/weekly-review.js';
 import type { Task } from '../../../src/domain/task.js';
-import type { DingTalkMeetingSource } from '../../../src/obsidian-plugin/meeting-note.js';
+import {
+  renderMeetingNote,
+  type DingTalkMeetingSource,
+} from '../../../src/obsidian-plugin/meeting-note.js';
 import { queryWorkProgressHub } from '../../../src/services/query-work-progress-hub.js';
 import type { QianwenSourceRuntimeState } from '../../../src/storage/qianwen-source-state-repository.js';
 
@@ -372,15 +375,32 @@ describe('queryWorkProgressHub', () => {
     expect(result.matches).toHaveLength(2);
   });
 
-  it('projects multiple editable progress drafts from an active meeting decision and meeting path', async () => {
+  it('projects editable drafts from persisted meeting evidence and manual additions', async () => {
     const state = sourceState();
     const recording = state.recordings['recording-a']!.versions[0]!;
     recording.summary = [
-      '## 验收分类',
-      '已讨论按四类整理验收事项。',
-      '## 交付资料',
-      '需求分类表仍待补齐。',
+      '## 运行时旧摘要',
+      '这段内容没有写入会议笔记。',
     ].join('\n');
+    const persistedMeeting = `${renderMeetingNote({
+      source: calendar(),
+      meetingType: 'discussion',
+      participants: ['项目经理'],
+      transcript: '原始听记只作为持久化摘要缺失时的后备证据。',
+      qianwen: {
+        recordingId: recording.id,
+        title: '团队目标设定讨论',
+        createdAt: '2026-08-10T19:56:00+08:00',
+        durationSeconds: 701,
+        sourceUrl: 'https://qianwen.example/recording-a',
+        summary: [
+          '## 验收分类',
+          '已讨论按四类整理验收事项。',
+          '## 交付资料',
+          '需求分类表仍待补齐。',
+        ].join('\n'),
+      },
+    })}\n## 用户补充\n已输出验收表格草案。\n`;
 
     const result = await queryWorkProgressHub({
       sourceRepository: { load: async () => state, save: async () => undefined },
@@ -406,6 +426,9 @@ describe('queryWorkProgressHub', () => {
           ? '08_Meetings/2026-08/meeting-a.md'
           : null
       ),
+      readMeetingNote: async (path) => (
+        path === '08_Meetings/2026-08/meeting-a.md' ? persistedMeeting : null
+      ),
     });
 
     expect(result.matches.find(({ recordingId }) => recordingId === 'recording-a'))
@@ -419,8 +442,14 @@ describe('queryWorkProgressHub', () => {
           topic: '交付资料',
           occurredAt: '2026-08-10T19:00:00+08:00',
           sources: ['08_Meetings/2026-08/meeting-a.md'],
+        }, {
+          topic: '用户补充',
+          occurredAt: '2026-08-10T19:00:00+08:00',
+          sources: ['08_Meetings/2026-08/meeting-a.md'],
         }],
       });
+    expect(result.matches.find(({ recordingId }) => recordingId === 'recording-a')
+      ?.progressDrafts.map(({ topic }) => topic)).not.toContain('运行时旧摘要');
   });
 
   it('does not expose a revoked meeting decision as the active match', async () => {

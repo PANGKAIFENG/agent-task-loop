@@ -334,6 +334,38 @@ export function extractQianwenSummary(raw: string): string {
   return region;
 }
 
+function removeManagedRegion(body: string, startMarker: string, endMarker: string): string {
+  const start = body.indexOf(startMarker);
+  const end = body.indexOf(endMarker, start + startMarker.length);
+  if (start === -1 && end === -1) return body;
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error('会议笔记托管区域无效');
+  }
+  return `${body.slice(0, start)}${body.slice(end + endMarker.length)}`;
+}
+
+export function extractMeetingProgressContent(raw: string): string {
+  const document = parseTaskDocument(raw);
+  let unmanaged = removeManagedRegion(
+    document.body,
+    MEETING_TRANSCRIPT_START,
+    MEETING_TRANSCRIPT_END,
+  );
+  unmanaged = removeManagedRegion(unmanaged, QIANWEN_SUMMARY_START, QIANWEN_SUMMARY_END);
+  unmanaged = removeManagedRegion(unmanaged, MEETING_ANALYSIS_START, MEETING_ANALYSIS_END)
+    .replace(/^\s*#\s+[^\n]+\n?/u, '')
+    .trim();
+
+  let summary = '';
+  try {
+    summary = extractQianwenSummary(raw).trim();
+  } catch {
+    // Legacy meeting notes can still contribute their persisted transcript.
+  }
+  const persisted = [summary, unmanaged].filter((value) => value !== '').join('\n\n');
+  return persisted === '' ? extractMeetingTranscript(raw).trim() : persisted;
+}
+
 export function renderMeetingNote(input: RenderMeetingNoteInput): string {
   if (input.transcript.trim() === '') {
     throw new Error('会议听记不能为空');

@@ -33,6 +33,7 @@ import { captureTask } from '../services/capture-task.js';
 import { createMaterialGap } from '../services/create-material-gap.js';
 import { createProgressVersion } from '../services/create-progress-version.js';
 import {
+  listRelatedMaterialSources,
   prepareMaterialGapRequest,
   type PrepareMaterialGapRequestInput,
 } from '../services/prepare-material-gap-request.js';
@@ -60,6 +61,7 @@ import { FileAcceptanceNotificationLedger } from '../storage/file-acceptance-not
 import { qianwenRuntimeRoot } from '../qianwen-runtime-root.js';
 import { FileWeeklyReviewDecisionRepository } from '../storage/weekly-review-decision-repository.js';
 import { MarkdownTaskRepository } from '../storage/markdown-task-repository.js';
+import { MarkdownProjectRepository } from '../storage/markdown-project-repository.js';
 import { recordTaskCompletionDate } from '../services/record-task-completion-date.js';
 import {
   collectWeeklyCoachContext,
@@ -157,7 +159,11 @@ import { runWithPersistentFeedback } from './persistent-operation-feedback.js';
 import { enrichTask } from './task-enrichment.js';
 import { createMeetingAttachmentDraft } from './meeting-attachment.js';
 import { MeetingAttachmentsWorkflow } from './meeting-attachments-workflow.js';
-import { assertMeetingDocumentSize } from './meeting-document-parser.js';
+import {
+  assertMeetingDocumentSize,
+  meetingDocumentKind,
+  parseMeetingDocument,
+} from './meeting-document-parser.js';
 import { MeetingCandidateController } from './meeting-candidate-controller.js';
 import { MeetingNoteController, parseDingTalkMeetingSource } from './meeting-note.js';
 import { MeetingPluginLifecycle } from './meeting-plugin-lifecycle.js';
@@ -589,6 +595,8 @@ export default class AgentTaskLoopPlugin extends Plugin {
     const materialGapRepository = new MarkdownMaterialGapRepository(root);
     const weeklyRepository = new MarkdownWeeklyReportRepository(root);
     const weeklyDecisionRepository = new FileWeeklyReviewDecisionRepository(root);
+    const taskRepository = new MarkdownTaskRepository(root);
+    const projectRepository = new MarkdownProjectRepository(root);
 
     const writeContext = () => {
       if (!this.settings.allowVaultManagement) {
@@ -638,10 +646,15 @@ export default class AgentTaskLoopPlugin extends Plugin {
         materialGapRepository,
         weeklyRepository,
         weeklyDecisionRepository,
-        taskRepository: new MarkdownTaskRepository(root),
+        taskRepository,
         notificationLedger: new FileAcceptanceNotificationLedger(join(root, '.atl-runtime')),
         listCalendarSources: () => this.listWorkProgressCalendarSources(),
         findMeetingPath: (recordingId) => meetingNotes.findExistingRecordingPath(recordingId),
+        readMeetingNote: async (path) => (
+          await this.app.vault.adapter.exists(path)
+            ? this.app.vault.adapter.read(path)
+            : null
+        ),
       }),
       confirmMatch: (input) => confirmMeetingMatchWithEvidence(materializeContext(), input),
       markNoCalendar: (input) => markRecordingWithoutCalendarWithEvidence(
@@ -720,16 +733,35 @@ export default class AgentTaskLoopPlugin extends Plugin {
       },
       createMaterialGap: (input) => {
         const writable = writeContext();
+        const readSource = async (path: string): Promise<string | null> => {
+          const adapter = this.app.vault.adapter;
+          if (!(await adapter.exists(path))) return null;
+          const kind = meetingDocumentKind(path);
+          if (kind === 'pdf' || kind === 'docx') {
+            return parseMeetingDocument({
+              name: path,
+              data: new Uint8Array(await adapter.readBinary(path)),
+            });
+          }
+          return adapter.read(path);
+        };
         return prepareMaterialGapRequest({
           loadProgress: async (progressId, version) => (
             (await progressRepository.listVersions(progressId))
               .find((candidate) => candidate.version === version) ?? null
           ),
-          readSource: async (path) => (
-            await this.app.vault.adapter.exists(path)
-              ? this.app.vault.adapter.read(path)
-              : null
-          ),
+          readSource,
+          listRelatedSources: (progress) => listRelatedMaterialSources({
+            readSource,
+            loadProject: async (projectId) => {
+              try {
+                return await projectRepository.get(projectId);
+              } catch {
+                return null;
+              }
+            },
+            listTasks: () => taskRepository.list(),
+          }, progress),
           clock: () => new Date(),
         }, input).then((prepared) => createMaterialGap({
           repository: writable.materialGapRepository,
