@@ -81,6 +81,35 @@ describe('DwsSelfAcceptanceDelivery', () => {
     ]);
   });
 
+  it('accepts the current DWS object result and snake-cased task id', async () => {
+    const runner = vi.fn<DwsCommandRunner>()
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: success({
+          success: true,
+          result: [{ orgEmployeeModel: { userId: 'synthetic-self-user' } }],
+        }),
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: success({
+          errorCode: 0,
+          errorMessage: 'ok',
+          result: { open_taskId: 'synthetic-current-dws-task' },
+          success: true,
+        }),
+      });
+    const delivery = new DwsSelfAcceptanceDelivery({
+      profile: 'synthetic-current-profile',
+      runner,
+    });
+
+    await expect(delivery.send(MESSAGE)).resolves.toEqual({
+      taskId: 'synthetic-current-dws-task',
+      messageId: null,
+    });
+  });
+
   it.each([
     ['no self result', { success: true, result: [] }],
     ['multiple self results', {

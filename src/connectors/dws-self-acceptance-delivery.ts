@@ -91,24 +91,34 @@ function parseDeliveryResult(result: DwsCommandResult): {
   messageId: string | null;
 } {
   const envelope = successfulEnvelope(result, 'dingtalk_delivery_failed');
-  if (envelope.result !== undefined && !Array.isArray(envelope.result)) {
+  const rawResult = envelope.result;
+  if (
+    rawResult !== undefined
+    && !Array.isArray(rawResult)
+    && !isRecord(rawResult)
+  ) {
     throw new DwsAcceptanceDeliveryError(
       'dingtalk_delivery_failed',
       'DingTalk delivery result was invalid',
     );
   }
-  if (Array.isArray(envelope.result) && envelope.result.length > 1) {
+  if (Array.isArray(rawResult) && rawResult.length > 1) {
     throw new DwsAcceptanceDeliveryError(
       'dingtalk_delivery_failed',
       'DingTalk delivery result was ambiguous',
     );
   }
-  const entry = Array.isArray(envelope.result) && isRecord(envelope.result[0])
-    ? envelope.result[0]
-    : {};
+  const entry = Array.isArray(rawResult) && isRecord(rawResult[0])
+    ? rawResult[0]
+    : isRecord(rawResult) ? rawResult : {};
   return {
-    taskId: optionalId(entry, ['openTaskId', 'taskId']),
-    messageId: optionalId(entry, ['openMessageId', 'messageId']),
+    taskId: optionalId(entry, ['openTaskId', 'open_taskId', 'taskId', 'task_id']),
+    messageId: optionalId(entry, [
+      'openMessageId',
+      'open_messageId',
+      'messageId',
+      'message_id',
+    ]),
   };
 }
 
