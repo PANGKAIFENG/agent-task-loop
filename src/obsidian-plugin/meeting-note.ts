@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import {
   parseTaskDocument,
   serializeTaskDocument,
@@ -9,6 +11,8 @@ const ISO_DATE_PREFIX = /^(\d{4})-(\d{2})-(\d{2})(?:$|T)/u;
 
 export const MEETING_TRANSCRIPT_START = '<!-- ATL_MEETING_TRANSCRIPT_START -->';
 export const MEETING_TRANSCRIPT_END = '<!-- ATL_MEETING_TRANSCRIPT_END -->';
+export const QIANWEN_SUMMARY_START = '<!-- ATL_QIANWEN_SUMMARY_START -->';
+export const QIANWEN_SUMMARY_END = '<!-- ATL_QIANWEN_SUMMARY_END -->';
 export const MEETING_ANALYSIS_START = '<!-- ATL_MEETING_ANALYSIS_START -->';
 export const MEETING_ANALYSIS_END = '<!-- ATL_MEETING_ANALYSIS_END -->';
 
@@ -20,6 +24,18 @@ export interface DingTalkMeetingSource {
   title: string;
   scheduled: string;
   meetingDate: string;
+  durationMinutes?: number;
+  participants?: readonly string[];
+  projectEntities?: readonly string[];
+}
+
+export interface QianwenMeetingEvidence {
+  recordingId: string;
+  title: string;
+  createdAt: string;
+  durationSeconds: number;
+  sourceUrl: string;
+  summary: string;
 }
 
 export interface RenderMeetingNoteInput {
@@ -27,6 +43,7 @@ export interface RenderMeetingNoteInput {
   meetingType: MeetingType;
   participants: readonly string[];
   transcript: string;
+  qianwen?: QianwenMeetingEvidence;
 }
 
 export interface CreateMeetingNoteInput {
@@ -34,6 +51,14 @@ export interface CreateMeetingNoteInput {
   meetingType: MeetingType;
   participants: readonly string[];
   transcript: string;
+  qianwen?: QianwenMeetingEvidence;
+}
+
+export interface CreateStandaloneMeetingNoteInput {
+  meetingType: MeetingType;
+  participants: readonly string[];
+  transcript: string;
+  qianwen: QianwenMeetingEvidence;
 }
 
 export interface MeetingNoteFileSystem {
@@ -89,6 +114,11 @@ export function parseDingTalkMeetingSource(
     : '';
   const hashMatch = EVENT_KEY_HASH.exec(eventKeyHash);
   const dateMatch = ISO_DATE_PREFIX.exec(scheduled);
+  const durationMinutes = typeof data.timeEstimate === 'number'
+    && Number.isFinite(data.timeEstimate)
+    && data.timeEstimate > 0
+    ? data.timeEstimate
+    : undefined;
   if (
     data.origin !== 'dingtalk_caldav'
     || title === ''
@@ -106,6 +136,7 @@ export function parseDingTalkMeetingSource(
     title,
     scheduled,
     meetingDate: `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`,
+    ...(durationMinutes === undefined ? {} : { durationMinutes }),
   };
 }
 
@@ -120,6 +151,25 @@ export function buildMeetingNotePath(source: DingTalkMeetingSource): string {
   if (hash === undefined || !validDate(source.meetingDate)) invalidSource();
   const month = source.meetingDate.slice(0, 7);
   return `08_Meetings/${month}/${source.meetingDate}-${titleSlug(source.title)}-${hash}.md`;
+}
+
+function validQianwenEvidence(qianwen: QianwenMeetingEvidence): boolean {
+  return qianwen.recordingId.trim() !== ''
+    && qianwen.title.trim() !== ''
+    && validDate(qianwen.createdAt)
+    && Number.isInteger(qianwen.durationSeconds)
+    && qianwen.durationSeconds > 0
+    && qianwen.sourceUrl.trim() !== '';
+}
+
+export function buildStandaloneMeetingNotePath(qianwen: QianwenMeetingEvidence): string {
+  if (!validQianwenEvidence(qianwen)) throw new Error('千问听记证据无效');
+  const meetingDate = qianwen.createdAt.slice(0, 10);
+  const recordingHash = createHash('sha256')
+    .update(qianwen.recordingId)
+    .digest('hex')
+    .slice(0, 16);
+  return `08_Meetings/${meetingDate.slice(0, 7)}/${meetingDate}-${titleSlug(qianwen.title)}-${recordingHash}.md`;
 }
 
 function normalizedParticipants(participants: readonly string[]): string[] {
@@ -159,6 +209,38 @@ export function extractMeetingTranscript(raw: string): string {
   return lines.map((line) => line.slice(2)).join('\n');
 }
 
+function managedQianwenSummary(summary: string): string {
+  return summary
+    .replaceAll(QIANWEN_SUMMARY_START, '&lt;!-- ATL_QIANWEN_SUMMARY_START --&gt;')
+    .replaceAll(QIANWEN_SUMMARY_END, '&lt;!-- ATL_QIANWEN_SUMMARY_END --&gt;');
+}
+
+function qianwenSummaryRegion(qianwen?: QianwenMeetingEvidence): string[] {
+  if (qianwen === undefined) return [];
+  return [
+    QIANWEN_SUMMARY_START,
+    '## 千问 AI 纪要',
+    '',
+    managedQianwenSummary(qianwen.summary),
+    QIANWEN_SUMMARY_END,
+    '',
+  ];
+}
+
+export function extractQianwenSummary(raw: string): string {
+  const body = parseTaskDocument(raw).body;
+  const start = body.indexOf(QIANWEN_SUMMARY_START);
+  const end = body.indexOf(QIANWEN_SUMMARY_END, start + QIANWEN_SUMMARY_START.length);
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error('千问 AI 纪要区域无效');
+  }
+  const region = body
+    .slice(start + QIANWEN_SUMMARY_START.length, end)
+    .replace(/^\n## 千问 AI 纪要\n\n/u, '')
+    .replace(/\n$/u, '');
+  return region;
+}
+
 export function renderMeetingNote(input: RenderMeetingNoteInput): string {
   if (input.transcript.trim() === '') {
     throw new Error('会议听记不能为空');
@@ -172,6 +254,13 @@ export function renderMeetingNote(input: RenderMeetingNoteInput): string {
     dingtalk_event_key_hash: input.source.eventKeyHash,
     participants: normalizedParticipants(input.participants),
     analysis_status: 'pending',
+    ...(input.qianwen === undefined ? {} : {
+      qianwen_recording_id: input.qianwen.recordingId,
+      qianwen_title: input.qianwen.title,
+      qianwen_created_at: input.qianwen.createdAt,
+      qianwen_duration_seconds: input.qianwen.durationSeconds,
+      qianwen_source_url: input.qianwen.sourceUrl,
+    }),
   };
   const body = [
     '',
@@ -181,6 +270,44 @@ export function renderMeetingNote(input: RenderMeetingNoteInput): string {
     transcriptCallout(input.transcript),
     MEETING_TRANSCRIPT_END,
     '',
+    ...qianwenSummaryRegion(input.qianwen),
+    MEETING_ANALYSIS_START,
+    '## AI 分析',
+    '',
+    '尚未分析。',
+    MEETING_ANALYSIS_END,
+    '',
+  ].join('\n');
+  return serializeTaskDocument(data, body);
+}
+
+export function renderStandaloneMeetingNote(input: CreateStandaloneMeetingNoteInput): string {
+  if (input.transcript.trim() === '') throw new Error('会议听记不能为空');
+  if (!validQianwenEvidence(input.qianwen)) throw new Error('千问听记证据无效');
+  const data: Record<string, unknown> = {
+    type: 'meeting',
+    title: input.qianwen.title,
+    meeting_type: input.meetingType,
+    meeting_date: input.qianwen.createdAt.slice(0, 10),
+    calendar_event: null,
+    match_status: 'no_calendar',
+    participants: normalizedParticipants(input.participants),
+    analysis_status: 'pending',
+    qianwen_recording_id: input.qianwen.recordingId,
+    qianwen_title: input.qianwen.title,
+    qianwen_created_at: input.qianwen.createdAt,
+    qianwen_duration_seconds: input.qianwen.durationSeconds,
+    qianwen_source_url: input.qianwen.sourceUrl,
+  };
+  const body = [
+    '',
+    `# ${input.qianwen.title}`,
+    '',
+    MEETING_TRANSCRIPT_START,
+    transcriptCallout(input.transcript),
+    MEETING_TRANSCRIPT_END,
+    '',
+    ...qianwenSummaryRegion(input.qianwen),
     MEETING_ANALYSIS_START,
     '## AI 分析',
     '',
@@ -217,6 +344,22 @@ export class MeetingNoteController {
     return null;
   }
 
+  private async existingRecordingNotePath(recordingId: string): Promise<string | null> {
+    const paths = await this.fileSystem.listMarkdownFiles('08_Meetings');
+    for (const path of paths.sort()) {
+      if (!path.startsWith('08_Meetings/') || !path.endsWith('.md')) continue;
+      try {
+        const data = parseTaskDocument(await this.fileSystem.read(path)).data;
+        if (data.type === 'meeting' && data.qianwen_recording_id === recordingId) {
+          return path;
+        }
+      } catch {
+        // A malformed unrelated note must not block recording evidence creation.
+      }
+    }
+    return null;
+  }
+
   async create(input: CreateMeetingNoteInput): Promise<CreateMeetingNoteResult> {
     if (input.transcript.trim() === '') {
       throw new Error('会议听记不能为空');
@@ -239,9 +382,30 @@ export class MeetingNoteController {
         meetingType: input.meetingType,
         participants: input.participants,
         transcript: input.transcript,
+        ...(input.qianwen === undefined ? {} : { qianwen: input.qianwen }),
       }));
     } catch (error) {
       const racedPath = await this.existingNotePath(source);
+      if (racedPath !== null) return { created: false, path: racedPath };
+      throw error;
+    }
+    return { created: true, path };
+  }
+
+  async createStandalone(
+    input: CreateStandaloneMeetingNoteInput,
+  ): Promise<CreateMeetingNoteResult> {
+    if (input.transcript.trim() === '') throw new Error('会议听记不能为空');
+    if (!validQianwenEvidence(input.qianwen)) throw new Error('千问听记证据无效');
+    const existingPath = await this.existingRecordingNotePath(input.qianwen.recordingId);
+    if (existingPath !== null) return { created: false, path: existingPath };
+    const path = buildStandaloneMeetingNotePath(input.qianwen);
+    if (await this.fileSystem.exists(path)) return { created: false, path };
+    await this.fileSystem.ensureDirectory(path.slice(0, path.lastIndexOf('/')));
+    try {
+      await this.fileSystem.create(path, renderStandaloneMeetingNote(input));
+    } catch (error) {
+      const racedPath = await this.existingRecordingNotePath(input.qianwen.recordingId);
       if (racedPath !== null) return { created: false, path: racedPath };
       throw error;
     }

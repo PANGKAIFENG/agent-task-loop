@@ -48,6 +48,7 @@ function settings(paths: Awaited<ReturnType<typeof fixture>>): BackgroundSetting
     modelServiceMode: 'inherit',
     model: 'claude-sonnet-4-5',
     baseUrl: '',
+    dingtalkProfile: 'synthetic-current-profile',
     dailyLimit: 3,
   };
 }
@@ -191,6 +192,7 @@ describe('BackgroundRuntimeController', () => {
           await realpath(join(paths.vaultRoot, '08_Meetings')),
           await realpath(paths.sourceRoot),
         ].join(delimiter),
+        ATL_DINGTALK_PROFILE: 'synthetic-current-profile',
         ATL_DAILY_LIMIT: '3',
       }),
     }));

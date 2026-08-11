@@ -1,10 +1,12 @@
 import { z } from 'zod';
 
+import { optionalDingTalkProfile } from './dingtalk-profile.js';
 import { assertVaultWriteAllowed, vaultRoot } from './storage/task-paths.js';
 
 export interface AtlConfig {
   vaultRoot: string;
   dailyLimit: number;
+  dingtalkProfile: string | null;
   leaseMinutes: 60;
   boardHost: '127.0.0.1';
 }
@@ -35,9 +37,22 @@ export function loadConfig(
   if (!dailyLimit.success) {
     throw new InvalidConfigError('ATL_DAILY_LIMIT must be a positive integer');
   }
+  const dingtalkProfile = optionalDingTalkProfile(
+    environment.ATL_DINGTALK_PROFILE,
+  );
+  if (
+    environment.ATL_DINGTALK_PROFILE !== undefined
+    && environment.ATL_DINGTALK_PROFILE !== ''
+    && dingtalkProfile === null
+  ) {
+    throw new InvalidConfigError(
+      'ATL_DINGTALK_PROFILE must contain one explicit DingTalk profile',
+    );
+  }
   return {
     vaultRoot: root,
     dailyLimit: dailyLimit.data,
+    dingtalkProfile,
     leaseMinutes: 60,
     boardHost: '127.0.0.1',
   };

@@ -89,6 +89,7 @@ function renderOptions(paths: Awaited<ReturnType<typeof fixture>>) {
       ATL_CLAUDE_BIN: paths.claudeBinary,
       ATL_CLAUDE_CONFIG_DIR: paths.claudeConfigDir,
       ATL_CLAUDE_MODEL: 'glm-4-flash',
+      ATL_DINGTALK_PROFILE: 'synthetic-current-profile',
       ATL_ALLOWED_LOCAL_ROOTS: paths.allowedRoot,
       ATL_DAILY_LIMIT: '2',
     },
@@ -213,6 +214,7 @@ describe('renderLaunchAgent', () => {
       ATL_CLAUDE_BIN: canonical.claudeBinary,
       ATL_CLAUDE_CONFIG_DIR: canonical.claudeConfigDir,
       ATL_CLAUDE_MODEL: 'glm-4-flash',
+      ATL_DINGTALK_PROFILE: 'synthetic-current-profile',
       ATL_ALLOWED_LOCAL_ROOTS: canonical.allowedRoot,
       ATL_DAILY_LIMIT: '2',
       HOME: canonical.home,
@@ -234,6 +236,21 @@ describe('renderLaunchAgent', () => {
       .toHaveLength(15);
     expect(rendered.environmentVariables.ATL_ALLOWED_LOCAL_ROOTS.split(delimiter))
       .toEqual([canonical.allowedRoot]);
+  });
+
+  it.each([
+    ' corp-a',
+    'corp-a,corp-b',
+    'corp-a\ncorp-b',
+  ])('rejects an invalid DingTalk profile: %j', async (profile) => {
+    const paths = await fixture();
+    await expect(renderLaunchAgent({
+      ...renderOptions(paths),
+      environment: {
+        ...renderOptions(paths).environment,
+        ATL_DINGTALK_PROFILE: profile,
+      },
+    })).rejects.toThrow('ATL_DINGTALK_PROFILE');
   });
 
   it('rejects rendering outside Asia/Shanghai before resolving runtime paths', async () => {

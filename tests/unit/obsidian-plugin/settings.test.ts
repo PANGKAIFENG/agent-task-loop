@@ -91,6 +91,7 @@ describe('normalizeSettings', () => {
         modelServiceMode: 'inherit',
         model: 'claude-sonnet-4-5',
         baseUrl: '',
+        dingtalkProfile: '',
         dailyLimit: 3,
       },
       dashboard: {
@@ -136,6 +137,7 @@ describe('normalizeSettings', () => {
         modelServiceMode: 'provider',
         model: 'bad model; rm -rf /',
         baseUrl: 'file:///etc/passwd',
+        dingtalkProfile: ' corp-a,corp-b ',
         dailyLimit: -8,
       },
     })).toEqual({
@@ -155,6 +157,7 @@ describe('normalizeSettings', () => {
         modelServiceMode: 'inherit',
         model: 'claude-sonnet-4-5',
         baseUrl: '',
+        dingtalkProfile: '',
         dailyLimit: 3,
       },
       dashboard: {
@@ -180,6 +183,15 @@ describe('normalizeSettings', () => {
         events: {},
       },
     });
+  });
+
+  it('keeps one explicit DingTalk profile and rejects ambiguous values', () => {
+    expect(normalizeSettings({
+      background: { dingtalkProfile: 'synthetic-current-profile' },
+    }).background.dingtalkProfile).toBe('synthetic-current-profile');
+    expect(normalizeSettings({
+      background: { dingtalkProfile: 'corp-a,corp-b' },
+    }).background.dingtalkProfile).toBe('');
   });
 
   it('keeps only valid aggregate token cache values', () => {

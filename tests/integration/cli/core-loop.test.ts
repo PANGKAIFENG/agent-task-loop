@@ -212,6 +212,14 @@ describe('atl CLI core loop', () => {
     expect(await readdir(root)).toEqual(before);
   });
 
+  it('exposes a manual Qianwen synchronization command', async () => {
+    const root = await makeVault();
+    const help = await runCli(root, ['qianwen', '--help']);
+
+    expect(help.exitCode, help.stderr).toBe(0);
+    expect(help.stdout).toContain('sync');
+  });
+
   it('keeps the documented task capture pipeline machine-readable', async () => {
     const root = await makeVault();
     const guide = await readFile(

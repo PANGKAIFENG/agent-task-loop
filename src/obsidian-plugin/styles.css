@@ -812,3 +812,271 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
     grid-template-columns: 1fr;
   }
 }
+
+.atl-work-progress-view {
+  overflow: auto;
+}
+
+.atl-work-progress-shell {
+  box-sizing: border-box;
+  margin: 0 auto;
+  max-width: 1120px;
+  padding: 28px 32px 48px;
+}
+
+.atl-work-progress-header {
+  align-items: flex-start;
+  display: flex;
+  gap: 20px;
+  justify-content: space-between;
+}
+
+.atl-work-progress-title {
+  font-size: var(--h1-size);
+  letter-spacing: 0;
+  margin: 0;
+}
+
+.atl-work-progress-subtitle {
+  color: var(--text-muted);
+  margin: 6px 0 0;
+}
+
+.atl-work-progress-refresh {
+  flex: 0 0 auto;
+}
+
+.atl-work-progress-header-actions {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.atl-work-progress-tabs {
+  border-bottom: 1px solid var(--background-modifier-border);
+  display: flex;
+  gap: 4px;
+  margin-top: 24px;
+  overflow-x: auto;
+}
+
+.atl-work-progress-tab {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  color: var(--text-muted);
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 7px;
+  padding: 9px 10px 10px;
+}
+
+.atl-work-progress-tab:hover,
+.atl-work-progress-tab[aria-selected="true"] {
+  background: transparent;
+  border-bottom-color: var(--interactive-accent);
+  color: var(--text-normal);
+}
+
+.atl-work-progress-tab-count {
+  background: var(--background-modifier-hover);
+  border-radius: 999px;
+  font-size: var(--font-ui-smaller);
+  min-width: 18px;
+  padding: 1px 5px;
+  text-align: center;
+}
+
+.atl-work-progress-body {
+  min-height: 280px;
+  padding-top: 18px;
+}
+
+.atl-work-progress-list {
+  display: grid;
+  gap: 10px;
+}
+
+.atl-work-progress-card,
+.atl-work-progress-row,
+.atl-work-progress-source {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+}
+
+.atl-work-progress-card {
+  padding: 16px;
+}
+
+.atl-work-progress-card-title,
+.atl-work-progress-source,
+.atl-work-progress-row {
+  align-items: center;
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+}
+
+.atl-work-progress-card-title h2 {
+  font-size: var(--font-ui-medium);
+  letter-spacing: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.atl-work-progress-meta {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.atl-work-progress-card > .atl-work-progress-meta,
+.atl-work-progress-decision {
+  margin: 6px 0 0;
+}
+
+.atl-work-progress-status {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  flex: 0 0 auto;
+  font-size: var(--font-ui-smaller);
+  padding: 3px 8px;
+}
+
+.atl-work-progress-candidate {
+  align-items: flex-start;
+  border-top: 1px solid var(--background-modifier-border);
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  margin-top: 14px;
+  padding-top: 14px;
+}
+
+.atl-work-progress-candidate > input {
+  margin-top: 3px;
+}
+
+.atl-work-progress-candidate-body {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.atl-work-progress-evidence {
+  display: grid;
+  font-size: var(--font-ui-smaller);
+  gap: 8px;
+  grid-template-columns: 42px minmax(0, 1fr);
+  line-height: 1.45;
+}
+
+.atl-work-progress-evidence-label {
+  color: var(--text-muted);
+  font-weight: var(--font-semibold);
+}
+
+.atl-work-progress-evidence-support .atl-work-progress-evidence-label {
+  color: var(--color-green);
+}
+
+.atl-work-progress-evidence-opposition .atl-work-progress-evidence-label,
+.atl-work-progress-evidence-missing .atl-work-progress-evidence-label {
+  color: var(--color-orange);
+}
+
+.atl-work-progress-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.atl-work-progress-row {
+  color: var(--text-normal);
+  padding: 13px 14px;
+  text-align: left;
+  width: 100%;
+}
+
+.atl-work-progress-row:hover {
+  background: var(--background-modifier-hover);
+  border-color: var(--background-modifier-border-hover);
+}
+
+.atl-work-progress-row-copy,
+.atl-work-progress-source-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.atl-work-progress-weekly {
+  border-inline-start: 3px solid var(--interactive-accent);
+}
+
+.atl-work-progress-empty {
+  color: var(--text-muted);
+  margin: 24px 0;
+  text-align: center;
+}
+
+.atl-work-progress-inline-error {
+  margin: 0 0 12px;
+}
+
+.atl-work-progress-source {
+  margin-top: 22px;
+  padding: 12px 14px;
+}
+
+.atl-weekly-feedback-modal {
+  width: min(600px, calc(100vw - 32px));
+}
+
+.atl-weekly-feedback-modal .setting-item {
+  align-items: flex-start;
+}
+
+.atl-weekly-feedback-modal textarea {
+  min-height: 140px;
+  min-width: min(360px, 52vw);
+  resize: vertical;
+}
+
+@media (max-width: 720px) {
+  .atl-work-progress-shell {
+    padding: 20px 16px 36px;
+  }
+
+  .atl-work-progress-card-title,
+  .atl-work-progress-source,
+  .atl-work-progress-row {
+    align-items: flex-start;
+  }
+
+  .atl-work-progress-candidate {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .atl-work-progress-open {
+    grid-column: 2;
+  }
+
+  .atl-weekly-feedback-modal .setting-item {
+    display: block;
+  }
+
+  .atl-weekly-feedback-modal .setting-item-control {
+    justify-content: flex-start;
+    margin-top: 8px;
+  }
+
+  .atl-weekly-feedback-modal textarea {
+    min-width: 100%;
+  }
+}

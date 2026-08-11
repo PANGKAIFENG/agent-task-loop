@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildMeetingNotePath,
+  buildStandaloneMeetingNotePath,
+  extractQianwenSummary,
   parseDingTalkMeetingSource,
   renderMeetingNote,
+  renderStandaloneMeetingNote,
 } from '../../../src/obsidian-plugin/meeting-note.js';
 import { parseTaskDocument } from '../../../src/storage/frontmatter.js';
 
@@ -96,6 +99,36 @@ describe('meeting note rendering', () => {
     expect(document.body).toContain('<!-- ATL_MEETING_ANALYSIS_END -->');
   });
 
+  it('stores the original Qianwen summary in its own managed region', () => {
+    const source = parseDingTalkMeetingSource(EVENT_PATH, eventDocument());
+    const raw = renderMeetingNote({
+      source,
+      meetingType: 'discussion',
+      participants: ['庞凯烽'],
+      transcript: '发言人1：确认目标。',
+      qianwen: {
+        recordingId: 'recording-1',
+        title: '团队目标讨论',
+        createdAt: '2026-07-22T14:42:00+08:00',
+        durationSeconds: 720,
+        sourceUrl: 'qianwen.com/chat/recording-1',
+        summary: '## 千问结论\n\n- 确认目标。',
+      },
+    });
+    const document = parseTaskDocument(raw);
+
+    expect(document.data).toMatchObject({
+      qianwen_recording_id: 'recording-1',
+      qianwen_title: '团队目标讨论',
+      qianwen_created_at: '2026-07-22T14:42:00+08:00',
+      qianwen_duration_seconds: 720,
+      qianwen_source_url: 'qianwen.com/chat/recording-1',
+    });
+    expect(document.body).toContain('<!-- ATL_QIANWEN_SUMMARY_START -->');
+    expect(document.body).toContain('<!-- ATL_QIANWEN_SUMMARY_END -->');
+    expect(extractQianwenSummary(raw)).toBe('## 千问结论\n\n- 确认目标。');
+  });
+
   it('rejects a blank transcript', () => {
     const source = parseDingTalkMeetingSource(EVENT_PATH, eventDocument());
 
@@ -105,5 +138,37 @@ describe('meeting note rendering', () => {
       participants: [],
       transcript: '  \n ',
     })).toThrow('会议听记不能为空');
+  });
+
+  it('renders a traceable meeting note when a recording has no calendar event', () => {
+    const qianwen = {
+      recordingId: 'recording-without-calendar',
+      title: '精恭纺验收推进会议',
+      createdAt: '2026-08-10T17:42:00+08:00',
+      durationSeconds: 1200,
+      sourceUrl: 'qianwen.com/chat/recording-without-calendar',
+      summary: '确认四类验收口径。',
+    };
+
+    const raw = renderStandaloneMeetingNote({
+      meetingType: 'discussion',
+      participants: [],
+      transcript: '发言人：确认四类验收口径。',
+      qianwen,
+    });
+    const document = parseTaskDocument(raw);
+
+    expect(buildStandaloneMeetingNotePath(qianwen)).toMatch(
+      /^08_Meetings\/2026-08\/2026-08-10-精恭纺验收推进会议-[a-f0-9]{16}\.md$/u,
+    );
+    expect(document.data).toMatchObject({
+      type: 'meeting',
+      title: '精恭纺验收推进会议',
+      meeting_date: '2026-08-10',
+      calendar_event: null,
+      match_status: 'no_calendar',
+      qianwen_recording_id: 'recording-without-calendar',
+    });
+    expect(document.body).toContain('发言人：确认四类验收口径。');
   });
 });
