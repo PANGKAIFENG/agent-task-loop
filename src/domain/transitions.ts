@@ -17,7 +17,7 @@ const transitions: Record<ControlledTaskStatus, readonly ControlledTaskStatus[]>
     'cancelled',
   ],
   waiting_for_decision: ['agent_executable', 'blocked', 'cancelled'],
-  review: ['done', 'ready', 'blocked', 'cancelled'],
+  review: ['done', 'ready', 'agent_executable', 'blocked', 'cancelled'],
   done: ['ready'],
   blocked: ['ready', 'cancelled'],
   cancelled: [],

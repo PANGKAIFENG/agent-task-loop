@@ -175,6 +175,84 @@ if (args[0] === 'task' && args[1] === 'review-external') {
     await expect(readFile(paths.runnerLog, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('continues trusted Artifact rework immediately and retries after runner_busy on event replay', async () => {
+    const paths = await fixture();
+    await writeFile(paths.runner, `#!/usr/bin/env node
+import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+appendFileSync(process.env.ATL_FAKE_RUNNER_LOG, JSON.stringify({ args }) + '\\n');
+const busyMarker = process.env.ATL_FAKE_BUSY_MARKER;
+if (args[0] === 'task' && args[1] === 'review-external') {
+  process.stdout.write(JSON.stringify({
+    accepted: !existsSync(busyMarker),
+    task: {
+      taskId: 'task-bridge-artifact',
+      status: 'agent_executable'
+    }
+  }));
+} else if (args[0] === 'runner' && args[1] === 'run-task') {
+  if (!existsSync(busyMarker)) {
+    writeFileSync(busyMarker, 'busy');
+    process.stdout.write(JSON.stringify({ status: 'runner_busy' }));
+  } else {
+    process.stdout.write(JSON.stringify({
+      status: 'submitted',
+      taskId: 'task-bridge-artifact',
+      artifactRef: 'Artifacts/task-bridge-artifact/attempt-003.md'
+    }));
+  }
+} else {
+  process.stdout.write(JSON.stringify([]));
+}
+`, 'utf8');
+    await chmod(paths.runner, 0o700);
+    const args = [
+      bridgePath,
+      'reply',
+      '--event-id',
+      'dingtalk-artifact-rework-busy',
+      '--sender-user-id',
+      'trusted-user-001',
+      '--conversation-id',
+      'trusted-conversation-001',
+      '--message',
+      '要求修改 task-bridge-artifact v2：补充真实用户证据',
+    ];
+    const env = {
+      ATL_NODE_EXECUTABLE: process.execPath,
+      ATL_RUNNER_ENTRY: paths.runner,
+      ATL_VAULT_ROOT: paths.root,
+      ATL_FAKE_RUNNER_LOG: paths.runnerLog,
+      ATL_FAKE_BUSY_MARKER: join(paths.root, 'busy.marker'),
+      ATL_DINGTALK_TRUSTED_SENDER_USER_ID: 'trusted-user-001',
+      ATL_DINGTALK_TRUSTED_CONVERSATION_ID: 'trusted-conversation-001',
+      ATL_ALLOW_REAL_WRITES: undefined,
+    };
+
+    await expect(execa(process.execPath, args, { env })).resolves.toMatchObject({
+      stdout: expect.stringContaining('runner_busy'),
+    });
+    await expect(execa(process.execPath, args, { env })).resolves.toMatchObject({
+      stdout: expect.stringContaining('attempt-003.md'),
+    });
+
+    const calls = (await readFile(paths.runnerLog, 'utf8'))
+      .trim().split('\n').map((line) => JSON.parse(line) as { args: string[] });
+    expect(calls.filter(({ args: callArgs }) => (
+      callArgs[0] === 'task' && callArgs[1] === 'review-external'
+    ))).toHaveLength(2);
+    const runs = calls.filter(({ args: callArgs }) => (
+      callArgs[0] === 'runner' && callArgs[1] === 'run-task'
+    ));
+    expect(runs).toHaveLength(2);
+    expect(runs[0]?.args).toEqual(expect.arrayContaining([
+      '--task-id',
+      'task-bridge-artifact',
+      '--driver',
+      'claude',
+    ]));
+  });
+
   it('rejects polling ingress modes', async () => {
     const paths = await fixture();
 

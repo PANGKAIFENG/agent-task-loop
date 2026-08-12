@@ -149,7 +149,7 @@ describe('external Artifact review', () => {
     expect(reviews).toHaveLength(1);
   });
 
-  it('returns a change request to Ready without copying feedback into the audit log', async () => {
+  it('authorizes a trusted DingTalk change request for Agent rework without copying feedback into the audit log', async () => {
     const context = await setupReview('task-external-review-changes');
     const feedback = '补充真实用户证据。';
 
@@ -165,7 +165,11 @@ describe('external Artifact review', () => {
 
     expect(result).toMatchObject({
       accepted: true,
-      task: { status: 'ready', reviewFeedback: feedback },
+      task: {
+        status: 'agent_executable',
+        autoExecutable: true,
+        reviewFeedback: feedback,
+      },
     });
     const audit = await context.ctx.audit.listForTask('task-external-review-changes');
     const serialized = JSON.stringify(audit);
@@ -175,6 +179,8 @@ describe('external Artifact review', () => {
       details: expect.objectContaining({
         decision: 'request_changes',
         source: 'dingtalk_stream',
+        toStatus: 'agent_executable',
+        executionAuthorized: true,
         feedbackSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
       }),
     }));

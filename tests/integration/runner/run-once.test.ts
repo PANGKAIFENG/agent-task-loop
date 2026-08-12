@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Project } from '../../../src/domain/project.js';
 import type { Task } from '../../../src/domain/task.js';
+import type { AcceptanceObject } from '../../../src/domain/acceptance-object.js';
 import { ClaudeDriverError } from '../../../src/runner/claude-driver.js';
 import type { ResearchDriver } from '../../../src/runner/research-driver.js';
 import {
@@ -14,6 +15,7 @@ import {
 } from '../../../src/runner/runner-controller.js';
 import type { ResearchResult } from '../../../src/runner/result-contract.js';
 import { recordDecision } from '../../../src/services/record-decision.js';
+import { reviewArtifactFromExternalReply } from '../../../src/services/review-artifact-from-external-reply.js';
 import {
   createTestServiceContext,
   type TestServiceContext,
@@ -180,6 +182,69 @@ describe('bounded run-once orchestration', () => {
       });
     await expect(stat(join(context.root, '.atl-runtime', 'runner.lock')))
       .rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('reworks a DingTalk-reviewed Artifact into a new version and sends it for acceptance again', async () => {
+    const context = await setup();
+    const notifications: AcceptanceObject[] = [];
+    context.ctx.notifyAcceptance = async (object) => {
+      notifications.push(object);
+    };
+    const execute = vi.fn<ResearchDriver['execute']>()
+      .mockResolvedValueOnce(result())
+      .mockImplementationOnce(async ({ context: bundle }) => {
+        expect(bundle.blocks[0]?.content).toContain('补充真实用户证据');
+        expect(bundle.blocks).toContainEqual(expect.objectContaining({
+          label: 'previous_artifact',
+          kind: 'artifact_review',
+          content: expect.stringContaining('Summary: The public limit was verified.'),
+        }));
+        return {
+          ...result(),
+          summary: 'The public limit and user evidence were verified.',
+        };
+      });
+    const runner = controller(context, fakeDriver(execute), [
+      'run-artifact-v1',
+      'run-artifact-v2',
+    ]);
+
+    await runner.runAndWait({ mode: 'automatic' });
+    await reviewArtifactFromExternalReply(context.ctx, 'task-runner-default', {
+      artifactVersion: 1,
+      responseEventId: 'dingtalk-artifact-rework-001',
+      senderUserId: 'trusted-user-001',
+      conversationId: 'trusted-conversation-001',
+      decision: 'request_changes',
+      feedback: '补充真实用户证据。',
+    });
+    await expect(runner.runAndWait({
+      mode: 'manual',
+      taskId: 'task-runner-default',
+    })).resolves.toEqual({
+      status: 'submitted',
+      taskId: 'task-runner-default',
+      runId: 'run-artifact-v2',
+      artifactRef: 'Artifacts/task-runner-default/attempt-002.md',
+    });
+
+    await expect(context.ctx.tasks.get('task-runner-default')).resolves.toMatchObject({
+      status: 'review',
+      attempts: 2,
+      artifactRefs: [
+        'Artifacts/task-runner-default/attempt-001.md',
+        'Artifacts/task-runner-default/attempt-002.md',
+      ],
+      reviewFeedback: null,
+    });
+    expect(notifications).toHaveLength(2);
+    expect(notifications[1]).toMatchObject({
+      artifact: {
+        reference: 'task-runner-default@v2',
+        summary: 'The public limit and user evidence were verified.',
+        evidenceCount: 1,
+      },
+    });
   });
 
   it('returns no_task without calling the driver when nothing is eligible', async () => {

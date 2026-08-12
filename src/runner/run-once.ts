@@ -132,8 +132,16 @@ export async function executeClaimedRun(
       throw new InvalidRunnerInputError();
     }
     const project = await dependencies.ctx.projects.get(task.projectId);
+    const previousArtifactRef = task.artifactRefs.at(-1);
+    const previousArtifact = previousArtifactRef === undefined
+      ? undefined
+      : {
+          reference: previousArtifactRef,
+          ...await dependencies.ctx.artifacts.readSummary(previousArtifactRef),
+        };
     const context = await buildContextBundle(task, project, {
       allowedLocalRoots: dependencies.allowedLocalRoots,
+      ...(previousArtifact === undefined ? {} : { previousArtifact }),
     });
     const rawResult = await dependencies.driver.execute({
       task,

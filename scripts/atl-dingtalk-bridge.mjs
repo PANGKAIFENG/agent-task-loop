@@ -207,7 +207,24 @@ async function reviewExternalArtifact(review, event) {
   args.push('--json');
   const result = await run(nodeExecutable, runnerArgs(...args));
   const parsed = successfulJson(result, 'External Artifact review returned invalid JSON');
-  if (parsed?.accepted === false) return `Artifact ${review.taskId} v${review.version} 已处理过该回复。`;
+  if (
+    review.decision === 'request_changes'
+    && parsed?.task?.status === 'agent_executable'
+  ) {
+    const runResult = await run(nodeExecutable, runnerArgs(
+      'runner', 'run-task',
+      '--task-id', review.taskId,
+      '--driver', driver,
+      '--json',
+    ));
+    return formatRunnerResult(successfulJson(
+      runResult,
+      'Artifact rework returned invalid JSON',
+    ));
+  }
+  if (parsed?.accepted === false) {
+    return `Artifact ${review.taskId} v${review.version} 已处理过该回复。`;
+  }
   const status = parsed?.task?.status || '未知结果';
   return `Artifact ${review.taskId} v${review.version} 验收结果：${status}。`;
 }

@@ -15,7 +15,7 @@ import { redactSecrets } from '../security/redact-secrets.js';
 
 export interface ContextBlock {
   label: string;
-  kind: 'task' | 'project' | 'local_file' | 'url_reference';
+  kind: 'task' | 'project' | 'local_file' | 'url_reference' | 'artifact_review';
   content: string;
   sha256: string;
 }
@@ -27,6 +27,11 @@ export interface ContextBundle {
 
 export interface BuildContextBundleOptions {
   allowedLocalRoots: readonly string[];
+  previousArtifact?: {
+    reference: string;
+    summary: string;
+    evidenceCount: number;
+  };
 }
 
 export class ContextBundleError extends Error {
@@ -191,6 +196,9 @@ function taskContent(task: Task): string {
       `Response: ${task.lastDecision.responseText ?? ''}`,
     );
   }
+  if (task.reviewFeedback !== null && task.reviewFeedback.trim() !== '') {
+    content.push('', 'Review Feedback:', task.reviewFeedback);
+  }
   return content.join('\n');
 }
 
@@ -205,6 +213,16 @@ function referenceContent(
     `Label: ${resource.label}`,
     `Kind: ${resource.kind}`,
     `Reference: ${resource.value}`,
+  ].join('\n');
+}
+
+function previousArtifactContent(
+  artifact: NonNullable<BuildContextBundleOptions['previousArtifact']>,
+): string {
+  return [
+    `Reference: ${artifact.reference}`,
+    `Summary: ${artifact.summary}`,
+    `Evidence Count: ${artifact.evidenceCount}`,
   ].join('\n');
 }
 
@@ -230,6 +248,14 @@ export async function buildContextBundle(
   const blocks: ContextBlock[] = [
     contextBlock('task', 'task', taskContent(validTask)),
   ];
+
+  if (options.previousArtifact !== undefined) {
+    blocks.push(contextBlock(
+      'previous_artifact',
+      'artifact_review',
+      previousArtifactContent(options.previousArtifact),
+    ));
+  }
 
   if (validTask.sourceNote !== null && validTask.sourceNote.trim() !== '') {
     blocks.push(contextBlock(

@@ -130,20 +130,24 @@ export async function reviewTask(
     } catch {
       throw new ReviewTaskArtifactInvalidError();
     }
-    const status = {
+    const trustedExternalRework = input.decision === 'request_changes'
+      && source?.kind === 'dingtalk_stream';
+    const status = trustedExternalRework ? 'agent_executable' : ({
       approve: 'done',
       request_changes: 'ready',
       block: 'blocked',
       cancel: 'cancelled',
-    }[input.decision] as Task['status'];
+    }[input.decision] as Task['status']);
     assertTransition('review', status);
     const timestamp = ctx.clock().toISOString();
     const reviewed: Task = {
       ...task,
       status,
-      autoExecutable: false,
+      autoExecutable: trustedExternalRework,
       reviewFeedback: feedback ?? null,
-      readyAt: status === 'ready' ? timestamp : task.readyAt,
+      readyAt: status === 'ready' || status === 'agent_executable'
+        ? timestamp
+        : task.readyAt,
       updatedAt: timestamp,
     };
     let saved: Task;
@@ -172,6 +176,10 @@ export async function reviewTask(
               senderUserId: source.senderUserId,
               conversationId: source.conversationId,
               feedbackSha256: source.feedbackSha256,
+              ...(trustedExternalRework ? {
+                toStatus: status,
+                executionAuthorized: true,
+              } : {}),
             },
       });
     } catch {
