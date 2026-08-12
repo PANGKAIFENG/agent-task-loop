@@ -23,6 +23,7 @@ export const LAUNCH_AGENT_LABEL = 'ai.agent-task-loop.runner';
 export const LAUNCH_AGENT_FILE_NAME = `${LAUNCH_AGENT_LABEL}.plist`;
 const MINIMAL_PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
 const TIME_ZONE = 'Asia/Shanghai';
+const RUNNER_INTERVAL_SECONDS = 15 * 60;
 
 export class LaunchAgentError extends Error {
   readonly code = 'invalid_scheduler_configuration';
@@ -358,17 +359,8 @@ function renderPlist(input: Omit<RenderedLaunchAgent, 'path' | 'plist'>): string
       `    <string>${xml(value)}</string>`,
     ]),
     '  </dict>',
-    '  <key>StartCalendarInterval</key>',
-    '  <array>',
-    ...Array.from({ length: 15 }, (_, index) => index + 8).flatMap((hour) => [
-      '    <dict>',
-      '      <key>Hour</key>',
-      `      <integer>${hour}</integer>`,
-      '      <key>Minute</key>',
-      '      <integer>0</integer>',
-      '    </dict>',
-    ]),
-    '  </array>',
+    '  <key>StartInterval</key>',
+    `  <integer>${RUNNER_INTERVAL_SECONDS}</integer>`,
     '</dict>',
     '</plist>',
     '',

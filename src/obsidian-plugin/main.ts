@@ -2224,7 +2224,7 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
       .setName('运行状态')
       .setDesc(inspection === null
         ? '正在检测本机环境…'
-        : inspection.errorMessage ?? '每天 08:00 至 22:00 整点检查可执行的调研任务。')
+        : inspection.errorMessage ?? '每 15 分钟检查一次可执行的调研任务。')
       .then((setting) => setting.controlEl.createSpan({
         cls: `atl-status-badge atl-status-${inspection?.state ?? 'loading'}`,
         text: inspection === null ? '检测中' : STATE_LABELS[inspection.state],

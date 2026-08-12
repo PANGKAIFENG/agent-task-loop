@@ -4,7 +4,7 @@
 
 ## 用户可见行为
 
-ATL 使用 macOS LaunchAgent，在 `Asia/Shanghai` 时区每天 `08:00` 至 `22:00` 的每个整点检查一次任务队列，共 15 个触发点。
+ATL 使用 macOS LaunchAgent，每 15 分钟检查一次任务队列。系统时区仍要求为 `Asia/Shanghai`，以便任务时间与本地记录保持一致。
 
 每次检查最多领取一个符合条件的 Ready 调研任务。没有合格任务时正常结束；调度器不会自动确认 Inbox 任务。
 
@@ -16,7 +16,7 @@ ATL 使用 macOS LaunchAgent，在 `Asia/Shanghai` 时区每天 `08:00` 至 `22:
 - “立即试跑”一次队列检查；
 - 停用 ATL 管理的后台任务。
 
-LaunchAgent 不通过 shell 启动，也不保存 API token 或任务正文。它只保存 Runner 所需的固定程序路径、Vault 路径、Claude 配置目录、模型名、每日限额和已授权资料目录。
+LaunchAgent 不通过 shell 启动，也不保存 API token 或任务正文。它只保存 Runner 所需的固定程序路径、Vault 路径、Claude 配置目录、模型名和已授权资料目录。
 
 ## 安全更新
 
