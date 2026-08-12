@@ -22,6 +22,7 @@ export interface ContextBlock {
 
 export interface ContextBundle {
   taskId: string;
+  packId?: string;
   blocks: ContextBlock[];
 }
 

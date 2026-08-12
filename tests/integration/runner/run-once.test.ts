@@ -1,4 +1,4 @@
-import { stat } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -184,6 +184,46 @@ describe('bounded run-once orchestration', () => {
       .rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('freezes one Runtime Pack before execution and binds it to the Artifact and audit', async () => {
+    const context = await setup();
+    const execute = vi.fn<ResearchDriver['execute']>().mockImplementation(async ({ context: bundle }) => {
+      const files = await readdir(join(context.root, '.atl-runtime', 'context-packs'));
+      expect(files).toEqual([`${bundle.packId}.json`]);
+      return result();
+    });
+
+    await expect(controller(context, fakeDriver(execute)).runAndWait({
+      mode: 'automatic',
+    })).resolves.toMatchObject({ status: 'submitted' });
+
+    const bundle = execute.mock.calls[0]?.[0].context;
+    expect(bundle?.packId).toMatch(/^pack-[0-9a-f]{24}$/);
+    const artifact = await readFile(join(
+      context.root,
+      '10_Tasks',
+      'Artifacts',
+      'task-runner-default',
+      'attempt-001.md',
+    ), 'utf8');
+    expect(artifact).toContain(`pack_id: ${bundle?.packId}`);
+    await expect(context.ctx.audit.listForTask('task-runner-default')).resolves
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: 'context_pack.frozen',
+          runId: 'run-runner-001',
+          details: expect.objectContaining({
+            packId: bundle?.packId,
+            blockCount: 2,
+            permissionProfile: 'read_only_research',
+          }),
+        }),
+        expect.objectContaining({
+          event: 'artifact.submitted',
+          details: expect.objectContaining({ packId: bundle?.packId }),
+        }),
+      ]));
+  });
+
   it('reworks a DingTalk-reviewed Artifact into a new version and sends it for acceptance again', async () => {
     const context = await setup();
     const notifications: AcceptanceObject[] = [];
@@ -237,6 +277,18 @@ describe('bounded run-once orchestration', () => {
       ],
       reviewFeedback: null,
     });
+    const reworkPackIds = execute.mock.calls.map((call) => call[0].context.packId);
+    expect(reworkPackIds[0]).toMatch(/^pack-[0-9a-f]{24}$/);
+    expect(reworkPackIds[1]).toMatch(/^pack-[0-9a-f]{24}$/);
+    expect(reworkPackIds[1]).not.toBe(reworkPackIds[0]);
+    const secondArtifact = await readFile(join(
+      context.root,
+      '10_Tasks',
+      'Artifacts',
+      'task-runner-default',
+      'attempt-002.md',
+    ), 'utf8');
+    expect(secondArtifact).toContain(`pack_id: ${reworkPackIds[1]}`);
     expect(notifications).toHaveLength(2);
     expect(notifications[1]).toMatchObject({
       artifact: {
@@ -310,6 +362,12 @@ describe('bounded run-once orchestration', () => {
         claim: null,
         pendingDecision: { requestId: 'decision-runner-001' },
       });
+    const audit = await context.ctx.audit.listForTask('task-runner-default');
+    expect(audit.map(({ event }) => event)).toEqual([
+      'task.claimed',
+      'context_pack.frozen',
+      'decision.requested',
+    ]);
   });
 
   it('continues the same task with a new run after one exact decision event', async () => {
@@ -351,6 +409,11 @@ describe('bounded run-once orchestration', () => {
       artifactRef: 'Artifacts/task-runner-default/attempt-002.md',
     });
     expect(execute).toHaveBeenCalledTimes(2);
+    const initialPackId = execute.mock.calls[0]?.[0].context.packId;
+    const continuationPackId = execute.mock.calls[1]?.[0].context.packId;
+    expect(initialPackId).toMatch(/^pack-[0-9a-f]{24}$/);
+    expect(continuationPackId).toMatch(/^pack-[0-9a-f]{24}$/);
+    expect(continuationPackId).not.toBe(initialPackId);
     expect(execute.mock.calls[1]?.[0]).toMatchObject({
       task: {
         taskId: 'task-runner-default',
@@ -589,6 +652,11 @@ describe('bounded run-once orchestration', () => {
       claim: null,
     });
     const audit = await context.ctx.audit.listForTask('task-runner-default');
+    expect(audit.map(({ event }) => event)).toEqual([
+      'task.claimed',
+      'context_pack.frozen',
+      'runner.failed',
+    ]);
     expect(audit).toContainEqual(expect.objectContaining({
       event: 'runner.failed',
       runId: 'run-runner-001',
@@ -689,6 +757,7 @@ describe('bounded run-once orchestration', () => {
     expect(audit.map(({ event }) => event)).toEqual([
       'task.claim_expired',
       'task.claimed',
+      'context_pack.frozen',
       'artifact.submitted',
     ]);
   });

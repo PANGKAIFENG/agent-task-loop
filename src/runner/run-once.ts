@@ -1,4 +1,5 @@
 import { buildContextBundle } from './context-bundle.js';
+import { persistRuntimePack } from './runtime-pack.js';
 import {
   acquireProcessLock,
   type AcquireProcessLockOptions,
@@ -127,6 +128,7 @@ export async function executeClaimedRun(
     throw new InvalidRunnerInputError();
   }
   let result: ResearchResult;
+  let resultContextPackId: string | undefined;
   try {
     if (task.projectId === null) {
       throw new InvalidRunnerInputError();
@@ -143,9 +145,30 @@ export async function executeClaimedRun(
       allowedLocalRoots: dependencies.allowedLocalRoots,
       ...(previousArtifact === undefined ? {} : { previousArtifact }),
     });
+    const runtimePack = await persistRuntimePack(dependencies.runtimeRoot, {
+      task,
+      project,
+      context,
+      asOf: dependencies.ctx.clock().toISOString(),
+      expiresAt: task.claim.leaseExpiresAt,
+    });
+    resultContextPackId = runtimePack.packId;
+    await dependencies.ctx.audit.append({
+      event: 'context_pack.frozen',
+      at: dependencies.ctx.clock().toISOString(),
+      taskId: task.taskId,
+      projectId: project.projectId,
+      runId,
+      details: {
+        packId: runtimePack.packId,
+        packSha256: runtimePack.sha256,
+        blockCount: runtimePack.pack.blocks.length,
+        permissionProfile: runtimePack.pack.permissionProfile,
+      },
+    });
     const rawResult = await dependencies.driver.execute({
       task,
-      context,
+      context: { ...context, packId: runtimePack.packId },
       timeoutMs: dependencies.timeoutMs,
     });
     const parsedResult = driverResultSchema.safeParse(rawResult);
@@ -183,6 +206,7 @@ export async function executeClaimedRun(
   const submitted = await submitArtifact(dependencies.ctx, task.taskId, {
     runId,
     result,
+    packId: resultContextPackId,
   });
   const artifactRef = submitted.artifactRefs.at(-1);
   if (artifactRef === undefined) {

@@ -157,6 +157,10 @@ ATL Runner 可以在每天 `08:00` 至 `22:00` 的每个整点检查一次队列
 
 普通手工待办保持 `ready`，不会被 Runner 领取。`auto_executable` 只保留为兼容镜像字段，不再作为领取授权信号。当前不设每日执行数量上限，但同一时间仍只运行一个 Agent 任务。
 
+Runner 在实质执行前会冻结本次 Runtime Pack，记录任务与运行 ID、权限、实际加载的上下文块哈希、来源引用和上一版 Artifact 引用。Manifest 保存在本机 `.atl-runtime/context-packs/`，不复制来源文件正文；Agent 产出的 Artifact 和 Audit 都会绑定同一个 `pack_id`。决策续跑或要求修改会生成新的 Runtime Pack，因此可以核对每一版结果实际使用了哪一版上下文。
+
+当前 Runtime Pack 只冻结任务已明确关联的来源：任务来源笔记、项目描述、项目资源和上一版 Artifact 摘要。它尚不负责自动发现更多代码仓库、会议、长期记忆或 Skill；这些候选源的动态选择和解释属于后续 Context Control Plane。
+
 ## 安装
 
 ATL 尚未进入 Obsidian 社区插件市场。安装插件本身不需要终端：

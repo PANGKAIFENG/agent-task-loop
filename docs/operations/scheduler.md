@@ -46,6 +46,14 @@ ATL 只管理 Label 为 `ai.agent-task-loop.runner` 的配置。若同一路径�
 
 日志用于排查任务是否被领取、运行失败原因和有界执行结果。ATL 不应把 token、完整登录配置或未授权笔记写入日志。
 
+每次实质执行前冻结的 Runtime Pack manifest 位于：
+
+```text
+<ATL 工作目录>/.atl-runtime/context-packs/<pack_id>.json
+```
+
+Manifest 只保存任务合同、来源引用、上下文块类型与哈希等运行证据，不复制来源文件正文。`context_pack.frozen` Audit、成功 Artifact 的 `pack_id` 和 manifest 文件名应一致。决策续跑、失败重试和 Artifact 返工都必须使用新的 `run_id` 并重新冻结 Pack。
+
 ## 开发者：构建与手动安装
 
 以下命令只用于开发或深度维护。普通用户应使用 Obsidian 设置页面。

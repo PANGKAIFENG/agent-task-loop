@@ -91,6 +91,7 @@ function artifactInputDigest(
     runId: input.runId,
     agent: input.agent,
     createdAt: input.createdAt,
+    packId: input.packId,
     result: input.result,
   })).digest('hex');
 }
@@ -112,6 +113,7 @@ function renderArtifact(
     agent: input.agent,
     created_at: input.createdAt,
     updated_at: input.createdAt,
+    ...(input.packId === undefined ? {} : { pack_id: input.packId }),
     summary: input.result.summary,
     evidence_count: input.result.evidence.length,
     input_digest: inputDigest,
@@ -198,6 +200,7 @@ export class MarkdownArtifactRepository implements ArtifactRepository {
       || !isSafePathSegment(input.task.taskId)
       || !isValidMetadata(input.runId)
       || !isValidMetadata(input.agent)
+      || (input.packId !== undefined && !isValidMetadata(input.packId))
       || !Number.isInteger(input.task.attempts)
       || input.task.attempts <= 0
       || !Number.isFinite(Date.parse(input.createdAt))

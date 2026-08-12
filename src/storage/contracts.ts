@@ -31,6 +31,7 @@ export interface ArtifactRepository {
     agent: string;
     result: ArtifactResult;
     createdAt: string;
+    packId?: string;
   }): Promise<{ ref: string; absolutePath: string; sha256: string }>;
   readSummary(ref: string): Promise<{
     summary: string;

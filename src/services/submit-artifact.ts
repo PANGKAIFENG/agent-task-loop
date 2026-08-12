@@ -8,6 +8,7 @@ import type { ServiceContext } from './service-context.js';
 export interface SubmitArtifactInput {
   runId: string;
   result: ArtifactResult;
+  packId?: string;
 }
 
 export class ArtifactSubmissionInvalidStateError extends Error {
@@ -73,6 +74,7 @@ export async function submitArtifact(
       agent: task.claim.agent,
       result: input.result,
       createdAt: timestamp,
+      ...(input.packId === undefined ? {} : { packId: input.packId }),
     });
     const reviewTask: Task = {
       ...task,
@@ -103,6 +105,7 @@ export async function submitArtifact(
           artifactRef: artifact.ref,
           attempt: task.attempts,
           artifactSha256: artifact.sha256,
+          ...(input.packId === undefined ? {} : { packId: input.packId }),
         },
       });
     } catch {
