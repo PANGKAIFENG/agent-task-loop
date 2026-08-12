@@ -90,4 +90,37 @@ describe('queryEvalSamples', () => {
       regressionCandidates: [],
     });
   });
+
+  it('ignores a self-declared Eval sample without matching run anchors', async () => {
+    const taskId = 'task-forged';
+    const event = {
+      event: 'task.reviewed',
+      at: NOW,
+      taskId,
+      runId: 'run-forged',
+      details: {
+        decision: 'approve',
+        evalSampleId: `eval-${'a'.repeat(24)}`,
+        evalSampleType: 'capability',
+        evalSampleStatus: 'pending_review',
+        regressionCandidateStatus: 'not_proposed',
+        packId: `pack-${'b'.repeat(24)}`,
+        packSha256: 'c'.repeat(64),
+        executionProfileId: 'research_v1',
+        executionProfileVersion: 1,
+        executionProfileSha256: 'd'.repeat(64),
+        artifactRef: `Artifacts/${taskId}/attempt-001.md`,
+        artifactSha256: 'e'.repeat(64),
+        runOutcome: 'artifact_submitted',
+        humanOutcome: 'approve',
+        feedbackSha256: null,
+        harnessMutationAllowed: false,
+      },
+    } satisfies AuditEvent;
+
+    await expect(queryEvalSamples(context({ [taskId]: [event] }))).resolves.toEqual({
+      capabilitySamples: [],
+      regressionCandidates: [],
+    });
+  });
 });

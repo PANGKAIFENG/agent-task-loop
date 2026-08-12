@@ -625,6 +625,42 @@ describe('artifact review loop', () => {
     expect(submitted.artifactRefs).toEqual([ref]);
   });
 
+  it('reviews a legacy Runtime Pack Artifact without creating an Eval sample', async () => {
+    const context = await makeContext();
+    const task = inProgressTask({ taskId: 'task-review-legacy-runtime-pack' });
+    const packId = `pack-${'a'.repeat(24)}`;
+    await context.ctx.tasks.save(task);
+    await context.ctx.audit.append({
+      event: 'context_pack.frozen',
+      at: NOW,
+      taskId: task.taskId,
+      ...(task.projectId === null ? {} : { projectId: task.projectId }),
+      ...(task.claim === null ? {} : { runId: task.claim.runId }),
+      details: {
+        packId,
+        packSha256: 'b'.repeat(64),
+        blockCount: 2,
+        permissionProfile: 'read_only_research',
+      },
+    });
+    await submitArtifact(context.ctx, task.taskId, {
+      runId: task.claim?.runId ?? '',
+      result: artifactResult(),
+      packId,
+    });
+
+    await expect(reviewTask(context.ctx, task.taskId, { decision: 'approve' }))
+      .resolves.toMatchObject({ status: 'done' });
+    const reviewed = (await context.ctx.audit.listForTask(task.taskId))
+      .find(({ event }) => event === 'task.reviewed');
+    expect(reviewed).toEqual({
+      event: 'task.reviewed',
+      at: NOW,
+      taskId: task.taskId,
+      details: { decision: 'approve' },
+    });
+  });
+
   describe.each([
     ['empty Artifact refs', 'task-review-empty-artifacts', []],
     [

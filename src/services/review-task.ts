@@ -111,7 +111,7 @@ function evalSampleAudit(
     || typeof executionProfileSha256 !== 'string'
     || !/^[0-9a-f]{64}$/u.test(executionProfileSha256)
   ) {
-    throw new ReviewTaskArtifactInvalidError();
+    return null;
   }
   const feedbackSha256 = 'feedback' in input
     ? sha256(input.feedback.trim())

@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { z } from 'zod';
 
 import type { AuditEvent } from '../storage/contracts.js';
@@ -52,7 +54,53 @@ export interface EvalSampleQueryResult {
   regressionCandidates: RegressionEvalCandidate[];
 }
 
-function capabilitySample(event: AuditEvent): CapabilityEvalSample | null {
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function expectedSampleId(
+  event: AuditEvent,
+  details: z.infer<typeof evalDetailsSchema>,
+): string {
+  return `eval-${sha256(JSON.stringify({
+    taskId: event.taskId,
+    runId: event.runId,
+    packId: details.packId,
+    artifactRef: details.artifactRef,
+    artifactSha256: details.artifactSha256,
+    humanOutcome: details.humanOutcome,
+    feedbackSha256: details.feedbackSha256,
+  })).slice(0, 24)}`;
+}
+
+function hasMatchingAnchors(
+  event: AuditEvent,
+  details: z.infer<typeof evalDetailsSchema>,
+  earlierEvents: AuditEvent[],
+): boolean {
+  const frozen = earlierEvents.findLast((candidate) => (
+    candidate.event === 'context_pack.frozen'
+    && candidate.runId === event.runId
+    && candidate.details?.packId === details.packId
+    && candidate.details.packSha256 === details.packSha256
+    && candidate.details.executionProfileId === details.executionProfileId
+    && candidate.details.executionProfileVersion === details.executionProfileVersion
+    && candidate.details.executionProfileSha256 === details.executionProfileSha256
+  ));
+  const submitted = earlierEvents.findLast((candidate) => (
+    candidate.event === 'artifact.submitted'
+    && candidate.runId === event.runId
+    && candidate.details?.packId === details.packId
+    && candidate.details.artifactRef === details.artifactRef
+    && candidate.details.artifactSha256 === details.artifactSha256
+  ));
+  return frozen !== undefined && submitted !== undefined;
+}
+
+function capabilitySample(
+  event: AuditEvent,
+  earlierEvents: AuditEvent[],
+): CapabilityEvalSample | null {
   if (
     event.event !== 'task.reviewed'
     || event.taskId === undefined
@@ -61,7 +109,19 @@ function capabilitySample(event: AuditEvent): CapabilityEvalSample | null {
     return null;
   }
   const parsed = evalDetailsSchema.safeParse(event.details);
-  if (!parsed.success || parsed.data.decision !== parsed.data.humanOutcome) {
+  if (
+    !parsed.success
+    || parsed.data.decision !== parsed.data.humanOutcome
+    || parsed.data.evalSampleId !== expectedSampleId(event, parsed.data)
+    || !hasMatchingAnchors(event, parsed.data, earlierEvents)
+    || (
+      parsed.data.humanOutcome === 'approve'
+        ? parsed.data.feedbackSha256 !== null
+          || parsed.data.regressionCandidateStatus !== 'not_proposed'
+        : parsed.data.feedbackSha256 === null
+          || parsed.data.regressionCandidateStatus !== 'pending_review'
+    )
+  ) {
     return null;
   }
   return {
@@ -96,11 +156,13 @@ export async function queryEvalSamples(
   ctx: ServiceContext,
 ): Promise<EvalSampleQueryResult> {
   const tasks = await ctx.tasks.list();
-  const events = (await Promise.all(
+  const eventsByTask = await Promise.all(
     tasks.map(({ taskId }) => ctx.audit.listForTask(taskId)),
-  )).flat();
-  const capabilitySamples = events
-    .map(capabilitySample)
+  );
+  const capabilitySamples = eventsByTask
+    .flatMap((events) => events.map((event, index) => (
+      capabilitySample(event, events.slice(0, index))
+    )))
     .filter((sample): sample is CapabilityEvalSample => sample !== null)
     .sort(compareSamples);
   const regressionCandidates = capabilitySamples.flatMap((sample) => (
