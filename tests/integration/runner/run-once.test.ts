@@ -664,19 +664,21 @@ describe('bounded run-once orchestration', () => {
     expect(execute).toHaveBeenCalledTimes(2);
   });
 
-  it('does not let the automatic runner steal a recorded decision awaiting continuation', async () => {
+  it('resumes a recorded decision on the next automatic cycle without an event replay', async () => {
     const context = await setup();
-    const execute = vi.fn<ResearchDriver['execute']>().mockResolvedValue({
-      kind: 'decision_request',
-      decisionRequestId: 'decision-awaiting-continuation-001',
-      question: 'Which direction should continue?',
-      options: [{ id: 'option-a', label: 'Option A' }],
-    } as never);
-    const runner = controller(context, fakeDriver(execute), ['run-initial']);
-    await runner.runAndWait({ mode: 'automatic' });
+    const execute = vi.fn<ResearchDriver['execute']>()
+      .mockResolvedValueOnce({
+        kind: 'decision_request',
+        decisionRequestId: 'decision-scheduled-recovery-001',
+        question: 'Which direction should continue?',
+        options: [{ id: 'option-a', label: 'Option A' }],
+      })
+      .mockResolvedValueOnce(result());
+    const initialRunner = controller(context, fakeDriver(execute), ['run-initial']);
+    await initialRunner.runAndWait({ mode: 'automatic' });
     await recordDecision(context.ctx, 'task-runner-default', {
-      decisionRequestId: 'decision-awaiting-continuation-001',
-      responseEventId: 'dingtalk-message-awaiting-continuation-001',
+      decisionRequestId: 'decision-scheduled-recovery-001',
+      responseEventId: 'dingtalk-message-scheduled-recovery-001',
       senderUserId: 'trusted-user-001',
       conversationId: 'trusted-conversation-001',
       selectedOptionId: 'option-a',
@@ -685,13 +687,26 @@ describe('bounded run-once orchestration', () => {
 
     await expect(controller(
       context,
-      fakeDriver(vi.fn<ResearchDriver['execute']>()),
-    ).runAndWait({ mode: 'automatic' })).resolves.toEqual({ status: 'no_task' });
-    await expect(context.ctx.tasks.get('task-runner-default')).resolves.toMatchObject({
-      status: 'agent_executable',
-      attempts: 1,
-      lastDecision: { continuationRunId: null },
+      fakeDriver(execute),
+      ['run-scheduled-recovery'],
+    ).runAndWait({ mode: 'automatic' })).resolves.toEqual({
+      status: 'submitted',
+      taskId: 'task-runner-default',
+      runId: 'run-scheduled-recovery',
+      artifactRef: 'Artifacts/task-runner-default/attempt-002.md',
     });
+    await expect(context.ctx.tasks.get('task-runner-default')).resolves.toMatchObject({
+      status: 'review',
+      attempts: 2,
+      lastDecision: { continuationRunId: 'run-scheduled-recovery' },
+    });
+    const audit = await context.ctx.audit.listForTask('task-runner-default');
+    expect(audit.filter(({ event }) => event === 'task.claimed')).toHaveLength(1);
+    expect(audit).toContainEqual(expect.objectContaining({
+      event: 'decision.continuation_started',
+      runId: 'run-scheduled-recovery',
+      details: expect.objectContaining({ mode: 'automatic' }),
+    }));
   });
 
   it('does not rerun a continuation whose expired claim was recovered', async () => {

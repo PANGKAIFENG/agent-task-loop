@@ -221,3 +221,15 @@ export function readinessErrors(task: Task): string[] {
   }
   return errors;
 }
+
+export function isDecisionContinuationPending(task: Task): boolean {
+  return task.status === 'agent_executable'
+    && task.reviewState === 'confirmed'
+    && task.claim === null
+    && task.lastDecision !== null
+    && task.lastDecision !== undefined
+    && task.lastDecision.continuationRunId === null
+    && typeof task.lastDecision.continuationOfRunId === 'string'
+    && task.lastDecision.continuationOfRunId.trim() !== ''
+    && readinessErrors(task).length === 0;
+}

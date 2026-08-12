@@ -1,4 +1,4 @@
-import { readinessErrors, type Task } from '../domain/task.js';
+import { isDecisionContinuationPending, type Task } from '../domain/task.js';
 import { assertTransition } from '../domain/transitions.js';
 import { TaskSavedIndexStaleError } from '../storage/markdown-task-repository.js';
 import {
@@ -62,7 +62,7 @@ export async function startDecisionContinuation(
   if (
     !Number.isFinite(now.getTime())
     || !Number.isFinite(leaseExpiresAt.getTime())
-    || input.mode !== 'manual'
+    || (input.mode !== 'manual' && input.mode !== 'automatic')
     || input.agent.trim() === ''
     || input.runId.trim() === ''
     || input.decisionRequestId.trim() === ''
@@ -88,13 +88,10 @@ export async function startDecisionContinuation(
         return { task, started: false };
       }
       if (
-        task.status !== 'agent_executable'
-        || task.claim !== null
-        || task.reviewState !== 'confirmed'
-        || readinessErrors(task).length > 0
+        !isDecisionContinuationPending(task)
         || task.lastDecision === null
         || task.lastDecision === undefined
-        || !task.lastDecision.continuationOfRunId
+        || typeof task.lastDecision.continuationOfRunId !== 'string'
       ) {
         throw new DecisionContinuationInvalidStateError();
       }

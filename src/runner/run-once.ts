@@ -19,7 +19,9 @@ import {
 import { requestDecision } from '../services/request-decision.js';
 import { recordRunFailure } from '../services/record-run-failure.js';
 import { recoverExpiredClaims } from '../services/recover-expired-claims.js';
+import { peekNextDecisionContinuation } from '../services/query-tasks.js';
 import type { ServiceContext } from '../services/service-context.js';
+import { startDecisionContinuation } from '../services/start-decision-continuation.js';
 import { submitArtifact } from '../services/submit-artifact.js';
 import type { RunOutcome } from './runner-controller.js';
 import type { Task } from '../domain/task.js';
@@ -98,12 +100,29 @@ export async function executeRun(
 
   let task;
   if (input.mode === 'automatic') {
-    task = await claimNextTask(dependencies.ctx, {
-      agent: dependencies.agent,
-      runId,
-      mode: 'automatic',
-      leaseMinutes: dependencies.leaseMinutes,
-    });
+    const continuation = await peekNextDecisionContinuation(dependencies.ctx);
+    if (continuation?.lastDecision !== null && continuation?.lastDecision !== undefined) {
+      const started = await startDecisionContinuation(
+        dependencies.ctx,
+        continuation.taskId,
+        {
+          decisionRequestId: continuation.lastDecision.requestId,
+          responseEventId: continuation.lastDecision.responseEventId,
+          agent: dependencies.agent,
+          runId,
+          mode: 'automatic',
+          leaseMinutes: dependencies.leaseMinutes,
+        },
+      );
+      task = started.started ? started.task : null;
+    } else {
+      task = await claimNextTask(dependencies.ctx, {
+        agent: dependencies.agent,
+        runId,
+        mode: 'automatic',
+        leaseMinutes: dependencies.leaseMinutes,
+      });
+    }
     if (task === null) {
       return { status: 'no_task' };
     }
