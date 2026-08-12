@@ -19,6 +19,12 @@ function object(overrides: Partial<AcceptanceObject> = {}): AcceptanceObject {
     state: 'pending',
     pendingCount: 2,
     path: '10_Tasks/Artifacts/task-artifact-a/attempt-002.md',
+    artifact: {
+      reference: 'task-artifact-a@v2',
+      summary: '完成 Staywork 需求方案并验证两个验收项。',
+      evidenceCount: 3,
+      checks: { met: 1, partial: 1, notMet: 0 },
+    },
     notification: null,
     ...overrides,
   };
@@ -38,7 +44,7 @@ function memoryLedger(): AcceptanceNotificationLedger & {
 }
 
 describe('notify acceptance', () => {
-  it('sends a unique visible object once with a stable UUID and minimal payload', async () => {
+  it('sends a unique visible Artifact once with a stable UUID and review-ready payload', async () => {
     const acceptance = object();
     const ledger = memoryLedger();
     const send = vi.fn<AcceptanceDelivery['send']>(async () => ({
@@ -69,17 +75,52 @@ describe('notify acceptance', () => {
       title: 'ATL 待验收通知',
       text: [
         '标题：Staywork 需求方案',
+        '任务 ID：task-artifact-a',
+        'Artifact：task-artifact-a@v2',
+        '结果：完成 Staywork 需求方案并验证两个验收项。',
+        '自检：通过 1；部分通过 1；未通过 0；证据 3',
         '状态：待验收',
         '待确认：2 项',
         '位置：Obsidian -> ATL：工作沉淀 -> 待验收',
+        '回复操作：',
+        '接受 task-artifact-a v2',
+        '要求修改 task-artifact-a v2：请说明需要修改的内容',
+        '阻塞 task-artifact-a v2：请说明阻塞原因',
+        '取消 task-artifact-a v2：请说明取消原因',
       ].join('\n'),
     });
     expect(first.uuid).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
     );
     expect(send.mock.calls[0]?.[0].text).not.toMatch(
-      /obsidian:\/\/|localhost|127\.0\.0\.1|10_Tasks|token|听记原文/u,
+      /obsidian:\/\/|localhost|127\.0\.0\.1|10_Tasks|\/Users\/|token|听记原文/u,
     );
+  });
+
+  it('rejects an Artifact summary containing a private local path', async () => {
+    const acceptance = object({
+      artifact: {
+        reference: 'task-artifact-a@v2',
+        summary: '结果保存在 /Users/example/private.md',
+        evidenceCount: 1,
+        checks: { met: 1, partial: 0, notMet: 0 },
+      },
+    });
+    const send = vi.fn<AcceptanceDelivery['send']>();
+
+    const result = await notifyAcceptance({
+      ledger: memoryLedger(),
+      delivery: { send },
+      target: { kind: 'self' },
+      listAcceptanceObjects: async () => [acceptance],
+      clock: () => new Date(NOW),
+    }, acceptance);
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      errorCode: 'acceptance_payload_rejected',
+    });
+    expect(send).not.toHaveBeenCalled();
   });
 
   it.each([

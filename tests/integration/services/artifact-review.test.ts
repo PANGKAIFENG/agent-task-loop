@@ -235,9 +235,9 @@ describe('artifact review loop', () => {
     const context = await makeContext();
     const task = inProgressTask({ taskId: 'task-20260714-notify-failed' });
     await context.ctx.tasks.save(task);
-    const notified: string[] = [];
+    const notified: Parameters<NonNullable<typeof context.ctx.notifyAcceptance>>[0][] = [];
     context.ctx.notifyAcceptance = async (object) => {
-      notified.push(`${object.objectType}:${object.objectId}:${object.version}`);
+      notified.push(object);
       throw new Error('synthetic notification failure');
     };
 
@@ -247,7 +247,17 @@ describe('artifact review loop', () => {
     });
 
     const ref = `Artifacts/${task.taskId}/attempt-001.md`;
-    expect(notified).toEqual([`artifact:${task.taskId}:1`]);
+    expect(notified).toEqual([expect.objectContaining({
+      objectType: 'artifact',
+      objectId: task.taskId,
+      version: 1,
+      artifact: {
+        reference: `${task.taskId}@v1`,
+        summary: artifactResult().summary,
+        evidenceCount: 1,
+        checks: { met: 1, partial: 0, notMet: 0 },
+      },
+    })]);
     expect(submitted).toMatchObject({
       status: 'review',
       claim: null,

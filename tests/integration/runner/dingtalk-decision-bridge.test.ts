@@ -64,6 +64,117 @@ afterEach(async () => {
 });
 
 describe('DingTalk decision bridge', () => {
+  it.each([
+    ['接受 task-bridge-artifact v2', 'approve', undefined],
+    ['要求修改 task-bridge-artifact v2：补充真实用户证据', 'request_changes', '补充真实用户证据'],
+    ['阻塞 task-bridge-artifact v2：等待接口权限', 'block', '等待接口权限'],
+    ['取消 task-bridge-artifact v2：目标已撤销', 'cancel', '目标已撤销'],
+  ])('routes an Artifact review reply from Stream push: %s', async (
+    message,
+    decision,
+    feedback,
+  ) => {
+    const paths = await fixture();
+    await writeFile(paths.runner, `#!/usr/bin/env node
+import { appendFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+appendFileSync(process.env.ATL_FAKE_RUNNER_LOG, JSON.stringify({
+  args,
+  allowRealWrites: process.env.ATL_ALLOW_REAL_WRITES ?? null
+}) + '\\n');
+if (args[0] === 'task' && args[1] === 'review-external') {
+  process.stdout.write(JSON.stringify({ accepted: true, task: {
+    taskId: 'task-bridge-artifact', status: args.includes('--approve') ? 'done' : 'ready'
+  }}));
+} else {
+  process.stdout.write(JSON.stringify([]));
+}
+`, 'utf8');
+    await chmod(paths.runner, 0o700);
+
+    const result = await execa(process.execPath, [
+      bridgePath,
+      'reply',
+      '--event-id',
+      `dingtalk-artifact-${decision}`,
+      '--sender-user-id',
+      'trusted-user-001',
+      '--conversation-id',
+      'trusted-conversation-001',
+      '--message',
+      message,
+    ], {
+      env: {
+        ATL_NODE_EXECUTABLE: process.execPath,
+        ATL_RUNNER_ENTRY: paths.runner,
+        ATL_VAULT_ROOT: paths.root,
+        ATL_FAKE_RUNNER_LOG: paths.runnerLog,
+        ATL_DINGTALK_TRUSTED_SENDER_USER_ID: 'trusted-user-001',
+        ATL_DINGTALK_TRUSTED_CONVERSATION_ID: 'trusted-conversation-001',
+        ATL_ALLOW_REAL_WRITES: undefined,
+      },
+    });
+
+    expect(result.stdout).toContain('task-bridge-artifact v2');
+    const calls = (await readFile(paths.runnerLog, 'utf8'))
+      .trim().split('\n').map((line) => JSON.parse(line) as {
+        args: string[];
+        allowRealWrites: string | null;
+      });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.args).toEqual(expect.arrayContaining([
+      'task',
+      'review-external',
+      '--task-id',
+      'task-bridge-artifact',
+      '--artifact-version',
+      '2',
+      '--response-event-id',
+      `dingtalk-artifact-${decision}`,
+      '--sender-user-id',
+      'trusted-user-001',
+      '--conversation-id',
+      'trusted-conversation-001',
+      `--${decision.replace('_', '-')}`,
+    ]));
+    if (feedback === undefined) {
+      expect(calls[0]?.args).not.toContain('--feedback');
+    } else {
+      expect(calls[0]?.args).toEqual(expect.arrayContaining(['--feedback', feedback]));
+    }
+    expect(calls[0]?.allowRealWrites).toBeNull();
+  });
+
+  it('rejects an Artifact change request without feedback before invoking ATL', async () => {
+    const paths = await fixture();
+
+    await expect(execa(process.execPath, [
+      bridgePath,
+      'reply',
+      '--event-id',
+      'dingtalk-artifact-missing-feedback',
+      '--sender-user-id',
+      'trusted-user-001',
+      '--conversation-id',
+      'trusted-conversation-001',
+      '--message',
+      '要求修改 task-bridge-artifact v2',
+    ], {
+      env: {
+        ATL_NODE_EXECUTABLE: process.execPath,
+        ATL_RUNNER_ENTRY: paths.runner,
+        ATL_VAULT_ROOT: paths.root,
+        ATL_FAKE_RUNNER_LOG: paths.runnerLog,
+        ATL_DINGTALK_TRUSTED_SENDER_USER_ID: 'trusted-user-001',
+        ATL_DINGTALK_TRUSTED_CONVERSATION_ID: 'trusted-conversation-001',
+      },
+    })).rejects.toMatchObject({
+      exitCode: 1,
+      stderr: expect.stringContaining('必须包含反馈'),
+    });
+    await expect(readFile(paths.runnerLog, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('rejects polling ingress modes', async () => {
     const paths = await fixture();
 

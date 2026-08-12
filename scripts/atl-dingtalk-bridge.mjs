@@ -94,6 +94,26 @@ function selectOption(task, message) {
     ?? null;
 }
 
+function artifactReviewArguments(message) {
+  const match = /^(接受|要求修改|阻塞|取消)\s+(task-[a-z0-9-]+)\s+v(\d+)(?:[：:]\s*(.*))?$/iu.exec(message.trim());
+  if (match === null) return null;
+  const [, command, taskId, versionText, feedbackText] = match;
+  const decision = {
+    接受: 'approve',
+    要求修改: 'request_changes',
+    阻塞: 'block',
+    取消: 'cancel',
+  }[command];
+  if (decision === undefined) return null;
+  const version = Number(versionText);
+  if (!Number.isInteger(version) || version <= 0) return null;
+  const feedback = feedbackText?.trim() || '';
+  if (decision !== 'approve' && feedback === '') {
+    throw new Error('Artifact 要求修改、阻塞或取消必须包含反馈');
+  }
+  return { decision, taskId, version, feedback };
+}
+
 function replyArguments(args) {
   const read = (flag) => {
     const index = args.indexOf(flag);
@@ -173,6 +193,25 @@ async function continueDecision(task, decision) {
   ));
 }
 
+async function reviewExternalArtifact(review, event) {
+  const args = [
+    'task', 'review-external',
+    '--task-id', review.taskId,
+    '--artifact-version', String(review.version),
+    '--response-event-id', event.eventId,
+    '--sender-user-id', event.senderUserId,
+    '--conversation-id', event.conversationId,
+    `--${review.decision.replace('_', '-')}`,
+  ];
+  if (review.decision !== 'approve') args.push('--feedback', review.feedback);
+  args.push('--json');
+  const result = await run(nodeExecutable, runnerArgs(...args));
+  const parsed = successfulJson(result, 'External Artifact review returned invalid JSON');
+  if (parsed?.accepted === false) return `Artifact ${review.taskId} v${review.version} 已处理过该回复。`;
+  const status = parsed?.task?.status || '未知结果';
+  return `Artifact ${review.taskId} v${review.version} 验收结果：${status}。`;
+}
+
 function formatRunnerResult(result) {
   if (result?.status === 'submitted') {
     return `任务 ${result.taskId} 已进入 Review：${result.artifactRef}`;
@@ -199,6 +238,14 @@ async function handleReply() {
     conversationId,
     message,
   } = replyArguments(process.argv.slice(3));
+  const artifactReview = artifactReviewArguments(message);
+  if (artifactReview !== null) {
+    return reviewExternalArtifact(artifactReview, {
+      eventId,
+      senderUserId,
+      conversationId,
+    });
+  }
   const recordedTask = await findRecordedDecision(eventId, senderUserId, conversationId);
   if (recordedTask !== null) {
     return continueDecision(recordedTask, recordedTask.lastDecision);

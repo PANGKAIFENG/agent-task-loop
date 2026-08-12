@@ -119,7 +119,23 @@ export async function submitArtifact(
     const acceptance = projectAcceptanceObjects([saved], [])[0];
     if (acceptance !== undefined && ctx.notifyAcceptance !== undefined) {
       try {
-        await ctx.notifyAcceptance(acceptance);
+        const checks = input.result.acceptance.reduce((counts, criterion) => ({
+          ...counts,
+          [criterion.status]: counts[criterion.status] + 1,
+        }), { met: 0, partial: 0, not_met: 0 });
+        await ctx.notifyAcceptance({
+          ...acceptance,
+          artifact: {
+            reference: `${task.taskId}@v${task.attempts}`,
+            summary: input.result.summary,
+            evidenceCount: input.result.evidence.length,
+            checks: {
+              met: checks.met,
+              partial: checks.partial,
+              notMet: checks.not_met,
+            },
+          },
+        });
       } catch {
         // Notification is a post-commit side effect; the local review state is authoritative.
       }

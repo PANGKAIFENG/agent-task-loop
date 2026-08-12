@@ -4,8 +4,21 @@ import { TaskSavedIndexStaleError } from '../storage/markdown-task-repository.js
 import type { ServiceContext } from './service-context.js';
 
 export type ReviewTaskInput =
-  | { decision: 'approve'; feedback?: never }
-  | { decision: 'request_changes' | 'block' | 'cancel'; feedback: string };
+  | { decision: 'approve'; feedback?: never; source?: ReviewTaskSource }
+  | {
+      decision: 'request_changes' | 'block' | 'cancel';
+      feedback: string;
+      source?: ReviewTaskSource;
+    };
+
+export interface ReviewTaskSource {
+  kind: 'dingtalk_stream';
+  artifactVersion: number;
+  responseEventId: string;
+  senderUserId: string;
+  conversationId: string;
+  feedbackSha256: string | null;
+}
 
 export class ReviewTaskInvalidInputError extends Error {
   readonly code = 'invalid_review_task_input';
@@ -60,12 +73,30 @@ export async function reviewTask(
   input: ReviewTaskInput,
 ): Promise<Task> {
   const feedback = 'feedback' in input ? input.feedback : undefined;
+  const source = input.source;
   if (
     !['approve', 'request_changes', 'block', 'cancel'].includes(input.decision)
     || (input.decision === 'approve' && feedback !== undefined)
     || (
       input.decision !== 'approve'
       && (typeof feedback !== 'string' || feedback.trim() === '' || feedback.length > 20_000)
+    )
+    || (
+      source !== undefined
+      && (
+        source.kind !== 'dingtalk_stream'
+        || !Number.isSafeInteger(source.artifactVersion)
+        || source.artifactVersion <= 0
+        || [
+          source.responseEventId,
+          source.senderUserId,
+          source.conversationId,
+        ].some((value) => value.trim() === '' || value.length > 200)
+        || (
+          source.feedbackSha256 !== null
+          && !/^[0-9a-f]{64}$/u.test(source.feedbackSha256)
+        )
+      )
     )
   ) {
     throw new ReviewTaskInvalidInputError();
@@ -131,7 +162,17 @@ export async function reviewTask(
         event: 'task.reviewed',
         at: timestamp,
         taskId,
-        details: { decision: input.decision },
+        details: source === undefined
+          ? { decision: input.decision }
+          : {
+              decision: input.decision,
+              source: source.kind,
+              artifactVersion: source.artifactVersion,
+              responseEventId: source.responseEventId,
+              senderUserId: source.senderUserId,
+              conversationId: source.conversationId,
+              feedbackSha256: source.feedbackSha256,
+            },
       });
     } catch {
       try {

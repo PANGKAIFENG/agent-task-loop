@@ -3,9 +3,8 @@ import { z } from 'zod';
 import type { Task } from '../domain/task.js';
 import { assertTransition } from '../domain/transitions.js';
 import { TaskSavedIndexStaleError } from '../storage/markdown-task-repository.js';
+import { EXTERNAL_RESPONSE_EVENT_LOCK_KEY } from './external-response-event-lock.js';
 import type { ServiceContext } from './service-context.js';
-
-const DECISION_EVENT_LOCK_KEY = 'decision-event-global';
 
 export interface RecordDecisionInput {
   decisionRequestId: string;
@@ -85,7 +84,7 @@ export async function recordDecision(
   const parsed = inputSchema.safeParse(input);
   if (!parsed.success) throw new DecisionEventInvalidError();
 
-  return ctx.tasks.withTaskLock(DECISION_EVENT_LOCK_KEY, async () => {
+  return ctx.tasks.withTaskLock(EXTERNAL_RESPONSE_EVENT_LOCK_KEY, async () => {
     const recordedForEvent = (await ctx.tasks.list()).filter(
       (task) => task.lastDecision?.responseEventId === parsed.data.responseEventId,
     );
@@ -97,6 +96,16 @@ export async function recordDecision(
       ) {
         return { task: recordedForEvent[0], accepted: false };
       }
+      throw new DecisionEventConflictError();
+    }
+    const externalReviewEvents = (await Promise.all(
+      (await ctx.tasks.list()).map((task) => ctx.audit.listForTask(task.taskId)),
+    )).flat().filter((event) => (
+      event.event === 'task.reviewed'
+      && event.details?.source === 'dingtalk_stream'
+      && event.details.responseEventId === parsed.data.responseEventId
+    ));
+    if (externalReviewEvents.length > 0) {
       throw new DecisionEventConflictError();
     }
 

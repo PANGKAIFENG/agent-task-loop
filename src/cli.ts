@@ -40,6 +40,10 @@ import { generateWeeklyReport } from './services/generate-weekly-report.js';
 import { listTasks, peekNextTask } from './services/query-tasks.js';
 import { reopenTask } from './services/reopen-task.js';
 import { reviewTask, type ReviewTaskInput } from './services/review-task.js';
+import {
+  reviewArtifactFromExternalReply,
+  type ExternalArtifactReviewInput,
+} from './services/review-artifact-from-external-reply.js';
 import { createTaskId, type ServiceContext } from './services/service-context.js';
 import { stopTask } from './services/stop-task.js';
 import { submitArtifact } from './services/submit-artifact.js';
@@ -600,6 +604,76 @@ function buildProgram(): Command {
         reviewInput(options),
       );
       output(result, options);
+    });
+
+  task
+    .command('review-external')
+    .option('--task-id <id>')
+    .option('--artifact-version <version>')
+    .option('--response-event-id <id>')
+    .option('--sender-user-id <id>')
+    .option('--conversation-id <id>')
+    .option('--approve')
+    .option('--request-changes')
+    .option('--block')
+    .option('--cancel')
+    .option('--feedback <text>')
+    .option('--json')
+    .action(async (options: {
+      taskId?: string;
+      artifactVersion?: string;
+      responseEventId?: string;
+      senderUserId?: string;
+      conversationId?: string;
+      approve?: boolean;
+      requestChanges?: boolean;
+      block?: boolean;
+      cancel?: boolean;
+      feedback?: string;
+      json?: boolean;
+    }) => {
+      const { ctx } = contextForWrite();
+      const decisions = [
+        options.approve ? 'approve' : null,
+        options.requestChanges ? 'request_changes' : null,
+        options.block ? 'block' : null,
+        options.cancel ? 'cancel' : null,
+      ].filter((decision): decision is ExternalArtifactReviewInput['decision'] => decision !== null);
+      if (decisions.length !== 1) {
+        throw new CliUsageError('exactly one external review decision is required');
+      }
+      const decision = decisions[0];
+      if (decision === undefined) {
+        throw new CliUsageError('exactly one external review decision is required');
+      }
+      if (decision === 'approve' && options.feedback !== undefined) {
+        throw new CliUsageError('--feedback is not allowed with --approve');
+      }
+      const version = Number(options.artifactVersion);
+      if (!Number.isInteger(version) || version <= 0) {
+        throw new CliUsageError('--artifact-version must be a positive integer');
+      }
+      const input: ExternalArtifactReviewInput = decision === 'approve'
+        ? {
+            artifactVersion: version,
+            responseEventId: required(options.responseEventId, '--response-event-id'),
+            senderUserId: required(options.senderUserId, '--sender-user-id'),
+            conversationId: required(options.conversationId, '--conversation-id'),
+            decision,
+          }
+        : {
+            artifactVersion: version,
+            responseEventId: required(options.responseEventId, '--response-event-id'),
+            senderUserId: required(options.senderUserId, '--sender-user-id'),
+            conversationId: required(options.conversationId, '--conversation-id'),
+            decision,
+            feedback: required(options.feedback, '--feedback'),
+          };
+      output(await reviewArtifactFromExternalReply(
+        ctx,
+        required(options.taskId, '--task-id'),
+        input,
+      ), options);
     });
 
   task
