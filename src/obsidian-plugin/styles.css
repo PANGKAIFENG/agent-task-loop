@@ -1355,6 +1355,7 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
   --atl-home-data-font: "Azeret Mono", "SFMono-Regular", Consolas, monospace;
   background: var(--atl-home-page-bg);
   color: var(--atl-home-text);
+  container-type: inline-size;
   overflow: hidden;
   padding: 0 !important;
 }
@@ -2035,6 +2036,14 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
 .atl-home-focus-grid {
   display: grid;
   gap: 10px;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.atl-home-focus-grid[data-item-count='2'] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.atl-home-focus-grid[data-item-count='3'] {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
@@ -2047,10 +2056,15 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
   color: var(--atl-home-text);
   display: flex;
   flex-direction: column;
+  height: auto;
   justify-content: space-between;
+  max-height: none;
   min-height: 132px;
+  min-width: 0;
+  overflow: visible;
   padding: 16px;
   text-align: left;
+  white-space: normal;
   width: 100%;
 }
 
@@ -2079,17 +2093,19 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
   line-height: 1.45;
   margin: 16px 0;
   overflow-wrap: anywhere;
+  white-space: normal;
   width: 100%;
 }
 
 .atl-home-focus-meta {
-  align-items: center;
+  align-items: flex-start;
   border-top: 1px solid var(--atl-home-line);
   color: var(--atl-home-muted);
   display: flex;
+  flex-direction: column;
   font-size: 10px;
-  gap: 10px;
-  justify-content: space-between;
+  gap: 6px;
+  justify-content: flex-start;
   padding-top: 10px;
   width: 100%;
 }
@@ -2097,6 +2113,24 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
 .atl-home-focus-meta span {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.atl-home-focus-meta-row {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 68px minmax(0, 1fr);
+  width: 100%;
+}
+
+.atl-home-focus-meta-label {
+  color: var(--atl-home-primary);
+  font-weight: 600;
+}
+
+.atl-home-focus-meta-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .atl-home-metrics {
@@ -2604,6 +2638,14 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
   .atl-home-trend:last-child {
     border-bottom: 1px solid var(--atl-home-line);
     border-right: 0;
+  }
+}
+
+@container (max-width: 900px) {
+  .atl-home-focus-grid,
+  .atl-home-focus-grid[data-item-count='2'],
+  .atl-home-focus-grid[data-item-count='3'] {
+    grid-template-columns: 1fr;
   }
 }
 

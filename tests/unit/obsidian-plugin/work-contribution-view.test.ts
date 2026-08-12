@@ -345,13 +345,25 @@ describe('WorkContributionView', () => {
 
   it('replaces only focus cards with confirmed judgments and opens the weekly record', async () => {
     const confirmed = weeklyFocus('已确认');
+    const baseFocus = confirmed.record.input.focuses[0]!;
+    confirmed.record.input.focuses = [
+      baseFocus,
+      { ...baseFocus, focus: '冻结版本需求全集' },
+      { ...baseFocus, focus: '沉淀协作规范第一版' },
+    ];
     const { openTask, openWeeklyFocus, view } = setup(state(), confirmed);
     await view.onOpen();
 
     const focus = view.contentEl.querySelector('.atl-home-focus')!;
+    const grid = focus.querySelector('.atl-home-focus-grid');
     expect(focus.textContent).toContain('CURRENT FOCUS · 用户确认');
     expect(focus.textContent).toContain('先验证两个真实流程');
     expect(focus.textContent).toContain('形成团队可复用的边界说明');
+    expect(grid?.getAttribute('data-item-count')).toBe('3');
+    expect(grid?.querySelectorAll('.atl-home-focus-card')).toHaveLength(3);
+    expect(grid?.querySelector('.atl-home-focus-meta-label')?.textContent).toBe('预期结果');
+    expect([...grid?.querySelectorAll('.atl-home-focus-meta-label') ?? []]
+      .map((label) => label.textContent)).toContain('为什么是本周');
     expect(focus.textContent).not.toContain('完成真实个人首页');
     expect(focus.querySelector('.atl-home-section-link')?.textContent)
       .toContain('查看本周判断');

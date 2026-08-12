@@ -236,6 +236,9 @@ function normalizeBackground(value: unknown): WeeklyFocusBackground {
 function normalizeInput(value: WeeklyFocusInput, requireComplete: boolean): WeeklyFocusInput {
   if (!Array.isArray(value.focuses)) throw new Error('本周判断格式无效');
   if (value.focuses.length > MAX_FOCUSES) throw new Error('最多确认三项本周判断');
+  if (value.focuses.length > 0 && value.noNewFocus) {
+    throw new Error('已有本周判断时，不能选择本周暂不新增重点');
+  }
   if (requireComplete && value.focuses.length === 0 && !value.noNewFocus) {
     throw new Error('至少确认一项本周判断，或选择本周暂不新增重点');
   }

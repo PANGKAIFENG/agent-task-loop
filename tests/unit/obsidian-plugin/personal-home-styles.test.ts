@@ -45,7 +45,7 @@ describe('personal home heatmap styles', () => {
     expect(declarationsFor(css, '.atl-home-tab[aria-pressed=\'true\']'))
       .toMatch(/background\s*:\s*var\(--atl-home-primary\)/);
     expect(declarationsFor(css, '.atl-home-focus-grid'))
-      .toMatch(/grid-template-columns\s*:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
+      .toMatch(/grid-template-columns\s*:\s*minmax\(0,\s*1fr\)/);
     expect(declarationsFor(css, '.atl-home-metric-grid'))
       .toMatch(/grid-template-columns\s*:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
     expect(declarationsFor(css, '.atl-home-overview-lower'))
@@ -54,6 +54,38 @@ describe('personal home heatmap styles', () => {
       .toMatch(/min-height\s*:\s*132px/);
     expect(declarationsFor(css, '.atl-home-pulse'))
       .toMatch(/border-radius\s*:\s*10px/);
+  });
+
+  it('adapts weekly focus cards to the item count without clipping long text', async () => {
+    const css = await readFile(
+      new URL('../../../src/obsidian-plugin/styles.css', import.meta.url),
+      'utf8',
+    );
+
+    expect(declarationsFor(css, ".atl-home-focus-grid[data-item-count='2']"))
+      .toMatch(/grid-template-columns\s*:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+    expect(declarationsFor(css, ".atl-home-focus-grid[data-item-count='3']"))
+      .toMatch(/grid-template-columns\s*:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
+    expect(declarationsFor(css, '.atl-home-focus-card'))
+      .toMatch(/min-width\s*:\s*0/);
+    expect(declarationsFor(css, '.atl-home-focus-card'))
+      .toMatch(/height\s*:\s*auto/);
+    expect(declarationsFor(css, '.atl-home-focus-card'))
+      .toMatch(/max-height\s*:\s*none/);
+    expect(declarationsFor(css, '.atl-home-focus-card'))
+      .toMatch(/overflow\s*:\s*visible/);
+    expect(declarationsFor(css, '.atl-home-focus-card'))
+      .toMatch(/white-space\s*:\s*normal/);
+    expect(declarationsFor(css, '.atl-home-focus-name'))
+      .toMatch(/white-space\s*:\s*normal/);
+    expect(declarationsFor(css, '.atl-home-focus-meta'))
+      .toMatch(/align-items\s*:\s*flex-start/);
+    expect(declarationsFor(css, '.atl-home-focus-meta'))
+      .toMatch(/flex-direction\s*:\s*column/);
+    expect(declarationsFor(css, '.atl-home-focus-meta-row'))
+      .toMatch(/grid-template-columns\s*:\s*68px minmax\(0,\s*1fr\)/);
+    expect(declarationsFor(css, '.atl-home-focus-meta-value'))
+      .toMatch(/overflow-wrap\s*:\s*anywhere/);
   });
 
   it('lets the 26-week pulse calendar fill its available panel width', async () => {
@@ -98,6 +130,15 @@ describe('personal home heatmap styles', () => {
       new URL('../../../src/obsidian-plugin/styles.css', import.meta.url),
       'utf8',
     );
+
+    expect(css).toContain([
+      '  color: var(--atl-home-text);',
+      '  container-type: inline-size;',
+      '  overflow: hidden;',
+    ].join('\n'));
+    const containerBreakpoint = css.slice(css.indexOf('@container (max-width: 900px)'));
+    expect(containerBreakpoint).toContain(".atl-home-focus-grid[data-item-count='3']");
+    expect(containerBreakpoint).toMatch(/grid-template-columns\s*:\s*1fr/);
 
     for (const selector of [
       '.atl-home-focus-grid',

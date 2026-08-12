@@ -727,7 +727,9 @@ export class WorkContributionView extends ItemView {
       area.body.append(element('p', 'atl-contribution-empty', '当前没有执行中或待执行任务'));
     } else {
       const grid = element('div', 'atl-home-focus-grid');
-      for (const [index, task] of tasks.slice(0, 3).entries()) {
+      const visibleTasks = tasks.slice(0, 3);
+      grid.dataset.itemCount = String(visibleTasks.length);
+      for (const [index, task] of visibleTasks.entries()) {
         const card = element('button', 'atl-home-focus-card');
         card.type = 'button';
         card.dataset.taskId = task.taskId;
@@ -777,7 +779,9 @@ export class WorkContributionView extends ItemView {
       return;
     }
     const grid = element('div', 'atl-home-focus-grid');
-    for (const [index, focus] of input.focuses.slice(0, 3).entries()) {
+    const visibleFocuses = input.focuses.slice(0, 3);
+    grid.dataset.itemCount = String(visibleFocuses.length);
+    for (const [index, focus] of visibleFocuses.entries()) {
       const card = element('button', 'atl-home-focus-card atl-home-weekly-focus-card');
       card.type = 'button';
       card.dataset.weeklyFocusPath = document.path;
@@ -793,8 +797,8 @@ export class WorkContributionView extends ItemView {
       );
       const meta = element('span', 'atl-home-focus-meta');
       meta.append(
-        element('span', undefined, focus.outcome),
-        element('span', undefined, focus.whyThisWeek),
+        this.renderFocusMetaRow('预期结果', focus.outcome),
+        this.renderFocusMetaRow('为什么是本周', focus.whyThisWeek),
       );
       card.append(top, title, meta);
       card.addEventListener('click', () => {
@@ -803,6 +807,15 @@ export class WorkContributionView extends ItemView {
       grid.append(card);
     }
     container.append(grid);
+  }
+
+  private renderFocusMetaRow(label: string, value: string): HTMLElement {
+    const row = element('span', 'atl-home-focus-meta-row');
+    row.append(
+      element('span', 'atl-home-focus-meta-label', label),
+      element('span', 'atl-home-focus-meta-value', value),
+    );
+    return row;
   }
 
   private renderOverviewMetrics(state: ContributionDashboardState): HTMLElement {
