@@ -174,13 +174,24 @@ async function readAllowedLocalFile(
 
 function taskContent(task: Task): string {
   const criteria = task.acceptanceCriteria.map((criterion) => `- ${criterion}`);
-  return [
+  const content = [
     'Objective:',
     task.objective ?? '',
     '',
     'Acceptance Criteria:',
     ...criteria,
-  ].join('\n');
+  ];
+  if (task.lastDecision !== null && task.lastDecision !== undefined) {
+    content.push(
+      '',
+      'Latest User Decision:',
+      `Request ID: ${task.lastDecision.requestId}`,
+      `Selected Option: ${task.lastDecision.selectedOptionLabel}`,
+      `Selected Option ID: ${task.lastDecision.selectedOptionId}`,
+      `Response: ${task.lastDecision.responseText ?? ''}`,
+    );
+  }
+  return content.join('\n');
 }
 
 function projectContent(project: Project): string {

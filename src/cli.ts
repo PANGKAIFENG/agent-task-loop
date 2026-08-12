@@ -674,6 +674,40 @@ function buildProgram(): Command {
     });
 
   runner
+    .command('continue-decision')
+    .requiredOption('--task-id <id>')
+    .requiredOption('--decision-request-id <id>')
+    .requiredOption('--response-event-id <id>')
+    .requiredOption('--sender-user-id <id>')
+    .requiredOption('--conversation-id <id>')
+    .requiredOption('--selected-option-id <id>')
+    .option('--response-text <text>')
+    .requiredOption('--driver <driver>')
+    .option('--json')
+    .action(async (options: {
+      taskId: string;
+      decisionRequestId: string;
+      responseEventId: string;
+      senderUserId: string;
+      conversationId: string;
+      selectedOptionId: string;
+      responseText?: string;
+      driver: string;
+      json?: boolean;
+    }) => {
+      const controller = await runnerController(options.driver);
+      output(await controller.continueAfterDecision({
+        taskId: required(options.taskId, '--task-id'),
+        decisionRequestId: required(options.decisionRequestId, '--decision-request-id'),
+        responseEventId: required(options.responseEventId, '--response-event-id'),
+        senderUserId: required(options.senderUserId, '--sender-user-id'),
+        conversationId: required(options.conversationId, '--conversation-id'),
+        selectedOptionId: required(options.selectedOptionId, '--selected-option-id'),
+        ...(options.responseText === undefined ? {} : { responseText: options.responseText }),
+      }), options);
+    });
+
+  runner
     .command('status')
     .option('--json')
     .action(async (options: { json?: boolean }) => {

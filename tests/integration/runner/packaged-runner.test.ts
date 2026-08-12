@@ -24,6 +24,12 @@ const runnerPath = join(
   'obsidian-plugin',
   'atl-runner.mjs',
 );
+const bridgePath = join(
+  repositoryRoot,
+  'build',
+  'obsidian-plugin',
+  'atl-dingtalk-bridge.mjs',
+);
 const temporaryRoots: string[] = [];
 
 beforeAll(async () => {
@@ -40,6 +46,7 @@ afterEach(async () => {
 describe('packaged ATL runner', () => {
   it('runs as a standalone Node entry and reports the release version', async () => {
     await access(runnerPath);
+    await access(bridgePath);
 
     const result = await execa(process.execPath, [runnerPath, '--version']);
 

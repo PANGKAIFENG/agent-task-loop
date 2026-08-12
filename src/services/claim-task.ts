@@ -88,6 +88,7 @@ export function resolveClaimTaskOptions(
 export function isClaimEligible(task: Task): boolean {
   return task.status === 'agent_executable'
     && task.reviewState === 'confirmed'
+    && task.lastDecision?.continuationRunId !== null
     && readinessErrors(task).length === 0;
 }
 

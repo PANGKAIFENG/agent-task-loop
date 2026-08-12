@@ -5,6 +5,7 @@ export const TASK_STATUSES = [
   'ready',
   'agent_executable',
   'in_progress',
+  'waiting_for_decision',
   'review',
   'done',
   'blocked',
@@ -24,6 +25,75 @@ export interface TaskBrief {
   completionCriteria: string;
   updatedAt: string;
 }
+
+export interface DecisionOption {
+  id: string;
+  label: string;
+}
+
+export interface PendingDecision {
+  schemaVersion: 1;
+  requestId: string;
+  question: string;
+  options: DecisionOption[];
+  requestedAt: string;
+  requestedByRunId: string;
+}
+
+export interface DecisionContext {
+  schemaVersion: 1;
+  requestId: string;
+  selectedOptionId: string;
+  selectedOptionLabel: string;
+  responseText: string | null;
+  responseEventId: string;
+  senderUserId?: string | null | undefined;
+  conversationId?: string | null | undefined;
+  respondedAt: string;
+  continuationRunId?: string | null | undefined;
+  continuationOfRunId?: string | null | undefined;
+  continuationStartedAt?: string | null | undefined;
+}
+
+const decisionOptionSchema: z.ZodType<DecisionOption> = z
+  .object({
+    id: z.string().trim().min(1).max(200),
+    label: z.string().trim().min(1).max(2_000),
+  })
+  .strict();
+
+const uniqueDecisionOptions = (options: DecisionOption[]): boolean => (
+  new Set(options.map(({ id }) => id)).size === options.length
+);
+
+export const pendingDecisionSchema: z.ZodType<PendingDecision> = z
+  .object({
+    schemaVersion: z.literal(1),
+    requestId: z.string().trim().min(1).max(200),
+    question: z.string().trim().min(1).max(20_000),
+    options: z.array(decisionOptionSchema).min(1).max(20)
+      .refine(uniqueDecisionOptions, 'Decision option IDs must be unique'),
+    requestedAt: z.string().datetime({ offset: true }),
+    requestedByRunId: z.string().trim().min(1).max(200),
+  })
+  .strict();
+
+export const decisionContextSchema: z.ZodType<DecisionContext> = z
+  .object({
+    schemaVersion: z.literal(1),
+    requestId: z.string().trim().min(1).max(200),
+    selectedOptionId: z.string().trim().min(1).max(200),
+    selectedOptionLabel: z.string().trim().min(1).max(2_000),
+    responseText: z.string().max(20_000).nullable(),
+    responseEventId: z.string().trim().min(1).max(200),
+    senderUserId: z.string().trim().min(1).max(200).nullable().optional(),
+    conversationId: z.string().trim().min(1).max(200).nullable().optional(),
+    respondedAt: z.string().datetime({ offset: true }),
+    continuationRunId: z.string().trim().min(1).max(200).nullable().optional(),
+    continuationOfRunId: z.string().trim().min(1).max(200).nullable().optional(),
+    continuationStartedAt: z.string().datetime({ offset: true }).nullable().optional(),
+  })
+  .strict();
 
 export const taskBriefSchema: z.ZodType<TaskBrief> = z
   .object({
@@ -75,6 +145,8 @@ export interface Task {
   artifactRefs: string[];
   reviewFeedback: string | null;
   readyAt: string | null;
+  pendingDecision?: PendingDecision | null | undefined;
+  lastDecision?: DecisionContext | null | undefined;
   taskBrief?: TaskBrief | null | undefined;
   createdAt: string;
   updatedAt: string;
@@ -114,6 +186,8 @@ export const taskSchema: z.ZodType<Task> = z
     artifactRefs: z.array(z.string()),
     reviewFeedback: z.string().nullable(),
     readyAt: z.string().nullable(),
+    pendingDecision: pendingDecisionSchema.nullable().optional(),
+    lastDecision: decisionContextSchema.nullable().optional(),
     taskBrief: taskBriefSchema.nullable().optional(),
     createdAt: z.string(),
     updatedAt: z.string(),

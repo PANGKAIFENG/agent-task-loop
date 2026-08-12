@@ -4,17 +4,19 @@ import {
   type AcquireProcessLockOptions,
 } from './process-lock.js';
 import type { ResearchDriver } from './research-driver.js';
-import { researchResultSchema } from './result-contract.js';
+import { driverResultSchema, type ResearchResult } from './result-contract.js';
 import { claimNextTask } from '../services/claim-next-task.js';
 import {
   claimTask,
   type ClaimMode,
 } from '../services/claim-task.js';
+import { requestDecision } from '../services/request-decision.js';
 import { recordRunFailure } from '../services/record-run-failure.js';
 import { recoverExpiredClaims } from '../services/recover-expired-claims.js';
 import type { ServiceContext } from '../services/service-context.js';
 import { submitArtifact } from '../services/submit-artifact.js';
 import type { RunOutcome } from './runner-controller.js';
+import type { Task } from '../domain/task.js';
 
 export interface RunOnceDependencies {
   ctx: ServiceContext;
@@ -108,7 +110,23 @@ export async function executeRun(
     });
   }
 
-  let result;
+  return executeClaimedRun(dependencies, input, runId, task);
+}
+
+export async function executeClaimedRun(
+  dependencies: RunOnceDependencies,
+  input: RunInput,
+  runId: string,
+  task: Task,
+): Promise<Exclude<RunOutcome, { status: 'runner_busy' | 'no_task' }>> {
+  if (
+    task.status !== 'in_progress'
+    || task.claim === null
+    || task.claim.runId !== runId
+  ) {
+    throw new InvalidRunnerInputError();
+  }
+  let result: ResearchResult;
   try {
     if (task.projectId === null) {
       throw new InvalidRunnerInputError();
@@ -122,10 +140,24 @@ export async function executeRun(
       context,
       timeoutMs: dependencies.timeoutMs,
     });
-    result = researchResultSchema.safeParse(rawResult);
-    if (!result.success) {
+    const parsedResult = driverResultSchema.safeParse(rawResult);
+    if (!parsedResult.success) {
       throw new InvalidRunnerResultError();
     }
+    if ('kind' in parsedResult.data) {
+      const waiting = await requestDecision(dependencies.ctx, task.taskId, {
+        ...parsedResult.data,
+        runId,
+      });
+      return {
+        status: 'waiting_for_decision',
+        taskId: task.taskId,
+        runId,
+        decisionRequestId: waiting.pendingDecision?.requestId
+          ?? parsedResult.data.decisionRequestId,
+      };
+    }
+    result = parsedResult.data;
   } catch (error) {
     const code = errorCode(error);
     const failed = await recordRunFailure(dependencies.ctx, task.taskId, {
@@ -142,7 +174,7 @@ export async function executeRun(
   }
   const submitted = await submitArtifact(dependencies.ctx, task.taskId, {
     runId,
-    result: result.data,
+    result,
   });
   const artifactRef = submitted.artifactRefs.at(-1);
   if (artifactRef === undefined) {

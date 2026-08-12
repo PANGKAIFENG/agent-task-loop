@@ -208,6 +208,29 @@ describe('buildContextBundle', () => {
     if (source !== undefined) expectValidDigest(source);
   });
 
+  it('includes the latest user decision in the next run context', async () => {
+    const bundle = await buildContextBundle(
+      makeTask({
+        lastDecision: {
+          schemaVersion: 1,
+          requestId: 'decision-001',
+          selectedOptionId: 'option-b',
+          selectedOptionLabel: '先做方案 B',
+          responseText: '优先验证 B 的真实流程。',
+          responseEventId: 'dingtalk-event-001',
+          respondedAt: NOW,
+        },
+      }),
+      makeProject(),
+      { allowedLocalRoots: [] },
+    );
+
+    expect(bundle.blocks[0]?.content).toContain('Request ID: decision-001');
+    expect(bundle.blocks[0]?.content).toContain('Selected Option: 先做方案 B');
+    expect(bundle.blocks[0]?.content).toContain('Selected Option ID: option-b');
+    expect(bundle.blocks[0]?.content).toContain('Response: 优先验证 B 的真实流程。');
+  });
+
   it('does not let the meeting root expose sibling notes in the same Vault', async () => {
     const vaultRoot = await temporaryRoot();
     const meetingRoot = join(vaultRoot, '08_Meetings');

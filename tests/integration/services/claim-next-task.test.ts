@@ -95,6 +95,35 @@ describe('claimNextTask', () => {
       });
   });
 
+  it('allows a newly authorized revision after an earlier decision continuation', async () => {
+    const context = await makeContext();
+    const revision = readyTask({
+      taskId: 'task-authorized-revision-after-decision',
+      sourceKey: 'synthetic:authorized-revision-after-decision',
+      lastDecision: {
+        schemaVersion: 1,
+        requestId: 'decision-previous-run',
+        selectedOptionId: 'option-a',
+        selectedOptionLabel: 'Option A',
+        responseText: 'Use option A.',
+        responseEventId: 'dingtalk-event-previous-run',
+        senderUserId: 'trusted-user-001',
+        conversationId: 'trusted-conversation-001',
+        respondedAt: '2026-07-14T06:30:00.000Z',
+        continuationRunId: 'run-previous-continuation',
+        continuationOfRunId: 'run-previous',
+        continuationStartedAt: '2026-07-14T06:31:00.000Z',
+      },
+    });
+    await context.ctx.tasks.save(revision);
+
+    await expect(claimNextTask(context.ctx, automaticOptions)).resolves.toMatchObject({
+      taskId: revision.taskId,
+      status: 'in_progress',
+      claim: { runId: automaticOptions.runId },
+    });
+  });
+
   it.each<[string, Partial<Task>]>([
     ['unconfirmed', { reviewState: 'ready_for_confirm' }],
     ['missing-project', { projectId: null }],
@@ -565,7 +594,7 @@ describe('recoverExpiredClaims', () => {
       at: '2026-07-14T00:00:00.000Z',
       taskId: expired.taskId,
       runId: 'run-expired',
-      details: { lastError: 'lease_expired' },
+      details: { lastError: 'lease_expired', outcome: 'requeued' },
     });
   });
 

@@ -19,9 +19,9 @@ import type {
   ResearchDriverInput,
 } from './research-driver.js';
 import {
-  researchResultJsonSchema,
-  researchResultSchema,
-  type ResearchResult,
+  driverResultJsonSchema,
+  driverResultSchema,
+  type DriverResult,
 } from './result-contract.js';
 
 export const CLAUDE_RESEARCH_TIMEOUT_MS = 30 * 60 * 1000;
@@ -40,7 +40,7 @@ const REQUIRED_HELP_MARKERS = [
   '--max-budget-usd',
 ] as const;
 const claudeResearchJsonSchema = Object.fromEntries(
-  Object.entries(researchResultJsonSchema)
+  Object.entries(driverResultJsonSchema)
     .filter(([key]) => key !== '$schema'),
 );
 
@@ -368,6 +368,9 @@ function buildPrompt(context: ContextBundle): string {
     '- Do not change code or create files.',
     '- Do not change configuration or settings.',
     '- Do not create or modify calendar events.',
+    '- If the task can be completed with the allowed context and public sources, return a research result.',
+    '- If a user decision or authorization is required before continuing, return a decision_request with a stable request ID and concrete options.',
+    '- Do not invent a decision or perform any action that requires user authorization.',
     '',
     'Output contract:',
     JSON.stringify(claudeResearchJsonSchema),
@@ -404,14 +407,14 @@ function extractStructuredOutput(envelope: unknown): unknown {
   return record;
 }
 
-function parseResult(stdout: string): ResearchResult {
+function parseResult(stdout: string): DriverResult {
   let envelope: unknown;
   try {
     envelope = JSON.parse(stdout);
   } catch {
     throw new ClaudeDriverError('invalid_claude_json');
   }
-  const result = researchResultSchema.safeParse(
+  const result = driverResultSchema.safeParse(
     extractStructuredOutput(envelope),
   );
   if (!result.success) {
@@ -835,7 +838,7 @@ class ClaudeResearchDriver implements ResearchDriver {
     private readonly model: string | undefined,
   ) {}
 
-  async execute(input: ResearchDriverInput): Promise<ResearchResult> {
+  async execute(input: ResearchDriverInput): Promise<DriverResult> {
     if (
       input.task.taskId !== input.context.taskId
       || !Number.isFinite(input.timeoutMs)
@@ -853,7 +856,7 @@ class ClaudeResearchDriver implements ResearchDriver {
       this.claudeConfigDirectory,
     );
     let outcome:
-      | { success: true; value: ResearchResult }
+      | { success: true; value: DriverResult }
       | { success: false; error: unknown };
     try {
       outcome = {
@@ -882,7 +885,7 @@ class ClaudeResearchDriver implements ResearchDriver {
     input: ResearchDriverInput,
     runDirectory: string,
     environment: NodeJS.ProcessEnv,
-  ): Promise<ResearchResult> {
+  ): Promise<DriverResult> {
     await verifyExecutable(this.executable, this.fileSystem);
     let help: ProcessResult;
     try {

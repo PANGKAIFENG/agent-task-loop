@@ -28,6 +28,7 @@ function runner(overrides: Partial<RunnerController> = {}): RunnerController {
   return {
     runAndWait: vi.fn(),
     start: vi.fn().mockResolvedValue({ runId: 'run-board-001' }),
+    continueAfterDecision: vi.fn(),
     ...overrides,
   };
 }

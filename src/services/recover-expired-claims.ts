@@ -47,10 +47,13 @@ export async function recoverExpiredClaims(
       if (!isExpiredClaim(current, now) || current.claim === null) {
         return null;
       }
-      assertTransition('in_progress', 'agent_executable');
+      const expiredContinuation = current.lastDecision?.continuationRunId
+        === current.claim.runId;
+      const status = expiredContinuation ? 'blocked' : 'agent_executable';
+      assertTransition('in_progress', status);
       const executable: Task = {
         ...current,
-        status: 'agent_executable',
+        status,
         claim: null,
         updatedAt: timestamp,
       };
@@ -71,7 +74,10 @@ export async function recoverExpiredClaims(
           at: timestamp,
           taskId: saved.taskId,
           runId: current.claim.runId,
-          details: { lastError: 'lease_expired' },
+          details: {
+            lastError: 'lease_expired',
+            outcome: expiredContinuation ? 'blocked' : 'requeued',
+          },
         });
       } catch {
         try {

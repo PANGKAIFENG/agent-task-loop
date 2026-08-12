@@ -3,8 +3,12 @@ import { basename, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import {
+  decisionContextSchema,
+  pendingDecisionSchema,
   taskStatusSchema,
   taskSchema,
+  type DecisionContext,
+  type PendingDecision,
   type Priority,
   type Task,
   type TaskBrief,
@@ -305,11 +309,79 @@ function mapTaskBrief(value: unknown): TaskBrief | null {
   return mapped;
 }
 
+function mapPendingDecision(value: unknown): PendingDecision | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new InvalidTaskDataError('pending_decision');
+  }
+  const decision = value as Record<string, unknown>;
+  const options = Array.isArray(decision.options)
+    ? decision.options.map((value) => {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        throw new InvalidTaskDataError('pending_decision');
+      }
+      const option = value as Record<string, unknown>;
+      return {
+        id: stringValue(option.id),
+        label: stringValue(option.label),
+      };
+    })
+    : [];
+  const result = pendingDecisionSchema.safeParse({
+    schemaVersion: decision.schema_version ?? decision.schemaVersion,
+    requestId: decision.request_id ?? decision.requestId,
+    question: decision.question,
+    options,
+    requestedAt: decision.requested_at ?? decision.requestedAt,
+    requestedByRunId: decision.requested_by_run_id ?? decision.requestedByRunId,
+  });
+  if (!result.success) throw new InvalidTaskDataError('pending_decision');
+  return result.data;
+}
+
+function mapDecisionContext(value: unknown): DecisionContext | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new InvalidTaskDataError('last_decision');
+  }
+  const decision = value as Record<string, unknown>;
+  const responseText = decision.response_text ?? decision.responseText;
+  const senderUserId = decision.sender_user_id ?? decision.senderUserId;
+  const conversationId = decision.conversation_id ?? decision.conversationId;
+  const continuationRunId = 'continuation_run_id' in decision
+    ? decision.continuation_run_id
+    : decision.continuationRunId;
+  const continuationOfRunId = 'continuation_of_run_id' in decision
+    ? decision.continuation_of_run_id
+    : decision.continuationOfRunId;
+  const continuationStartedAt = 'continuation_started_at' in decision
+    ? decision.continuation_started_at
+    : decision.continuationStartedAt;
+  const result = decisionContextSchema.safeParse({
+    schemaVersion: decision.schema_version ?? decision.schemaVersion,
+    requestId: decision.request_id ?? decision.requestId,
+    selectedOptionId: decision.selected_option_id ?? decision.selectedOptionId,
+    selectedOptionLabel: decision.selected_option_label ?? decision.selectedOptionLabel,
+    responseText: responseText === undefined ? null : responseText,
+    responseEventId: decision.response_event_id ?? decision.responseEventId,
+    ...(senderUserId === undefined ? {} : { senderUserId }),
+    ...(conversationId === undefined ? {} : { conversationId }),
+    respondedAt: decision.responded_at ?? decision.respondedAt,
+    ...(continuationRunId === undefined ? {} : { continuationRunId }),
+    ...(continuationOfRunId === undefined ? {} : { continuationOfRunId }),
+    ...(continuationStartedAt === undefined ? {} : { continuationStartedAt }),
+  });
+  if (!result.success) throw new InvalidTaskDataError('last_decision');
+  return result.data;
+}
+
 export function taskFromDocument(
   record: Pick<TaskRecord, 'path' | 'data' | 'body'>,
 ): Task {
   const data = record.data;
   const taskBrief = mapTaskBrief(data.task_brief);
+  const pendingDecision = mapPendingDecision(data.pending_decision);
+  const lastDecision = mapDecisionContext(data.last_decision);
   const reviewState = legacyEnum(data, 'review_state', [
     'candidate',
     'ready_for_confirm',
@@ -350,6 +422,8 @@ export function taskFromDocument(
     artifactRefs: stringArray(data.artifact_refs),
     reviewFeedback: nullableString(data.review_feedback),
     readyAt: nullableString(data.ready_at),
+    ...(pendingDecision === null ? {} : { pendingDecision }),
+    ...(lastDecision === null ? {} : { lastDecision }),
     ...(taskBrief === null ? {} : { taskBrief }),
     createdAt: stringValue(data.created_at, '1970-01-01T00:00:00.000Z'),
     updatedAt: stringValue(data.updated_at, '1970-01-01T00:00:00.000Z'),
@@ -387,14 +461,64 @@ function taskBriefFrontmatter(brief: Task['taskBrief']): Record<string, unknown>
   };
 }
 
+function pendingDecisionFrontmatter(
+  decision: Task['pendingDecision'],
+): Record<string, unknown> | null {
+  return decision === null || decision === undefined ? null : {
+    schema_version: decision.schemaVersion,
+    request_id: decision.requestId,
+    question: decision.question,
+    options: decision.options,
+    requested_at: decision.requestedAt,
+    requested_by_run_id: decision.requestedByRunId,
+  };
+}
+
+function decisionContextFrontmatter(
+  decision: Task['lastDecision'],
+): Record<string, unknown> | null {
+  return decision === null || decision === undefined ? null : {
+    schema_version: decision.schemaVersion,
+    request_id: decision.requestId,
+    selected_option_id: decision.selectedOptionId,
+    selected_option_label: decision.selectedOptionLabel,
+    response_text: decision.responseText,
+    response_event_id: decision.responseEventId,
+    ...(decision.senderUserId === undefined
+      ? {}
+      : { sender_user_id: decision.senderUserId }),
+    ...(decision.conversationId === undefined
+      ? {}
+      : { conversation_id: decision.conversationId }),
+    responded_at: decision.respondedAt,
+    ...(decision.continuationRunId === undefined
+      ? {}
+      : { continuation_run_id: decision.continuationRunId }),
+    ...(decision.continuationOfRunId === undefined
+      ? {}
+      : { continuation_of_run_id: decision.continuationOfRunId }),
+    ...(decision.continuationStartedAt === undefined
+      ? {}
+      : { continuation_started_at: decision.continuationStartedAt }),
+  };
+}
+
 function mergeTaskData(
   original: Record<string, unknown>,
   task: Task,
 ): Record<string, unknown> {
   const taskBrief = taskBriefFrontmatter(task.taskBrief);
+  const pendingDecision = pendingDecisionFrontmatter(task.pendingDecision);
+  const lastDecision = decisionContextFrontmatter(task.lastDecision);
   const base = { ...original };
   if (task.taskBrief === null) {
     delete base.task_brief;
+  }
+  if (task.pendingDecision === null) {
+    delete base.pending_decision;
+  }
+  if (task.lastDecision === null) {
+    delete base.last_decision;
   }
   return {
     ...base,
@@ -422,6 +546,8 @@ function mergeTaskData(
     artifact_refs: task.artifactRefs,
     review_feedback: task.reviewFeedback,
     ready_at: task.readyAt,
+    ...(pendingDecision === null ? {} : { pending_decision: pendingDecision }),
+    ...(lastDecision === null ? {} : { last_decision: lastDecision }),
     ...(taskBrief === null ? {} : { task_brief: taskBrief }),
     created_at: task.createdAt,
     updated_at: task.updatedAt,

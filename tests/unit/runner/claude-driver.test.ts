@@ -19,7 +19,7 @@ import {
   type ProcessResult,
 } from '../../../src/runner/claude-driver.js';
 import type { ContextBundle } from '../../../src/runner/context-bundle.js';
-import { researchResultJsonSchema } from '../../../src/runner/result-contract.js';
+import { driverResultJsonSchema } from '../../../src/runner/result-contract.js';
 
 const NOW = '2026-07-15T00:00:00.000Z';
 const CLAUDE_BIN = '/opt/testing/bin/claude';
@@ -788,7 +788,7 @@ describe('ClaudeResearchDriver.execute', () => {
       'json',
       '--json-schema',
       JSON.stringify(Object.fromEntries(
-        Object.entries(researchResultJsonSchema)
+        Object.entries(driverResultJsonSchema)
           .filter(([key]) => key !== '$schema'),
       )),
       '--max-budget-usd',
@@ -825,6 +825,7 @@ describe('ClaudeResearchDriver.execute', () => {
     expect(prompt).toContain('Do not change code');
     expect(prompt).toContain('Do not change configuration');
     expect(prompt).toContain('Do not create or modify calendar events');
+    expect(prompt).toContain('return a decision_request');
     expect(prompt).toContain('Output contract');
     expect(prompt).not.toContain('TITLE_SENTINEL_MUST_NOT_ENTER_PROMPT');
     expect(prompt).not.toContain('BODY_SENTINEL_MUST_NOT_ENTER_PROMPT');
@@ -841,6 +842,33 @@ describe('ClaudeResearchDriver.execute', () => {
       recursive: true,
       force: true,
     });
+  });
+
+  it('accepts a decision request from the Claude driver contract', async () => {
+    const decisionRequest = {
+      kind: 'decision_request',
+      decisionRequestId: 'decision-driver-001',
+      question: 'Which research scope should be used?',
+      options: [
+        { id: 'narrow', label: 'Use the narrow scope' },
+        { id: 'broad', label: 'Use the broad scope' },
+      ],
+    };
+    const executor = fakeExecutor(async (execution) => {
+      if (execution.args[0] === '--help') {
+        return processResult({ stdout: REQUIRED_HELP });
+      }
+      return processResult({
+        stdout: JSON.stringify({ structured_output: decisionRequest }),
+      });
+    });
+    const driver = await createDriver({ executor });
+
+    await expect(driver.execute({
+      task: makeTask(),
+      context: makeContext(),
+      timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
+    })).resolves.toEqual(decisionRequest);
   });
 
   it('builds stdin only from the already-redacted context bundle', async () => {

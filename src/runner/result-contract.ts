@@ -30,4 +30,28 @@ export const researchResultSchema = z
 
 export type ResearchResult = z.infer<typeof researchResultSchema>;
 
+export const decisionRequestSchema = z
+  .object({
+    kind: z.literal('decision_request'),
+    decisionRequestId: z.string().trim().min(1).max(200),
+    question: nonBlankString,
+    options: z.array(z.object({
+      id: z.string().trim().min(1).max(200),
+      label: z.string().trim().min(1).max(2_000),
+    }).strict()).min(1).max(20).refine(
+      (options) => new Set(options.map(({ id }) => id)).size === options.length,
+      'Decision option IDs must be unique',
+    ),
+  })
+  .strict();
+
+export type DecisionRequest = z.infer<typeof decisionRequestSchema>;
+export type DriverResult = ResearchResult | DecisionRequest;
+
+export const driverResultSchema = z.union([
+  decisionRequestSchema,
+  researchResultSchema,
+]);
+
 export const researchResultJsonSchema = z.toJSONSchema(researchResultSchema);
+export const driverResultJsonSchema = z.toJSONSchema(driverResultSchema);

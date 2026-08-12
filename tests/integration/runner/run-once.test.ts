@@ -13,6 +13,7 @@ import {
   RunnerBusyError,
 } from '../../../src/runner/runner-controller.js';
 import type { ResearchResult } from '../../../src/runner/result-contract.js';
+import { recordDecision } from '../../../src/services/record-decision.js';
 import {
   createTestServiceContext,
   type TestServiceContext,
@@ -215,6 +216,292 @@ describe('bounded run-once orchestration', () => {
       status: 'review',
       attempts: 1,
       claim: null,
+    });
+  });
+
+  it('pauses a task when the driver requests a user decision', async () => {
+    const context = await setup();
+    const execute = vi.fn<ResearchDriver['execute']>().mockResolvedValue({
+      kind: 'decision_request',
+      decisionRequestId: 'decision-runner-001',
+      question: 'Which direction should continue?',
+      options: [
+        { id: 'option-a', label: 'Option A' },
+        { id: 'option-b', label: 'Option B' },
+      ],
+    } as never);
+
+    await expect(controller(context, fakeDriver(execute)).runAndWait({
+      mode: 'automatic',
+    })).resolves.toEqual({
+      status: 'waiting_for_decision',
+      taskId: 'task-runner-default',
+      runId: 'run-runner-001',
+      decisionRequestId: 'decision-runner-001',
+    });
+    await expect(context.ctx.tasks.get('task-runner-default')).resolves
+      .toMatchObject({
+        status: 'waiting_for_decision',
+        claim: null,
+        pendingDecision: { requestId: 'decision-runner-001' },
+      });
+  });
+
+  it('continues the same task with a new run after one exact decision event', async () => {
+    const context = await setup();
+    const execute = vi.fn<ResearchDriver['execute']>()
+      .mockResolvedValueOnce({
+        kind: 'decision_request',
+        decisionRequestId: 'decision-continuation-001',
+        question: 'Which direction should continue?',
+        options: [
+          { id: 'option-a', label: 'Option A' },
+          { id: 'option-b', label: 'Option B' },
+        ],
+      })
+      .mockResolvedValueOnce(result());
+    const runner = controller(context, fakeDriver(execute), [
+      'run-initial',
+      'run-continuation',
+    ]);
+
+    await expect(runner.runAndWait({ mode: 'automatic' })).resolves.toMatchObject({
+      status: 'waiting_for_decision',
+      runId: 'run-initial',
+    });
+    const decisionEvent = {
+      taskId: 'task-runner-default',
+      decisionRequestId: 'decision-continuation-001',
+      responseEventId: 'dingtalk-message-001',
+      senderUserId: 'trusted-user-001',
+      conversationId: 'trusted-conversation-001',
+      selectedOptionId: 'option-b',
+      responseText: 'Use option B and continue.',
+    };
+
+    await expect(runner.continueAfterDecision(decisionEvent)).resolves.toEqual({
+      status: 'submitted',
+      taskId: 'task-runner-default',
+      runId: 'run-continuation',
+      artifactRef: 'Artifacts/task-runner-default/attempt-002.md',
+    });
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(execute.mock.calls[1]?.[0]).toMatchObject({
+      task: {
+        taskId: 'task-runner-default',
+        attempts: 2,
+        claim: { runId: 'run-continuation' },
+        lastDecision: {
+          requestId: 'decision-continuation-001',
+          responseEventId: 'dingtalk-message-001',
+          senderUserId: 'trusted-user-001',
+          conversationId: 'trusted-conversation-001',
+        },
+      },
+      context: {
+        blocks: [expect.objectContaining({
+          content: expect.stringContaining('Use option B and continue.'),
+        }), expect.anything()],
+      },
+    });
+
+    await expect(runner.continueAfterDecision(decisionEvent)).resolves.toEqual({
+      status: 'duplicate_decision',
+      taskId: 'task-runner-default',
+      decisionRequestId: 'decision-continuation-001',
+    });
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it('resumes an exact event replay when the decision committed before a crash', async () => {
+    const context = await setup();
+    const execute = vi.fn<ResearchDriver['execute']>()
+      .mockResolvedValueOnce({
+        kind: 'decision_request',
+        decisionRequestId: 'decision-recovery-001',
+        question: 'Which direction should continue?',
+        options: [
+          { id: 'option-a', label: 'Option A' },
+          { id: 'option-b', label: 'Option B' },
+        ],
+      })
+      .mockResolvedValueOnce(result());
+    const runner = controller(context, fakeDriver(execute), [
+      'run-initial',
+      'run-recovered',
+    ]);
+    const event = {
+      taskId: 'task-runner-default',
+      decisionRequestId: 'decision-recovery-001',
+      responseEventId: 'dingtalk-message-recovery-001',
+      senderUserId: 'trusted-user-001',
+      conversationId: 'trusted-conversation-001',
+      selectedOptionId: 'option-b',
+      responseText: 'Use option B and continue.',
+    };
+    await runner.runAndWait({ mode: 'automatic' });
+
+    const { taskId, ...decision } = event;
+    await expect(recordDecision(context.ctx, taskId, decision))
+      .resolves.toMatchObject({ accepted: true });
+    await expect(runner.continueAfterDecision(event)).resolves.toMatchObject({
+      status: 'submitted',
+      runId: 'run-recovered',
+    });
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it('starts only one continuation when the same reply arrives concurrently', async () => {
+    const context = await setup();
+    let releaseContinuation: (() => void) | undefined;
+    const continuationGate = new Promise<void>((resolve) => {
+      releaseContinuation = resolve;
+    });
+    const execute = vi.fn<ResearchDriver['execute']>()
+      .mockResolvedValueOnce({
+        kind: 'decision_request',
+        decisionRequestId: 'decision-concurrent-001',
+        question: 'Which direction should continue?',
+        options: [
+          { id: 'option-a', label: 'Option A' },
+          { id: 'option-b', label: 'Option B' },
+        ],
+      })
+      .mockImplementationOnce(async () => {
+        await continuationGate;
+        return result();
+      });
+    const runner = controller(context, fakeDriver(execute), [
+      'run-initial',
+      'run-continuation',
+    ]);
+    const event = {
+      taskId: 'task-runner-default',
+      decisionRequestId: 'decision-concurrent-001',
+      responseEventId: 'dingtalk-message-concurrent-001',
+      senderUserId: 'trusted-user-001',
+      conversationId: 'trusted-conversation-001',
+      selectedOptionId: 'option-a',
+      responseText: 'Use option A.',
+    };
+    await runner.runAndWait({ mode: 'automatic' });
+
+    const first = runner.continueAfterDecision(event);
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(2));
+    const second = runner.continueAfterDecision(event);
+    releaseContinuation?.();
+    const outcomes = await Promise.all([first, second]);
+
+    expect(outcomes.filter(({ status }) => status === 'submitted')).toHaveLength(1);
+    expect(execute).toHaveBeenCalledTimes(2);
+    const audit = await context.ctx.audit.listForTask('task-runner-default');
+    expect(audit.filter(({ event: name }) => name === 'decision.continuation_started'))
+      .toHaveLength(1);
+  });
+
+  it('does not execute a failed continuation again when its reply event is replayed', async () => {
+    const context = await setup();
+    const execute = vi.fn<ResearchDriver['execute']>()
+      .mockResolvedValueOnce({
+        kind: 'decision_request',
+        decisionRequestId: 'decision-failed-continuation-001',
+        question: 'Which direction should continue?',
+        options: [{ id: 'option-a', label: 'Option A' }],
+      })
+      .mockRejectedValueOnce(new ClaudeDriverError('claude_timeout'));
+    const runner = controller(context, fakeDriver(execute), [
+      'run-initial',
+      'run-failed-continuation',
+    ]);
+    const event = {
+      taskId: 'task-runner-default',
+      decisionRequestId: 'decision-failed-continuation-001',
+      responseEventId: 'dingtalk-message-failed-continuation-001',
+      senderUserId: 'trusted-user-001',
+      conversationId: 'trusted-conversation-001',
+      selectedOptionId: 'option-a',
+      responseText: 'Use option A.',
+    };
+    await runner.runAndWait({ mode: 'automatic' });
+
+    await expect(runner.continueAfterDecision(event)).resolves.toMatchObject({
+      status: 'blocked',
+      runId: 'run-failed-continuation',
+    });
+    await expect(runner.continueAfterDecision(event)).resolves.toEqual({
+      status: 'duplicate_decision',
+      taskId: 'task-runner-default',
+      decisionRequestId: 'decision-failed-continuation-001',
+    });
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not let the automatic runner steal a recorded decision awaiting continuation', async () => {
+    const context = await setup();
+    const execute = vi.fn<ResearchDriver['execute']>().mockResolvedValue({
+      kind: 'decision_request',
+      decisionRequestId: 'decision-awaiting-continuation-001',
+      question: 'Which direction should continue?',
+      options: [{ id: 'option-a', label: 'Option A' }],
+    } as never);
+    const runner = controller(context, fakeDriver(execute), ['run-initial']);
+    await runner.runAndWait({ mode: 'automatic' });
+    await recordDecision(context.ctx, 'task-runner-default', {
+      decisionRequestId: 'decision-awaiting-continuation-001',
+      responseEventId: 'dingtalk-message-awaiting-continuation-001',
+      senderUserId: 'trusted-user-001',
+      conversationId: 'trusted-conversation-001',
+      selectedOptionId: 'option-a',
+      responseText: 'Use option A.',
+    });
+
+    await expect(controller(
+      context,
+      fakeDriver(vi.fn<ResearchDriver['execute']>()),
+    ).runAndWait({ mode: 'automatic' })).resolves.toEqual({ status: 'no_task' });
+    await expect(context.ctx.tasks.get('task-runner-default')).resolves.toMatchObject({
+      status: 'agent_executable',
+      attempts: 1,
+      lastDecision: { continuationRunId: null },
+    });
+  });
+
+  it('does not rerun a continuation whose expired claim was recovered', async () => {
+    const context = await setup([agentExecutableTask({
+      status: 'in_progress',
+      attempts: 2,
+      claim: {
+        runId: 'run-expired-continuation',
+        agent: 'synthetic-runner',
+        claimedAt: '2026-07-14T22:00:00.000Z',
+        leaseExpiresAt: '2026-07-14T23:00:00.000Z',
+      },
+      lastDecision: {
+        schemaVersion: 1,
+        requestId: 'decision-recovered-continuation-001',
+        selectedOptionId: 'option-a',
+        selectedOptionLabel: 'Option A',
+        responseText: 'Use option A.',
+        responseEventId: 'dingtalk-message-recovered-continuation-001',
+        senderUserId: 'trusted-user-001',
+        conversationId: 'trusted-conversation-001',
+        respondedAt: NOW,
+        continuationRunId: 'run-expired-continuation',
+        continuationOfRunId: 'run-initial',
+        continuationStartedAt: NOW,
+      },
+    })]);
+    const execute = vi.fn<ResearchDriver['execute']>();
+
+    await expect(controller(context, fakeDriver(execute)).runAndWait({
+      mode: 'automatic',
+    })).resolves.toEqual({ status: 'no_task' });
+    expect(execute).not.toHaveBeenCalled();
+    await expect(context.ctx.tasks.get('task-runner-default')).resolves.toMatchObject({
+      status: 'blocked',
+      attempts: 2,
+      claim: null,
+      lastDecision: { continuationRunId: 'run-expired-continuation' },
     });
   });
 

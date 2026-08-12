@@ -182,6 +182,7 @@ describe('atl CLI core loop', () => {
     expect(help.exitCode, help.stderr).toBe(0);
     expect(help.stdout).toContain('run-once');
     expect(help.stdout).toContain('run-task');
+    expect(help.stdout).toContain('continue-decision');
     expect(help.stdout).toContain('status');
 
     for (const args of [

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  driverResultJsonSchema,
+  driverResultSchema,
   researchResultJsonSchema,
   researchResultSchema,
   type ResearchResult,
@@ -109,5 +111,46 @@ describe('researchResultJsonSchema', () => {
         acceptance: { type: 'array', minItems: 1 },
       },
     });
+  });
+});
+
+describe('driverResultSchema', () => {
+  it('accepts a concrete user decision request', () => {
+    expect(driverResultSchema.parse({
+      kind: 'decision_request',
+      decisionRequestId: 'decision-001',
+      question: 'Which documented option should be used?',
+      options: [
+        { id: 'a', label: 'Use option A' },
+        { id: 'b', label: 'Use option B' },
+      ],
+    })).toMatchObject({ kind: 'decision_request' });
+  });
+
+  it('rejects duplicate option IDs', () => {
+    expect(driverResultSchema.safeParse({
+      kind: 'decision_request',
+      decisionRequestId: 'decision-001',
+      question: 'Which documented option should be used?',
+      options: [
+        { id: 'same', label: 'Use option A' },
+        { id: 'same', label: 'Use option B' },
+      ],
+    }).success).toBe(false);
+  });
+});
+
+describe('driverResultJsonSchema', () => {
+  it('exports both research and decision-request branches', () => {
+    const branches = (driverResultJsonSchema as { anyOf: Array<{
+      properties?: Record<string, unknown>;
+    }> }).anyOf;
+    expect(branches).toHaveLength(2);
+    expect(branches.some((branch) => (
+      (branch.properties?.kind as { const?: unknown } | undefined)?.const
+      === 'decision_request'
+    ))).toBe(true);
+    expect(branches.some((branch) => branch.properties?.summary !== undefined))
+      .toBe(true);
   });
 });
