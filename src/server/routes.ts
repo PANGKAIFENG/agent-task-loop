@@ -7,6 +7,7 @@ import type {
 import { PRIORITIES, type Task } from '../domain/task.js';
 import type { RunnerController } from '../runner/runner-controller.js';
 import { RunnerBusyError } from '../runner/runner-controller.js';
+import { authorizeAgentExecution } from '../services/authorize-agent-execution.js';
 import { captureTask, InvalidCaptureTaskInputError } from '../services/capture-task.js';
 import { isClaimEligible } from '../services/claim-task.js';
 import { confirmTask, type ConfirmTaskInput } from '../services/confirm-task.js';
@@ -54,7 +55,7 @@ class TaskNotEligibleForRunError extends Error {
   readonly code = 'task_not_eligible_for_run';
 
   constructor() {
-    super('Task must be Ready to run');
+    super('Task must be Agent Executable to run');
     this.name = 'TaskNotEligibleForRunError';
   }
 }
@@ -91,7 +92,15 @@ const publicServiceErrors: Readonly<Record<string, { code: string; message: stri
   },
   task_confirmation_invalid_state: {
     code: 'task_confirmation_invalid_state',
-    message: 'Task must be in Inbox to confirm',
+    message: 'Task must be in Inbox or unconfirmed Ready to confirm',
+  },
+  task_agent_authorization_invalid_state: {
+    code: 'task_agent_authorization_invalid_state',
+    message: 'Task must be Ready to authorize Agent execution',
+  },
+  task_agent_authorization_not_ready: {
+    code: 'task_agent_authorization_not_ready',
+    message: 'Task execution context is incomplete',
   },
   invalid_review_task_input: {
     code: 'invalid_review_task_input',
@@ -127,7 +136,7 @@ const publicServiceErrors: Readonly<Record<string, { code: string; message: stri
   },
   task_not_eligible_for_run: {
     code: 'task_not_eligible_for_run',
-    message: 'Task must be Ready to run',
+    message: 'Task must be Agent Executable to run',
   },
 };
 
@@ -344,6 +353,14 @@ export async function registerRoutes(
     async (request) => taskDto(
       options.ctx,
       await confirmTask(options.ctx, request.params.id, request.body),
+    ),
+  );
+
+  app.post<{ Params: TaskParams }>(
+    '/api/tasks/:id/authorize-agent',
+    async (request) => taskDto(
+      options.ctx,
+      await authorizeAgentExecution(options.ctx, request.params.id),
     ),
   );
 

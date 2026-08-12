@@ -32,13 +32,13 @@ function project(): Project {
   };
 }
 
-function readyTask(overrides: Partial<Task> = {}): Task {
+function agentExecutableTask(overrides: Partial<Task> = {}): Task {
   return {
     schemaVersion: 1,
     taskId: 'task-runner-default',
     title: 'Synthetic public research task',
     body: '\nPRIVATE_BODY_SENTINEL_MUST_NOT_ENTER_AUDIT\n',
-    status: 'ready',
+    status: 'agent_executable',
     reviewState: 'confirmed',
     projectId: 'project-runner',
     taskType: 'research',
@@ -88,7 +88,7 @@ function fakeDriver(execute: ResearchDriver['execute']): ResearchDriver {
 }
 
 async function setup(
-  tasks: Task[] = [readyTask()],
+  tasks: Task[] = [agentExecutableTask()],
 ): Promise<TestServiceContext> {
   const context = await createTestServiceContext({
     now: new Date(NOW),
@@ -112,7 +112,6 @@ function controller(
     driver,
     runtimeRoot: join(context.root, '.atl-runtime'),
     allowedLocalRoots: [],
-    dailyLimit: 3,
     leaseMinutes: 60,
     timeoutMs: 30 * 60 * 1000,
     agent: 'synthetic-runner',
@@ -135,10 +134,8 @@ describe('bounded run-once orchestration', () => {
     const context = await createTestServiceContext({ now: new Date(NOW) });
     contexts.push(context);
 
-    await expect(getRunnerStatus(context.ctx, { dailyLimit: 3 })).resolves.toEqual({
+    await expect(getRunnerStatus(context.ctx)).resolves.toEqual({
       latestRun: null,
-      automaticClaimsToday: 0,
-      dailyLimit: 3,
       blockedTasks: [],
       nextEligibleTask: null,
     });
@@ -172,14 +169,13 @@ describe('bounded run-once orchestration', () => {
       claim: null,
       artifactRefs: ['Artifacts/task-runner-default/attempt-001.md'],
     });
-    await expect(getRunnerStatus(context.ctx, { dailyLimit: 3 })).resolves
+    await expect(getRunnerStatus(context.ctx)).resolves
       .toMatchObject({
         latestRun: {
           event: 'artifact.submitted',
           taskId: 'task-runner-default',
           runId: 'run-runner-001',
         },
-        automaticClaimsToday: 1,
       });
     await expect(stat(join(context.root, '.atl-runtime', 'runner.lock')))
       .rejects.toMatchObject({ code: 'ENOENT' });
@@ -195,7 +191,7 @@ describe('bounded run-once orchestration', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it('reports the daily limit separately and does not claim a task', async () => {
+  it('keeps claiming eligible tasks regardless of earlier claims that day', async () => {
     const context = await setup();
     for (let index = 0; index < 3; index += 1) {
       await context.ctx.audit.append({
@@ -206,15 +202,18 @@ describe('bounded run-once orchestration', () => {
         details: { mode: 'automatic' },
       });
     }
-    const execute = vi.fn<ResearchDriver['execute']>();
+    const execute = vi.fn<ResearchDriver['execute']>().mockResolvedValue(result());
 
     await expect(controller(context, fakeDriver(execute)).runAndWait({
       mode: 'automatic',
-    })).resolves.toEqual({ status: 'daily_limit' });
-    expect(execute).not.toHaveBeenCalled();
+    })).resolves.toMatchObject({
+      status: 'submitted',
+      taskId: 'task-runner-default',
+    });
+    expect(execute).toHaveBeenCalledOnce();
     await expect(context.ctx.tasks.get('task-runner-default')).resolves.toMatchObject({
-      status: 'ready',
-      attempts: 0,
+      status: 'review',
+      attempts: 1,
       claim: null,
     });
   });
@@ -233,7 +232,7 @@ describe('bounded run-once orchestration', () => {
       errorCode: 'claude_timeout',
     });
     await expect(context.ctx.tasks.get('task-runner-default')).resolves.toMatchObject({
-      status: 'ready',
+      status: 'agent_executable',
       attempts: 1,
       claim: null,
     });
@@ -252,7 +251,7 @@ describe('bounded run-once orchestration', () => {
   });
 
   it('blocks the second typed driver failure', async () => {
-    const context = await setup([readyTask({ attempts: 1 })]);
+    const context = await setup([agentExecutableTask({ attempts: 1 })]);
     const execute = vi.fn<ResearchDriver['execute']>()
       .mockRejectedValue(new ClaudeDriverError('claude_timeout'));
 
@@ -272,7 +271,7 @@ describe('bounded run-once orchestration', () => {
     });
   });
 
-  it('lets a named manual run bypass the automatic daily limit', async () => {
+  it('lets a named manual run proceed regardless of earlier automatic claims', async () => {
     const context = await setup();
     for (let index = 0; index < 3; index += 1) {
       await context.ctx.audit.append({
@@ -311,7 +310,7 @@ describe('bounded run-once orchestration', () => {
   });
 
   it('recovers an expired claim before selecting and running the task', async () => {
-    const context = await setup([readyTask({
+    const context = await setup([agentExecutableTask({
       status: 'in_progress',
       attempts: 1,
       claim: {
@@ -348,8 +347,8 @@ describe('bounded run-once orchestration', () => {
       releaseDriver = resolve;
     });
     const context = await setup([
-      readyTask({ taskId: 'task-running', sourceKey: 'synthetic:running' }),
-      readyTask({ taskId: 'task-waiting', sourceKey: 'synthetic:waiting' }),
+      agentExecutableTask({ taskId: 'task-running', sourceKey: 'synthetic:running' }),
+      agentExecutableTask({ taskId: 'task-waiting', sourceKey: 'synthetic:waiting' }),
     ]);
     const first = controller(
       context,
@@ -372,7 +371,7 @@ describe('bounded run-once orchestration', () => {
       status: 'runner_busy',
     });
     await expect(context.ctx.tasks.get('task-waiting')).resolves.toMatchObject({
-      status: 'ready',
+      status: 'agent_executable',
       attempts: 0,
       claim: null,
     });

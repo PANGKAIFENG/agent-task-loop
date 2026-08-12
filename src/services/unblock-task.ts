@@ -67,6 +67,7 @@ export async function unblockTask(
     const unblocked: Task = {
       ...task,
       status: 'ready',
+      autoExecutable: false,
       reviewFeedback: input.recoveryNote,
       readyAt: timestamp,
       updatedAt: timestamp,

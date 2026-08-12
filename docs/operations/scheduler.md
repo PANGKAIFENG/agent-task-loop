@@ -78,7 +78,6 @@ export ATL_CLAUDE_BIN=/absolute/path/to/claude
 export ATL_CLAUDE_CONFIG_DIR=/absolute/path/to/claude-config
 export ATL_CLAUDE_MODEL=claude-sonnet-4-5
 export ATL_ALLOWED_LOCAL_ROOTS=/absolute/path/to/allowed-sources
-export ATL_DAILY_LIMIT=3
 ```
 
 `ATL_ALLOWED_LOCAL_ROOTS` 使用系统 path delimiter 分隔多个路径；macOS 上是冒号。不要把 token 放进 ATL 环境变量或 plist。

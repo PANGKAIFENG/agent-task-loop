@@ -112,8 +112,6 @@ function formulaDatePattern(formula: string): RegExp {
 function unmanagedViewSettings(view: Record<string, unknown>) {
   return {
     groupBy: view.groupBy,
-    pinnedColumns: view.pinnedColumns,
-    columnOrder: view.columnOrder,
     hideEmptyColumns: view.hideEmptyColumns,
     columnWidth: view.columnWidth,
     cardLayout: view.cardLayout,
@@ -157,9 +155,12 @@ describe('BoardAppearanceController', () => {
           { column: 'source_date', direction: 'DESC' },
           { column: 'formula.atlPriorityRank', direction: 'ASC' },
         ],
+        pinnedColumns: 'inbox,ready,agent_executable,in_progress,done',
+        columnOrder: '{"status":["inbox","ready","agent_executable","in_progress","done"]}',
       });
     }
     expect(parsed.formulas).toMatchObject({
+      atlStatus: expect.stringContaining('agent_executable'),
       atlCollectedAt: expect.stringContaining('created_at'),
       atlPlannedAt: expect.stringContaining('scheduled'),
       userFormula: 'file.name',
@@ -197,7 +198,7 @@ describe('BoardAppearanceController', () => {
     );
   });
 
-  it('preserves every managed view setting outside card fields and sorting', async () => {
+  it('preserves every managed view setting outside cards, sorting and Agent columns', async () => {
     const document = parse(original) as {
       views: Array<Record<string, unknown>>;
     };
@@ -230,6 +231,10 @@ describe('BoardAppearanceController', () => {
       expect(view).toBeDefined();
       if (view === undefined) throw new Error(`missing ${name} after preset`);
       expect(unmanagedViewSettings(view)).toEqual(beforeByName.get(name));
+      expect(view).toMatchObject({
+        pinnedColumns: 'inbox,ready,agent_executable,in_progress,done',
+        columnOrder: '{"status":["inbox","ready","agent_executable","in_progress","done"]}',
+      });
     }
   });
 

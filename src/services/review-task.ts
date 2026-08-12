@@ -110,6 +110,7 @@ export async function reviewTask(
     const reviewed: Task = {
       ...task,
       status,
+      autoExecutable: false,
       reviewFeedback: feedback ?? null,
       readyAt: status === 'ready' ? timestamp : task.readyAt,
       updatedAt: timestamp,

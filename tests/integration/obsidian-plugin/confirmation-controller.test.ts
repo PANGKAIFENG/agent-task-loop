@@ -58,7 +58,6 @@ describe('ConfirmationController', () => {
       objective: '',
       acceptanceCriteria: [],
       priority: 'normal',
-      autoExecutable: false,
     });
 
     expect(confirmed).toMatchObject({
@@ -92,7 +91,6 @@ describe('ConfirmationController', () => {
       objective: '梳理产品定位与核心能力',
       acceptanceCriteria: ['引用至少一个官方来源'],
       priority: 'high',
-      autoExecutable: true,
     });
 
     expect(prepared.task.taskId).toBe(task.taskId);
@@ -129,7 +127,6 @@ describe('ConfirmationController', () => {
       objective: '输出今日产品变化',
       acceptanceCriteria: ['每条变化包含官方链接'],
       priority: 'urgent',
-      autoExecutable: false,
     });
 
     expect(confirmed).toMatchObject({
@@ -138,11 +135,42 @@ describe('ConfirmationController', () => {
       autoExecutable: false,
     });
     await expect(controller.prepare(task.taskId)).rejects.toThrow(
-      'Task must be in Inbox to confirm',
+      'Task must be in Inbox or unconfirmed Ready to confirm',
     );
     expect(await readFile(join(
       context.root,
       '10_Tasks/Projects/ai-产品雷达.md',
     ), 'utf8')).toContain('name: AI 产品雷达');
+  });
+
+  it('loads and completes a Ready task that was moved manually before confirmation', async () => {
+    const context = await makeContext();
+    const task = await captureCandidate(context, 'synthetic:obsidian-ready-candidate');
+    const ready = await context.ctx.tasks.save({
+      ...task,
+      status: 'ready',
+      readyAt: '2026-07-16T11:00:00.000Z',
+    });
+    await createProject(context.ctx, {
+      projectId: 'ready-research',
+      name: '待办调研',
+      description: '补全已拖动的待办',
+      resources: [],
+    });
+    const controller = controllerFor(context);
+
+    await expect(controller.prepare(ready.taskId)).resolves.toMatchObject({
+      task: { status: 'ready', reviewState: 'candidate' },
+    });
+    await expect(controller.confirm(ready.taskId, {
+      project: { mode: 'existing', projectId: 'ready-research' },
+      objective: '补齐真实执行上下文',
+      acceptanceCriteria: ['上下文完整且仍停留在待办'],
+      priority: 'high',
+    })).resolves.toMatchObject({
+      status: 'ready',
+      reviewState: 'confirmed',
+      readyAt: '2026-07-16T11:00:00.000Z',
+    });
   });
 });

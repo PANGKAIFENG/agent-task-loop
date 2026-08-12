@@ -32,6 +32,7 @@ import {
   type CaptureTaskInput,
 } from './services/capture-task.js';
 import { createAcceptanceNotifier } from './services/acceptance-notifier-factory.js';
+import { authorizeAgentExecution } from './services/authorize-agent-execution.js';
 import { claimTask } from './services/claim-task.js';
 import { confirmTask } from './services/confirm-task.js';
 import { createProject } from './services/create-project.js';
@@ -241,7 +242,6 @@ async function runnerController(driverName: string) {
     driver,
     runtimeRoot: join(process.cwd(), '.atl-runtime'),
     allowedLocalRoots: allowedLocalRoots(),
-    dailyLimit: config.dailyLimit,
     leaseMinutes: config.leaseMinutes,
     timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
     agent: driver.name,
@@ -479,7 +479,6 @@ function buildProgram(): Command {
       [],
     )
     .option('--priority <priority>', 'Task priority', 'normal')
-    .option('--auto-executable')
     .option('--json')
     .action(async (options: {
       taskId?: string;
@@ -487,7 +486,6 @@ function buildProgram(): Command {
       objective?: string;
       acceptanceCriterion: string[];
       priority: 'urgent' | 'high' | 'normal' | 'low';
-      autoExecutable?: boolean;
       json?: boolean;
     }) => {
       const { ctx } = contextForWrite();
@@ -498,7 +496,6 @@ function buildProgram(): Command {
         acceptanceCriteria: options.acceptanceCriterion,
         permissionProfile: 'read_only_research',
         priority: options.priority,
-        autoExecutable: options.autoExecutable === true,
       });
       output(result, options);
     });
@@ -531,9 +528,20 @@ function buildProgram(): Command {
         agent: options.agent,
         runId: required(options.runId, '--run-id'),
         leaseMinutes: config.leaseMinutes,
-        dailyLimit: config.dailyLimit,
       });
       output(result, options);
+    });
+
+  task
+    .command('authorize-agent')
+    .option('--task-id <id>')
+    .option('--json')
+    .action(async (options: { taskId?: string; json?: boolean }) => {
+      const { ctx } = contextForWrite();
+      output(await authorizeAgentExecution(
+        ctx,
+        required(options.taskId, '--task-id'),
+      ), options);
     });
 
   task
@@ -669,10 +677,8 @@ function buildProgram(): Command {
     .command('status')
     .option('--json')
     .action(async (options: { json?: boolean }) => {
-      const { config, ctx } = contextForRead();
-      output(await getRunnerStatus(ctx, {
-        dailyLimit: config.dailyLimit,
-      }), options);
+      const { ctx } = contextForRead();
+      output(await getRunnerStatus(ctx), options);
     });
 
   const qianwen = program.command('qianwen');

@@ -2295,6 +2295,7 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
 
 .atl-home-task-status.is-in_progress { background: rgba(0, 185, 120, .1); color: #007b52; }
 .atl-home-task-status.is-ready { background: rgba(22, 135, 167, .1); color: #086a86; }
+.atl-home-task-status.is-agent_executable { background: rgba(108, 92, 231, .1); color: #5847b8; }
 .atl-home-task-status.is-review { background: rgba(255, 134, 13, .12); color: #b45c00; }
 .atl-home-task-status.is-blocked { background: rgba(229, 72, 77, .1); color: #bc2b32; }
 

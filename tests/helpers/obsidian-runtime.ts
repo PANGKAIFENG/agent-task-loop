@@ -39,6 +39,10 @@ export function setIcon(element: HTMLElement, icon: string): void {
   element.dataset.icon = icon;
 }
 
+export function setTooltip(element: HTMLElement, tooltip: string): void {
+  element.setAttribute('aria-label', tooltip);
+}
+
 export class ButtonComponent {
   readonly buttonEl = document.createElement('button');
 

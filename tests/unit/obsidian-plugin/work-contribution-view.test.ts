@@ -102,7 +102,14 @@ function state(overrides: Partial<ContributionDashboardState> = {}): Contributio
       status: 'ready',
       errorCode: null,
       snapshot: {
-        counts: { inbox: 1, ready: 1, inProgress: 1, review: 1, blocked: 0 },
+        counts: {
+          inbox: 1,
+          ready: 1,
+          agentExecutable: 1,
+          inProgress: 1,
+          review: 1,
+          blocked: 0,
+        },
         focusTasks: [{
           taskId: 'task-focus',
           title: '完成真实个人首页',

@@ -9,6 +9,13 @@ describe('loadConfig', () => {
     }).dingtalkProfile).toBeNull();
   });
 
+  it('ignores the removed legacy daily-limit environment variable', () => {
+    expect(loadConfig({
+      ATL_VAULT_ROOT: '/tmp/synthetic-atl-vault',
+      ATL_DAILY_LIMIT: 'not-a-limit-anymore',
+    })).not.toHaveProperty('dailyLimit');
+  });
+
   it('accepts one explicit DingTalk profile', () => {
     expect(loadConfig({
       ATL_VAULT_ROOT: '/tmp/synthetic-atl-vault',

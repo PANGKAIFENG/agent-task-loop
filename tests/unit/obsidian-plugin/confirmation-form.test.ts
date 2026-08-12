@@ -13,7 +13,6 @@ function existingProjectForm(
     objective: ' Compare official product information. ',
     acceptanceCriteria: [' Cite an official source. ', '  '],
     priority: 'high',
-    autoExecutable: true,
     ...overrides,
   };
 }
@@ -25,7 +24,6 @@ describe('validateConfirmationForm', () => {
       objective: ' ',
       acceptanceCriteria: [' ', '\t'],
       priority: 'normal',
-      autoExecutable: false,
     })).toEqual({
       success: true,
       value: {
@@ -33,7 +31,6 @@ describe('validateConfirmationForm', () => {
         objective: null,
         acceptanceCriteria: [],
         priority: 'normal',
-        autoExecutable: false,
       },
     });
   });
@@ -46,7 +43,6 @@ describe('validateConfirmationForm', () => {
         objective: 'Compare official product information.',
         acceptanceCriteria: ['Cite an official source.'],
         priority: 'high',
-        autoExecutable: true,
       },
     });
   });

@@ -53,6 +53,12 @@ describe('queryPersonalHome', () => {
         task({ taskId: 'inbox', title: 'Inbox', status: 'inbox' }),
         task({ taskId: 'ready', title: 'Ready', status: 'ready', priority: 'urgent' }),
         task({
+          taskId: 'agent-executable',
+          title: 'Agent Executable',
+          status: 'agent_executable',
+          priority: 'normal',
+        }),
+        task({
           taskId: 'active',
           title: 'Active',
           status: 'in_progress',
@@ -69,11 +75,16 @@ describe('queryPersonalHome', () => {
     expect(snapshot.counts).toEqual({
       inbox: 1,
       ready: 1,
+      agentExecutable: 1,
       inProgress: 1,
       review: 1,
       blocked: 1,
     });
-    expect(snapshot.focusTasks.map(({ taskId }) => taskId)).toEqual(['active', 'ready']);
+    expect(snapshot.focusTasks.map(({ taskId }) => taskId)).toEqual([
+      'active',
+      'agent-executable',
+      'ready',
+    ]);
     expect(snapshot.nextAction?.taskId).toBe('active');
     expect(snapshot.focusTasks[0]).toEqual({
       taskId: 'active',

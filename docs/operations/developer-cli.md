@@ -54,8 +54,9 @@ pnpm atl task confirm \
   --project-id public-research \
   --objective "Compare public pricing using official evidence." \
   --acceptance-criterion "Cite an official HTTPS page." \
-  --priority high \
-  --auto-executable
+  --priority high
+
+pnpm atl task authorize-agent --task-id "$TASK_ID"
 ```
 
 `pnpm --silent atl task next --json` 只读取队列，不会领取任务。连接 Claude Code、执行任务和安装调度器前，请继续阅读[本地研究任务调度](scheduler.md)。

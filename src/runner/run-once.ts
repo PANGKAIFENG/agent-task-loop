@@ -8,7 +8,6 @@ import { researchResultSchema } from './result-contract.js';
 import { claimNextTask } from '../services/claim-next-task.js';
 import {
   claimTask,
-  localBusinessDate,
   type ClaimMode,
 } from '../services/claim-task.js';
 import { recordRunFailure } from '../services/record-run-failure.js';
@@ -22,7 +21,6 @@ export interface RunOnceDependencies {
   driver: ResearchDriver;
   runtimeRoot: string;
   allowedLocalRoots: readonly string[];
-  dailyLimit: number;
   leaseMinutes: number;
   timeoutMs: number;
   agent: string;
@@ -92,19 +90,10 @@ export async function executeRun(
 
   let task;
   if (input.mode === 'automatic') {
-    const claimedToday = await dependencies.ctx.audit.count({
-      event: 'task.claimed',
-      localDate: localBusinessDate(dependencies.ctx.clock()),
-      mode: 'automatic',
-    });
-    if (claimedToday >= dependencies.dailyLimit) {
-      return { status: 'daily_limit' };
-    }
     task = await claimNextTask(dependencies.ctx, {
       agent: dependencies.agent,
       runId,
       mode: 'automatic',
-      dailyLimit: dependencies.dailyLimit,
       leaseMinutes: dependencies.leaseMinutes,
     });
     if (task === null) {
@@ -115,7 +104,6 @@ export async function executeRun(
       agent: dependencies.agent,
       runId,
       mode: 'manual',
-      dailyLimit: dependencies.dailyLimit,
       leaseMinutes: dependencies.leaseMinutes,
     });
   }

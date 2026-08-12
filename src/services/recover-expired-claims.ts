@@ -47,22 +47,22 @@ export async function recoverExpiredClaims(
       if (!isExpiredClaim(current, now) || current.claim === null) {
         return null;
       }
-      assertTransition('in_progress', 'ready');
-      const ready: Task = {
+      assertTransition('in_progress', 'agent_executable');
+      const executable: Task = {
         ...current,
-        status: 'ready',
+        status: 'agent_executable',
         claim: null,
         updatedAt: timestamp,
       };
       let saved: Task;
       let staleIndexError: TaskSavedIndexStaleError | null = null;
       try {
-        saved = await ctx.tasks.save(ready);
+        saved = await ctx.tasks.save(executable);
       } catch (error) {
         if (!(error instanceof TaskSavedIndexStaleError)) {
           throw error;
         }
-        saved = ready;
+        saved = executable;
         staleIndexError = error;
       }
       try {

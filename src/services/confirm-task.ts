@@ -2,7 +2,6 @@ import { z } from 'zod';
 
 import {
   PRIORITIES,
-  readinessErrors,
   type Priority,
   type Task,
 } from '../domain/task.js';
@@ -18,7 +17,6 @@ export interface ConfirmTaskInput {
   acceptanceCriteria?: string[];
   permissionProfile?: 'read_only_research';
   priority: Priority;
-  autoExecutable?: boolean;
 }
 
 export class InvalidConfirmTaskInputError extends Error {
@@ -43,7 +41,7 @@ export class ConfirmTaskInvalidStateError extends Error {
   readonly code = 'task_confirmation_invalid_state';
 
   constructor() {
-    super('Task must be in Inbox to confirm');
+    super('Task must be in Inbox or unconfirmed Ready to confirm');
     this.name = 'ConfirmTaskInvalidStateError';
   }
 }
@@ -76,7 +74,6 @@ const confirmTaskInputSchema = z
     acceptanceCriteria: z.array(z.string().max(2_000)).max(50).optional(),
     permissionProfile: z.literal('read_only_research').optional(),
     priority: z.enum(PRIORITIES),
-    autoExecutable: z.boolean().optional(),
   })
   .strict();
 
@@ -92,10 +89,14 @@ export async function confirmTask(
 
   return ctx.tasks.withTaskLock(taskId, async () => {
     const task = await ctx.tasks.get(taskId);
-    if (task.status !== 'inbox') {
+    const confirmsReadyCandidate = task.status === 'ready'
+      && task.reviewState !== 'confirmed';
+    if (task.status !== 'inbox' && !confirmsReadyCandidate) {
       throw new ConfirmTaskInvalidStateError();
     }
-    assertTransition('inbox', 'ready');
+    if (task.status === 'inbox') {
+      assertTransition('inbox', 'ready');
+    }
 
     const candidate: Task = {
       ...task,
@@ -105,7 +106,8 @@ export async function confirmTask(
       acceptanceCriteria: parsed.data.acceptanceCriteria ?? [],
       permissionProfile: parsed.data.permissionProfile ?? null,
       priority: parsed.data.priority,
-      autoExecutable: parsed.data.autoExecutable ?? false,
+      // Agent authorization is a separate, explicit transition after confirmation.
+      autoExecutable: false,
     };
     if (candidate.projectId !== null && candidate.projectId.trim() !== '') {
       try {
@@ -117,20 +119,13 @@ export async function confirmTask(
         throw error;
       }
     }
-    if (candidate.autoExecutable) {
-      const errors = readinessErrors(candidate);
-      if (errors.length > 0) {
-        throw new Error(`Task is not ready: ${errors.join('; ')}`);
-      }
-    }
-
     const timestamp = ctx.clock().toISOString();
     const confirmedTask: Task = {
       ...candidate,
       status: 'ready',
       reviewState: 'confirmed',
       reviewFeedback: null,
-      readyAt: timestamp,
+      readyAt: task.readyAt ?? timestamp,
       updatedAt: timestamp,
     };
     let saved: Task;
@@ -157,7 +152,10 @@ export async function confirmTask(
     } catch {
       try {
         await ctx.tasks.save(task);
-      } catch {
+      } catch (error) {
+        if (error instanceof TaskSavedIndexStaleError) {
+          throw new TaskConfirmationAuditFailedError();
+        }
         throw new TaskConfirmationRecoveryError();
       }
       throw new TaskConfirmationAuditFailedError();

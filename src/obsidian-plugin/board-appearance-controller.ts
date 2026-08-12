@@ -21,8 +21,13 @@ const MANAGED_KANBAN_NAMES = new Set([
   '待归类',
 ]);
 const BASE_DATE_PATTERN = String.raw`^(?:(?:\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|02-(?:0[1-9]|1\d|2[0-8])))|(?:(?:\d{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)-02-29))(?:[ T](?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,3})?)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?)?$`;
+const STATUS_FORMULA = 'if(status == "inbox", "收件箱", if(status == "ready", "待办", if(status == "agent_executable", "Agent 待执行", if(status == "in_progress", "进行中", if(status == "review", "待验收", if(status == "done", "已完成", if(status == "blocked", "已阻塞", if(status == "cancelled", "已取消", "其他状态"))))))))';
 const COLLECTED_AT_FORMULA = `if(created_at.isType("date"), created_at, if(created_at.isType("string") && /${BASE_DATE_PATTERN}/.matches(created_at), date(created_at), file.ctime))`;
 const PLANNED_AT_FORMULA = `if(scheduled.isType("date"), scheduled, if(scheduled.isType("string") && /${BASE_DATE_PATTERN}/.matches(scheduled), date(scheduled), null))`;
+const PINNED_COLUMNS = 'inbox,ready,agent_executable,in_progress,done';
+const COLUMN_ORDER = JSON.stringify({
+  status: ['inbox', 'ready', 'agent_executable', 'in_progress', 'done'],
+});
 const MANUAL_CARD_FIELDS = [
   'project_id',
   'source_date',
@@ -180,7 +185,8 @@ function propertyDisplayNameApplied(
 function boardMetadataApplied(document: BaseDocument): boolean {
   const formulas = optionalRecordSection(document, 'formulas');
   const properties = optionalRecordSection(document, 'properties');
-  return formulas?.atlCollectedAt === COLLECTED_AT_FORMULA
+  return formulas?.atlStatus === STATUS_FORMULA
+    && formulas.atlCollectedAt === COLLECTED_AT_FORMULA
     && formulas.atlPlannedAt === PLANNED_AT_FORMULA
     && propertyDisplayNameApplied(properties, 'source_date', '来源日期')
     && propertyDisplayNameApplied(
@@ -197,16 +203,21 @@ function boardMetadataApplied(document: BaseDocument): boolean {
 
 function viewPresetApplied(view: BaseView): boolean {
   return stringArrayEquals(view.order, MANUAL_CARD_FIELDS)
-    && sortEquals(view.sort);
+    && sortEquals(view.sort)
+    && view.pinnedColumns === PINNED_COLUMNS
+    && view.columnOrder === COLUMN_ORDER;
 }
 
 function applyViewPreset(view: BaseView): void {
   view.order = [...MANUAL_CARD_FIELDS];
   view.sort = MANUAL_CARD_SORT.map((item) => ({ ...item }));
+  view.pinnedColumns = PINNED_COLUMNS;
+  view.columnOrder = COLUMN_ORDER;
 }
 
 function applyBoardMetadata(document: BaseDocument): void {
   const formulas = recordSection(document, 'formulas');
+  formulas.atlStatus = STATUS_FORMULA;
   formulas.atlCollectedAt = COLLECTED_AT_FORMULA;
   formulas.atlPlannedAt = PLANNED_AT_FORMULA;
 

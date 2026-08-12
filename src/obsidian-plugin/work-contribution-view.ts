@@ -70,7 +70,8 @@ const PULSE_HEATMAP_LABELS: Record<Exclude<PulseMode, 'consumption'>, string> = 
 
 const STATUS_LABELS: Record<string, string> = {
   inbox: '收件箱',
-  ready: '待执行',
+  ready: '待办',
+  agent_executable: 'Agent 待执行',
   in_progress: '执行中',
   review: '待验收',
   blocked: '已阻塞',
@@ -826,7 +827,7 @@ export class WorkContributionView extends ItemView {
     )).length;
     const activeCount = counts === undefined
       ? null
-      : counts.ready + counts.inProgress + counts.review;
+      : counts.ready + counts.agentExecutable + counts.inProgress + counts.review;
     const health = [
       state.contribution.status === 'ready',
       state.home.status === 'ready',
@@ -855,7 +856,7 @@ export class WorkContributionView extends ItemView {
         tone: 'is-green',
         detail: counts === undefined
           ? '正在读取任务状态'
-          : `${formatNumber(counts.ready)} 待执行 · ${formatNumber(counts.inProgress)} 执行中 · ${formatNumber(counts.review)} 待验收`,
+          : `${formatNumber(counts.ready)} 待办 · ${formatNumber(counts.agentExecutable)} Agent 待执行 · ${formatNumber(counts.review)} 待验收`,
         action: '查看推进任务',
         tab: 'today' as const,
       },
@@ -908,7 +909,8 @@ export class WorkContributionView extends ItemView {
     const counts = state.home.snapshot?.counts;
     const values: Array<[string, number | null]> = [
       ['收件箱', counts?.inbox ?? null],
-      ['待执行', counts?.ready ?? null],
+      ['待办', counts?.ready ?? null],
+      ['Agent 待执行', counts?.agentExecutable ?? null],
       ['执行中', counts?.inProgress ?? null],
       ['待验收', counts?.review ?? null],
       ['已阻塞', counts?.blocked ?? null],

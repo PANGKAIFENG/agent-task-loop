@@ -61,7 +61,7 @@ export async function recordRunFailure(
     const outcome: RunFailureOutcome = task.attempts >= 2
       ? 'blocked'
       : 'requeued';
-    const status = outcome === 'blocked' ? 'blocked' : 'ready';
+    const status = outcome === 'blocked' ? 'blocked' : 'agent_executable';
     assertTransition('in_progress', status);
     const timestamp = ctx.clock().toISOString();
     const updated: Task = {

@@ -1,5 +1,4 @@
 import type { Task } from '../domain/task.js';
-import { localBusinessDate } from '../services/claim-task.js';
 import { peekNextTask } from '../services/query-tasks.js';
 import type { ServiceContext } from '../services/service-context.js';
 import type { AuditEvent } from '../storage/contracts.js';
@@ -16,7 +15,7 @@ import {
 
 export type RunOutcome =
   | { status: 'submitted'; taskId: string; runId: string; artifactRef: string }
-  | { status: 'no_task' | 'daily_limit' | 'runner_busy' }
+  | { status: 'no_task' | 'runner_busy' }
   | {
     status: 'requeued' | 'blocked';
     taskId: string;
@@ -39,8 +38,6 @@ export type CreateRunnerControllerOptions = RunOnceDependencies;
 
 export interface RunnerStatus {
   latestRun: AuditEvent | null;
-  automaticClaimsToday: number;
-  dailyLimit: number;
   blockedTasks: Task[];
   nextEligibleTask: Task | null;
 }
@@ -122,9 +119,8 @@ export function createRunnerController(
 
 export async function getRunnerStatus(
   ctx: ServiceContext,
-  options: { dailyLimit: number },
 ): Promise<RunnerStatus> {
-  const [latestRun, automaticClaimsToday, tasks, nextEligibleTask] = await Promise.all([
+  const [latestRun, tasks, nextEligibleTask] = await Promise.all([
     ctx.audit.latest({
       events: [
         'task.claimed',
@@ -133,18 +129,11 @@ export async function getRunnerStatus(
         'artifact.submitted',
       ],
     }),
-    ctx.audit.count({
-      event: 'task.claimed',
-      localDate: localBusinessDate(ctx.clock()),
-      mode: 'automatic',
-    }),
     ctx.tasks.list(),
     peekNextTask(ctx),
   ]);
   return {
     latestRun,
-    automaticClaimsToday,
-    dailyLimit: options.dailyLimit,
     blockedTasks: tasks.filter((task) => task.status === 'blocked'),
     nextEligibleTask,
   };

@@ -177,7 +177,6 @@ describe('normalizeSettings', () => {
         model: 'claude-sonnet-4-5',
         baseUrl: '',
         dingtalkProfile: '',
-        dailyLimit: 3,
       },
       dashboard: {
         tokenCacheVersion: 1,
@@ -247,7 +246,6 @@ describe('normalizeSettings', () => {
         model: 'claude-sonnet-4-5',
         baseUrl: '',
         dingtalkProfile: '',
-        dailyLimit: 3,
       },
       dashboard: {
         tokenCacheVersion: 1,

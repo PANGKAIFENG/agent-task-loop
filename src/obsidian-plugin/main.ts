@@ -30,6 +30,7 @@ import {
 } from '../domain/week-period.js';
 import { createClaudeStructuredExecutor } from '../runner/claude-driver.js';
 import { createAcceptanceNotifier } from '../services/acceptance-notifier-factory.js';
+import { authorizeAgentExecution } from '../services/authorize-agent-execution.js';
 import { captureTask } from '../services/capture-task.js';
 import { createMaterialGap } from '../services/create-material-gap.js';
 import { createProgressVersion } from '../services/create-progress-version.js';
@@ -89,6 +90,10 @@ import {
   type BackgroundInspection,
 } from './background-runtime-controller.js';
 import {
+  AgentAuthorizationPluginLifecycle,
+  isAgentAuthorizationEligibleMetadata,
+} from './agent-authorization-plugin-lifecycle.js';
+import {
   BoardAppearanceController,
   type BoardPresetStatus,
 } from './board-appearance-controller.js';
@@ -101,6 +106,10 @@ import {
 } from './completion-date-backfill-modal.js';
 import { formatCodexHandoff } from './codex-handoff.js';
 import { ConfirmationController } from './confirmation-controller.js';
+import {
+  ConfirmationPluginLifecycle,
+  confirmationActionFromMetadata,
+} from './confirmation-plugin-lifecycle.js';
 import { createReadOnlyDingTalkCalDavClient } from './dingtalk-caldav-client.js';
 import { DingTalkCalendarController } from './dingtalk-calendar-controller.js';
 import {
@@ -427,6 +436,59 @@ export default class AgentTaskLoopPlugin extends Plugin {
       },
     }).start();
 
+    new AgentAuthorizationPluginLifecycle({
+      addCommand: (command) => {
+        this.addCommand(command);
+      },
+      registerFileMenu: (handler) => {
+        this.registerEvent(this.app.workspace.on(
+          'file-menu',
+          (menu: Menu, file: TAbstractFile) => {
+            if (file instanceof TFile) handler(menu, file.path);
+          },
+        ));
+      },
+      getActiveFilePath: () => this.app.workspace.getActiveFile()?.path ?? null,
+      isEligible: (path) => {
+        if (!isAtlTaskPath(path)) return false;
+        const file = this.app.vault.getAbstractFileByPath(path);
+        return file instanceof TFile && isAgentAuthorizationEligibleMetadata(
+          this.app.metadataCache.getFileCache(file)?.frontmatter,
+        );
+      },
+      authorize: (path) => {
+        void this.authorizeTaskForAgent(path);
+      },
+    }).start();
+
+    new ConfirmationPluginLifecycle({
+      addCommand: (command) => {
+        this.addCommand(command);
+      },
+      registerFileMenu: (handler) => {
+        this.registerEvent(this.app.workspace.on(
+          'file-menu',
+          (menu: Menu, file: TAbstractFile) => {
+            if (file instanceof TFile) handler(menu, file.path);
+          },
+        ));
+      },
+      getActiveFilePath: () => this.app.workspace.getActiveFile()?.path ?? null,
+      actionFor: (path) => {
+        if (!isAtlTaskPath(path)) return null;
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (!(file instanceof TFile)) return null;
+        return confirmationActionFromMetadata(
+          isAtlInboxTaskPath(path),
+          this.app.metadataCache.getFileCache(file)?.frontmatter,
+        );
+      },
+      open: (path) => {
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (file instanceof TFile) void this.openConfirmation(file);
+      },
+    }).start();
+
     const appWithPluginRegistry = this.app as typeof this.app & {
       plugins?: { getPlugin(id: string): unknown };
     };
@@ -473,12 +535,6 @@ export default class AgentTaskLoopPlugin extends Plugin {
       'file-menu',
       (menu: Menu, file: TAbstractFile) => {
         if (!(file instanceof TFile) || !isAtlTaskPath(file.path)) return;
-        if (isAtlInboxTaskPath(file.path)) {
-          menu.addItem((item) => item
-            .setTitle('移到待办')
-            .setIcon('circle-check-big')
-            .onClick(() => this.openConfirmation(file)));
-        }
         menu.addItem((item) => item
           .setTitle('复制给 Codex')
           .setIcon('copy')
@@ -521,19 +577,6 @@ export default class AgentTaskLoopPlugin extends Plugin {
       if (!this.settings.allowVaultManagement || !isAtlTaskPath(file.path)) return;
       this.taskLifecycleReconciliation?.schedule(file.path);
     }));
-
-    this.addCommand({
-      id: 'confirm-current-inbox-task',
-      name: '将当前任务移到待办',
-      checkCallback: (checking) => {
-        const file = this.app.workspace.getActiveFile();
-        const eligible = file !== null && isAtlInboxTaskPath(file.path);
-        if (eligible && !checking && file !== null) {
-          void this.openConfirmation(file);
-        }
-        return eligible;
-      },
-    });
 
     this.initializeDingTalkCalendar();
 
@@ -1844,7 +1887,48 @@ export default class AgentTaskLoopPlugin extends Plugin {
         async (input) => enrichTask(await this.createStructuredExecutor(), input),
       ).open();
     } catch {
-      new Notice('无法读取这项 Inbox 任务，请刷新看板后重试');
+      new Notice('无法读取这项任务，请刷新看板后重试');
+    }
+  }
+
+  private async authorizeTaskForAgent(path: string): Promise<void> {
+    const authorized = this.authorizedServiceContext();
+    if (authorized === null) return;
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile) || !isAtlTaskPath(path)) {
+      new Notice('请选择有效的 ATL 任务');
+      return;
+    }
+
+    let taskId = taskIdFromPath(path);
+    if (taskId === null) {
+      try {
+        taskId = taskIdFromMetadata(path, await this.app.vault.cachedRead(file));
+      } catch {
+        taskId = null;
+      }
+    }
+    if (taskId === null) {
+      new Notice('无法识别这项 ATL 任务');
+      return;
+    }
+
+    try {
+      await authorizeAgentExecution(authorized.context, taskId);
+      new Notice('已授权 Agent 执行，系统将在下一轮领取');
+    } catch (error) {
+      const code = error instanceof Error && 'code' in error
+        ? (error as Error & { code?: string }).code
+        : undefined;
+      if (code === 'task_agent_authorization_not_ready') {
+        new Notice('任务信息不完整，请先补齐项目、目标和验收标准');
+        return;
+      }
+      if (code === 'task_agent_authorization_invalid_state') {
+        new Notice('任务已经不在待执行状态，请刷新看板');
+        return;
+      }
+      new Notice('Agent 执行授权失败，请刷新任务后重试');
     }
   }
 

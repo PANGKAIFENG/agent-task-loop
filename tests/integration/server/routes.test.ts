@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Task } from '../../../src/domain/task.js';
 import { RunnerBusyError, type RunnerController } from '../../../src/runner/runner-controller.js';
+import { authorizeAgentExecution } from '../../../src/services/authorize-agent-execution.js';
 import { captureTask } from '../../../src/services/capture-task.js';
 import { confirmTask } from '../../../src/services/confirm-task.js';
 import { createProject } from '../../../src/services/create-project.js';
@@ -90,8 +91,12 @@ async function createReadyTask(context: TestServiceContext) {
     acceptanceCriteria: ['Use official public evidence.'],
     permissionProfile: 'read_only_research',
     priority: 'high',
-    autoExecutable: true,
   });
+}
+
+async function createAgentExecutableTask(context: TestServiceContext) {
+  const ready = await createReadyTask(context);
+  return authorizeAgentExecution(context.ctx, ready.taskId);
 }
 
 afterEach(async () => {
@@ -483,7 +488,6 @@ describe('local task board routes', () => {
         acceptanceCriteria: ['Use the shared service.'],
         permissionProfile: 'read_only_research',
         priority: 'normal',
-        autoExecutable: true,
       },
     });
 
@@ -513,6 +517,18 @@ describe('local task board routes', () => {
     const start = vi.fn().mockResolvedValue({ runId: 'run-board-001' });
     const first = await setup({ runner: runner({ start }) });
     const ready = await createReadyTask(first.context);
+    const rejected = await first.app.inject({
+      method: 'POST',
+      url: `/api/tasks/${ready.taskId}/run`,
+      headers: writeHeaders(),
+      payload: {},
+    });
+    const authorized = await first.app.inject({
+      method: 'POST',
+      url: `/api/tasks/${ready.taskId}/authorize-agent`,
+      headers: writeHeaders(),
+      payload: {},
+    });
     const accepted = await first.app.inject({
       method: 'POST',
       url: `/api/tasks/${ready.taskId}/run`,
@@ -528,7 +544,7 @@ describe('local task board routes', () => {
     const busy = await setup({
       runner: runner({ start: vi.fn().mockRejectedValue(new RunnerBusyError()) }),
     });
-    const busyReady = await createReadyTask(busy.context);
+    const busyReady = await createAgentExecutableTask(busy.context);
     const conflicted = await busy.app.inject({
       method: 'POST',
       url: `/api/tasks/${busyReady.taskId}/run`,
@@ -536,6 +552,17 @@ describe('local task board routes', () => {
       payload: {},
     });
 
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json()).toEqual({
+      code: 'task_not_eligible_for_run',
+      message: 'Task must be Agent Executable to run',
+      details: null,
+    });
+    expect(authorized.statusCode).toBe(200);
+    expect(authorized.json()).toEqual(expect.objectContaining({
+      status: 'agent_executable',
+      autoExecutable: true,
+    }));
     expect(accepted.statusCode).toBe(202);
     expect(accepted.json()).toEqual({ taskId: ready.taskId, runId: 'run-board-001' });
     expect(start).toHaveBeenCalledWith({ taskId: ready.taskId, mode: 'manual' });

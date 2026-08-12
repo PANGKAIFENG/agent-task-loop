@@ -104,7 +104,6 @@ export async function main(environment: NodeJS.ProcessEnv = process.env): Promis
     driver,
     runtimeRoot: join(process.cwd(), '.atl-runtime'),
     allowedLocalRoots: allowedLocalRoots(environment),
-    dailyLimit: config.dailyLimit,
     leaseMinutes: config.leaseMinutes,
     timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
     agent: driver.name,

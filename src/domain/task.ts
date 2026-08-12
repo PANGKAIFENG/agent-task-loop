@@ -3,6 +3,7 @@ import { z } from 'zod';
 export const TASK_STATUSES = [
   'inbox',
   'ready',
+  'agent_executable',
   'in_progress',
   'review',
   'done',

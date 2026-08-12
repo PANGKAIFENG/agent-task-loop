@@ -21,6 +21,7 @@ export interface PersonalHomeSnapshot {
   counts: {
     inbox: number;
     ready: number;
+    agentExecutable: number;
     inProgress: number;
     review: number;
     blocked: number;
@@ -49,8 +50,13 @@ function compareTasks(left: Task, right: Task): number {
 }
 
 function compareFocusTasks(left: Task, right: Task): number {
-  const leftRank = left.status === 'in_progress' ? 0 : 1;
-  const rightRank = right.status === 'in_progress' ? 0 : 1;
+  const ranks: Record<string, number> = {
+    in_progress: 0,
+    agent_executable: 1,
+    ready: 2,
+  };
+  const leftRank = ranks[left.status] ?? 3;
+  const rightRank = ranks[right.status] ?? 3;
   return leftRank - rightRank || compareTasks(left, right);
 }
 
@@ -74,12 +80,17 @@ export function queryPersonalHome(input: QueryPersonalHomeInput): PersonalHomeSn
   const counts = {
     inbox: input.tasks.filter((task) => task.status === 'inbox').length,
     ready: input.tasks.filter((task) => task.status === 'ready').length,
+    agentExecutable: input.tasks.filter((task) => task.status === 'agent_executable').length,
     inProgress: input.tasks.filter((task) => task.status === 'in_progress').length,
     review: input.tasks.filter((task) => task.status === 'review').length,
     blocked: input.tasks.filter((task) => task.status === 'blocked').length,
   };
   const focus = input.tasks
-    .filter((task) => task.status === 'in_progress' || task.status === 'ready')
+    .filter((task) => (
+      task.status === 'in_progress'
+      || task.status === 'agent_executable'
+      || task.status === 'ready'
+    ))
     .sort(compareFocusTasks);
   const inbox = input.tasks
     .filter((task) => task.status === 'inbox')

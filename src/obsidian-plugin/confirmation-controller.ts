@@ -36,7 +36,9 @@ export class ConfirmationController {
       this.ctx.tasks.get(taskId),
       this.ctx.projects.list(),
     ]);
-    if (task.status !== 'inbox') {
+    const confirmsReadyCandidate = task.status === 'ready'
+      && task.reviewState !== 'confirmed';
+    if (task.status !== 'inbox' && !confirmsReadyCandidate) {
       throw new ConfirmTaskInvalidStateError();
     }
     return {
@@ -71,16 +73,15 @@ export class ConfirmationController {
 
     return confirmTask(this.ctx, taskId, {
       ...(projectId === undefined ? {} : { projectId }),
-      ...(hasExecutionDetails || value.autoExecutable
+      ...(hasExecutionDetails
         ? { taskType: 'research' as const }
         : {}),
       ...(value.objective === null ? {} : { objective: value.objective }),
       acceptanceCriteria: value.acceptanceCriteria,
-      ...(value.autoExecutable
+      ...(hasExecutionDetails
         ? { permissionProfile: 'read_only_research' as const }
         : {}),
       priority: value.priority,
-      autoExecutable: value.autoExecutable,
     });
   }
 }

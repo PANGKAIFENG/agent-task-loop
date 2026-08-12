@@ -91,7 +91,6 @@ function renderOptions(paths: Awaited<ReturnType<typeof fixture>>) {
       ATL_CLAUDE_MODEL: 'glm-4-flash',
       ATL_DINGTALK_PROFILE: 'synthetic-current-profile',
       ATL_ALLOWED_LOCAL_ROOTS: paths.allowedRoot,
-      ATL_DAILY_LIMIT: '2',
     },
     homeDirectory: paths.home,
     nodeExecutable: process.execPath,
@@ -216,7 +215,6 @@ describe('renderLaunchAgent', () => {
       ATL_CLAUDE_MODEL: 'glm-4-flash',
       ATL_DINGTALK_PROFILE: 'synthetic-current-profile',
       ATL_ALLOWED_LOCAL_ROOTS: canonical.allowedRoot,
-      ATL_DAILY_LIMIT: '2',
       HOME: canonical.home,
       PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
     });

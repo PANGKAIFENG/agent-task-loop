@@ -6,8 +6,9 @@ import {
 
 const transitions: Record<ControlledTaskStatus, readonly ControlledTaskStatus[]> = {
   inbox: ['ready', 'cancelled'],
-  ready: ['in_progress', 'blocked', 'cancelled'],
-  in_progress: ['review', 'ready', 'blocked', 'cancelled'],
+  ready: ['agent_executable', 'in_progress', 'blocked', 'cancelled'],
+  agent_executable: ['in_progress', 'blocked', 'cancelled'],
+  in_progress: ['review', 'ready', 'agent_executable', 'blocked', 'cancelled'],
   review: ['done', 'ready', 'blocked', 'cancelled'],
   done: ['ready'],
   blocked: ['ready', 'cancelled'],

@@ -29,7 +29,6 @@ export interface BackgroundSettings {
   model: string;
   baseUrl: string;
   dingtalkProfile: string;
-  dailyLimit: number;
 }
 
 export type BackgroundState =
@@ -273,7 +272,6 @@ export class BackgroundRuntimeController {
           ? {}
           : { ATL_DINGTALK_PROFILE: settings.dingtalkProfile }),
         ATL_ALLOWED_LOCAL_ROOTS: [meetingNotesRoot, ...allowedLocalRoots].join(delimiter),
-        ATL_DAILY_LIMIT: String(settings.dailyLimit),
       },
     });
   }

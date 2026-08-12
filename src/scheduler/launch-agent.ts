@@ -95,7 +95,6 @@ export interface RenderedLaunchAgent {
     ANTHROPIC_BASE_URL?: string;
     ATL_DINGTALK_PROFILE?: string;
     ATL_ALLOWED_LOCAL_ROOTS: string;
-    ATL_DAILY_LIMIT: string;
     HOME: string;
     PATH: string;
   }>;
@@ -288,14 +287,6 @@ async function allowedLocalRoots(value: string | undefined): Promise<string> {
   )))).join(delimiter);
 }
 
-function positiveInteger(value: string | undefined): string {
-  const candidate = value ?? '3';
-  if (!/^[1-9]\d*$/.test(candidate)) {
-    throw new LaunchAgentError('ATL_DAILY_LIMIT must be a positive integer');
-  }
-  return candidate;
-}
-
 function modelName(value: string | undefined): string | undefined {
   if (value === undefined || value === '') return undefined;
   if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(value)) {
@@ -468,7 +459,6 @@ export async function renderLaunchAgent(
       ATL_ALLOWED_LOCAL_ROOTS: await allowedLocalRoots(
         environment.ATL_ALLOWED_LOCAL_ROOTS,
       ),
-      ATL_DAILY_LIMIT: positiveInteger(environment.ATL_DAILY_LIMIT),
       HOME: homeDirectory,
       PATH: MINIMAL_PATH,
     },

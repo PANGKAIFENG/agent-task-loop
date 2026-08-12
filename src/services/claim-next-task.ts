@@ -1,11 +1,10 @@
 import { priorityRank, type Task } from '../domain/task.js';
 import {
   ClaimTaskNotEligibleError,
-  AUTOMATIC_CLAIM_LOCK_KEY,
+  AGENT_CLAIM_LOCK_KEY,
   automaticClaimSlotAvailable,
   claimTaskWithoutQuotaCheck,
   isClaimEligible,
-  localBusinessDate,
   resolveClaimTaskOptions,
 } from './claim-task.js';
 import type { ServiceContext } from './service-context.js';
@@ -23,7 +22,6 @@ export interface ClaimNextTaskOptions {
   agent: string;
   runId: string;
   mode: 'automatic';
-  dailyLimit: number;
   leaseMinutes: number;
 }
 
@@ -62,13 +60,8 @@ export async function claimNextTask(
     return null;
   };
 
-  const localDate = localBusinessDate(now);
-  return ctx.tasks.withTaskLock(AUTOMATIC_CLAIM_LOCK_KEY, async () => {
-    if (!(await automaticClaimSlotAvailable(
-      ctx,
-      localDate,
-      options.dailyLimit,
-    ))) {
+  return ctx.tasks.withTaskLock(AGENT_CLAIM_LOCK_KEY, async () => {
+    if (!(await automaticClaimSlotAvailable(ctx))) {
       return null;
     }
     return claimFirstEligible();
