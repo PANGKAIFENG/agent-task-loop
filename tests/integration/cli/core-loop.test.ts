@@ -217,6 +217,20 @@ describe('atl CLI core loop', () => {
     expect(await readdir(root)).toEqual(before);
   });
 
+  it('lists pending Eval samples without changing the Vault', async () => {
+    const root = await makeVault();
+    const help = await runCli(root, ['eval', '--help']);
+    expect(help.exitCode, help.stderr).toBe(0);
+    expect(help.stdout).toContain('list');
+
+    const before = await readdir(root);
+    expect(json(await runCli(root, ['eval', 'list', '--json']))).toEqual({
+      capabilitySamples: [],
+      regressionCandidates: [],
+    });
+    expect(await readdir(root)).toEqual(before);
+  });
+
   it('uses a separate authorization command instead of a confirm flag', async () => {
     const root = await makeVault();
     const confirmHelp = await runCli(root, ['task', 'confirm', '--help']);

@@ -37,6 +37,7 @@ import { claimTask } from './services/claim-task.js';
 import { confirmTask } from './services/confirm-task.js';
 import { createProject } from './services/create-project.js';
 import { generateWeeklyReport } from './services/generate-weekly-report.js';
+import { queryEvalSamples } from './services/query-eval-samples.js';
 import { listTasks, peekNextTask } from './services/query-tasks.js';
 import { reopenTask } from './services/reopen-task.js';
 import { reviewTask, type ReviewTaskInput } from './services/review-task.js';
@@ -787,6 +788,16 @@ function buildProgram(): Command {
     .action(async (options: { json?: boolean }) => {
       const { ctx } = contextForRead();
       output(await getRunnerStatus(ctx), options);
+    });
+
+  const evalCommand = program.command('eval');
+  evalCommand
+    .command('list')
+    .description('List pending capability Eval samples and regression candidates')
+    .option('--json')
+    .action(async (options: { json?: boolean }) => {
+      const { ctx } = contextForRead();
+      output(await queryEvalSamples(ctx), options);
     });
 
   const qianwen = program.command('qianwen');

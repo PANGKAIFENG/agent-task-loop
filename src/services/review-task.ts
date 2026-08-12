@@ -1,5 +1,8 @@
+import { createHash } from 'node:crypto';
+
 import type { Task } from '../domain/task.js';
 import { assertTransition } from '../domain/transitions.js';
+import type { AuditEvent } from '../storage/contracts.js';
 import { TaskSavedIndexStaleError } from '../storage/markdown-task-repository.js';
 import type { ServiceContext } from './service-context.js';
 
@@ -67,6 +70,85 @@ export class ReviewTaskRecoveryError extends Error {
   }
 }
 
+interface EvalSampleAudit {
+  runId: string;
+  details: Record<string, string | number | boolean | null>;
+}
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function evalSampleAudit(
+  task: Task,
+  input: ReviewTaskInput,
+  artifactRef: string,
+  artifactSha256: string,
+  submission: AuditEvent,
+  events: AuditEvent[],
+): EvalSampleAudit | null {
+  const packId = submission.details?.packId;
+  if (packId === undefined) return null;
+  const runId = submission.runId;
+  const frozen = events.findLast((event) => (
+    event.event === 'context_pack.frozen'
+    && event.runId === runId
+    && event.details?.packId === packId
+  ));
+  const packSha256 = frozen?.details?.packSha256;
+  const executionProfileId = frozen?.details?.executionProfileId;
+  const executionProfileVersion = frozen?.details?.executionProfileVersion;
+  const executionProfileSha256 = frozen?.details?.executionProfileSha256;
+  if (
+    typeof packId !== 'string'
+    || !/^pack-[0-9a-f]{24}$/u.test(packId)
+    || typeof runId !== 'string'
+    || runId.trim() === ''
+    || typeof packSha256 !== 'string'
+    || !/^[0-9a-f]{64}$/u.test(packSha256)
+    || executionProfileId !== 'research_v1'
+    || executionProfileVersion !== 1
+    || typeof executionProfileSha256 !== 'string'
+    || !/^[0-9a-f]{64}$/u.test(executionProfileSha256)
+  ) {
+    throw new ReviewTaskArtifactInvalidError();
+  }
+  const feedbackSha256 = 'feedback' in input
+    ? sha256(input.feedback.trim())
+    : null;
+  const sampleId = `eval-${sha256(JSON.stringify({
+    taskId: task.taskId,
+    runId,
+    packId,
+    artifactRef,
+    artifactSha256,
+    humanOutcome: input.decision,
+    feedbackSha256,
+  })).slice(0, 24)}`;
+  return {
+    runId,
+    details: {
+      evalSampleId: sampleId,
+      evalSampleType: 'capability',
+      evalSampleStatus: 'pending_review',
+      regressionCandidateStatus: input.decision === 'approve'
+        ? 'not_proposed'
+        : 'pending_review',
+      packId,
+      packSha256,
+      executionProfileId,
+      executionProfileVersion,
+      executionProfileSha256,
+      artifactRef,
+      artifactSha256,
+      runOutcome: 'artifact_submitted',
+      humanOutcome: input.decision,
+      feedbackSha256,
+      harnessMutationAllowed: false,
+    },
+  };
+}
+
 export async function reviewTask(
   ctx: ServiceContext,
   taskId: string,
@@ -117,9 +199,11 @@ export async function reviewTask(
     ) {
       throw new ReviewTaskArtifactInvalidError();
     }
+    let evalSample: EvalSampleAudit | null;
     try {
       const artifact = await ctx.artifacts.readSummary(artifactRef);
-      const submission = (await ctx.audit.listForTask(taskId))
+      const events = await ctx.audit.listForTask(taskId);
+      const submission = events
         .findLast((event) => (
           event.event === 'artifact.submitted'
           && event.details?.artifactRef === artifactRef
@@ -127,6 +211,14 @@ export async function reviewTask(
       if (submission?.details?.artifactSha256 !== artifact.sha256) {
         throw new ReviewTaskArtifactInvalidError();
       }
+      evalSample = evalSampleAudit(
+        task,
+        input,
+        artifactRef,
+        artifact.sha256,
+        submission,
+        events,
+      );
     } catch {
       throw new ReviewTaskArtifactInvalidError();
     }
@@ -162,14 +254,12 @@ export async function reviewTask(
       staleIndexError = error;
     }
     try {
-      await ctx.audit.append({
-        event: 'task.reviewed',
-        at: timestamp,
-        taskId,
-        details: source === undefined
-          ? { decision: input.decision }
+      const details = {
+        decision: input.decision,
+        ...(evalSample?.details ?? {}),
+        ...(source === undefined
+          ? {}
           : {
-              decision: input.decision,
               source: source.kind,
               artifactVersion: source.artifactVersion,
               responseEventId: source.responseEventId,
@@ -180,7 +270,14 @@ export async function reviewTask(
                 toStatus: status,
                 executionAuthorized: true,
               } : {}),
-            },
+            }),
+      };
+      await ctx.audit.append({
+        event: 'task.reviewed',
+        at: timestamp,
+        taskId,
+        ...(evalSample === null ? {} : { runId: evalSample.runId }),
+        details,
       });
     } catch {
       try {

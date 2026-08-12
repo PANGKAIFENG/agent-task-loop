@@ -15,7 +15,9 @@ import {
 } from '../../../src/runner/runner-controller.js';
 import type { ResearchResult } from '../../../src/runner/result-contract.js';
 import { recordDecision } from '../../../src/services/record-decision.js';
+import { queryEvalSamples } from '../../../src/services/query-eval-samples.js';
 import { reviewArtifactFromExternalReply } from '../../../src/services/review-artifact-from-external-reply.js';
+import { reviewTask } from '../../../src/services/review-task.js';
 import {
   createTestServiceContext,
   type TestServiceContext,
@@ -254,6 +256,51 @@ describe('bounded run-once orchestration', () => {
       ]));
   });
 
+  it('records a pending capability Eval sample when a frozen run is approved', async () => {
+    const context = await setup();
+    const execute = vi.fn<ResearchDriver['execute']>().mockResolvedValue(result());
+
+    await controller(context, fakeDriver(execute)).runAndWait({ mode: 'automatic' });
+    await reviewTask(context.ctx, 'task-runner-default', { decision: 'approve' });
+
+    const events = await context.ctx.audit.listForTask('task-runner-default');
+    const frozen = events.find(({ event }) => event === 'context_pack.frozen');
+    const submitted = events.find(({ event }) => event === 'artifact.submitted');
+    expect(events).toContainEqual(expect.objectContaining({
+      event: 'task.reviewed',
+      taskId: 'task-runner-default',
+      runId: 'run-runner-001',
+      details: expect.objectContaining({
+        decision: 'approve',
+        evalSampleId: expect.stringMatching(/^eval-[0-9a-f]{24}$/),
+        evalSampleType: 'capability',
+        evalSampleStatus: 'pending_review',
+        regressionCandidateStatus: 'not_proposed',
+        packId: frozen?.details?.packId,
+        executionProfileId: 'research_v1',
+        executionProfileVersion: 1,
+        executionProfileSha256: frozen?.details?.executionProfileSha256,
+        artifactRef: submitted?.details?.artifactRef,
+        artifactSha256: submitted?.details?.artifactSha256,
+        runOutcome: 'artifact_submitted',
+        humanOutcome: 'approve',
+        feedbackSha256: null,
+        harnessMutationAllowed: false,
+      }),
+    }));
+    await expect(queryEvalSamples(context.ctx)).resolves.toMatchObject({
+      capabilitySamples: [expect.objectContaining({
+        sampleId: expect.stringMatching(/^eval-[0-9a-f]{24}$/),
+        taskId: 'task-runner-default',
+        runId: 'run-runner-001',
+        profile: expect.objectContaining({ id: 'research_v1', version: 1 }),
+        humanOutcome: 'approve',
+        status: 'pending_review',
+      })],
+      regressionCandidates: [],
+    });
+  });
+
   it('reworks a DingTalk-reviewed Artifact into a new version and sends it for acceptance again', async () => {
     const context = await setup();
     const notifications: AcceptanceObject[] = [];
@@ -287,6 +334,29 @@ describe('bounded run-once orchestration', () => {
       conversationId: 'trusted-conversation-001',
       decision: 'request_changes',
       feedback: '补充真实用户证据。',
+    });
+    const firstReview = (await context.ctx.audit.listForTask('task-runner-default'))
+      .find(({ event }) => event === 'task.reviewed');
+    expect(firstReview).toMatchObject({
+      runId: 'run-artifact-v1',
+      details: {
+        humanOutcome: 'request_changes',
+        regressionCandidateStatus: 'pending_review',
+        feedbackSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+        harnessMutationAllowed: false,
+      },
+    });
+    expect(JSON.stringify(firstReview)).not.toContain('补充真实用户证据');
+    await expect(queryEvalSamples(context.ctx)).resolves.toMatchObject({
+      capabilitySamples: [expect.objectContaining({
+        runId: 'run-artifact-v1',
+        humanOutcome: 'request_changes',
+      })],
+      regressionCandidates: [expect.objectContaining({
+        runId: 'run-artifact-v1',
+        candidateStatus: 'pending_review',
+        promoted: false,
+      })],
     });
     await expect(runner.runAndWait({
       mode: 'manual',

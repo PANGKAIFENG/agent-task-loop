@@ -161,6 +161,8 @@ Runner 在实质执行前会冻结本次 Runtime Pack，记录任务与运行 ID
 
 每次运行还会确定并冻结一个版本化 Execution Profile，用来解释本次为什么选择这个执行角色、实际加载哪些 Skill 指令、开放哪些 Tool、要求哪些上下文，以及如何验收。当前只支持确定性 `research_v1`：`decision-research@1` 与 `evidence-collection@1`、`WebSearch/WebFetch/Read`、只读公开调研和人工验收。不匹配的任务会明确失败，不会让模型自由选择其他 Agent、Skill 或 Tool。完整产品契约见 [Execution Profile 产品契约](docs/Execution-Profile-Product-Contract.md)。
 
+人工验收还会把本次 Runtime Pack、Execution Profile、Artifact 和结论关联成一条待审查 Eval 样本。要求修改、阻塞或取消会额外成为回归候选，但不会自动进入回归集，更不会自动修改 Agent、Skill、Tool 或路由。可以用 `pnpm --silent atl eval list --json` 只读查看这些样本；完整规则见 [Eval 反馈闭环产品契约](docs/Eval-Feedback-Loop-Product-Contract.md)。
+
 当前 Runtime Pack 只冻结任务已明确关联的来源：任务来源笔记、项目描述、项目资源和上一版 Artifact 摘要。它尚不负责自动发现更多代码仓库、会议、长期记忆或 Skill；这些候选源的动态选择和解释属于后续 Context Control Plane。
 
 ## 安装
@@ -255,6 +257,7 @@ pnpm build
 ```
 
 - 产品需求：[Agent Task Loop V0.1 PRD](docs/PRD-Agent-Task-Loop-V0.1.md)
+- Eval 反馈闭环：[Eval 反馈闭环产品契约](docs/Eval-Feedback-Loop-Product-Contract.md)
 - 用户操作：[Obsidian 用户操作指南](docs/operations/obsidian-plugin.md)
 - CLI 与本地开发：[开发者快速开始](docs/operations/developer-cli.md)
 - 调度器维护：[本地研究任务调度](docs/operations/scheduler.md)
