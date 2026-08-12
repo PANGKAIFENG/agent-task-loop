@@ -45,6 +45,12 @@ export interface NotifyAcceptanceContext {
   clock: () => Date;
 }
 
+const RETRYABLE_ERROR_CODES = new Set([
+  'acceptance_delivery_failed',
+  'dingtalk_delivery_failed',
+  'dingtalk_self_resolution_failed',
+]);
+
 function idempotencyKey(object: AcceptanceObject): string {
   return `${object.objectType}:${object.objectId}:${object.version}`;
 }
@@ -183,7 +189,9 @@ function messageFor(object: AcceptanceObject): { title: string; text: string } {
 function sameObject(left: AcceptanceObject, right: AcceptanceObject): boolean {
   return left.objectType === right.objectType
     && left.objectId === right.objectId
-    && left.version === right.version;
+    && left.version === right.version
+    && left.state === 'pending'
+    && right.state === 'pending';
 }
 
 export async function notifyAcceptance(
@@ -249,4 +257,34 @@ export async function notifyAcceptance(
       return failed;
     }
   });
+}
+
+export async function retryFailedAcceptanceNotifications(
+  context: NotifyAcceptanceContext,
+): Promise<AcceptanceNotificationRecord[]> {
+  const [records, visible] = await Promise.all([
+    context.ledger.list(),
+    context.listAcceptanceObjects(),
+  ]);
+  const current = new Map(visible.map((object) => [
+    idempotencyKey(object),
+    object,
+  ]));
+  const retryable = records
+    .filter((record) => (
+      record.status === 'failed'
+      && record.errorCode !== null
+      && RETRYABLE_ERROR_CODES.has(record.errorCode)
+      && current.get(record.idempotencyKey)?.state === 'pending'
+    ))
+    .sort((left, right) => left.idempotencyKey.localeCompare(right.idempotencyKey));
+
+  const results: AcceptanceNotificationRecord[] = [];
+  for (const record of retryable) {
+    const object = current.get(record.idempotencyKey);
+    if (object !== undefined) {
+      results.push(await notifyAcceptance(context, object));
+    }
+  }
+  return results;
 }

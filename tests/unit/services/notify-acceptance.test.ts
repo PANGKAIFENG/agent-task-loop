@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AcceptanceObject } from '../../../src/domain/acceptance-object.js';
 import {
   notifyAcceptance,
+  retryFailedAcceptanceNotifications,
   type AcceptanceDelivery,
   type AcceptanceNotificationLedger,
   type AcceptanceNotificationRecord,
@@ -145,6 +146,25 @@ describe('notify acceptance', () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it('blocks delivery when the exact object is no longer pending at send time', async () => {
+    const acceptance = object();
+    const send = vi.fn<AcceptanceDelivery['send']>();
+
+    const result = await notifyAcceptance({
+      ledger: memoryLedger(),
+      delivery: { send },
+      target: { kind: 'self' },
+      listAcceptanceObjects: async () => [{ ...acceptance, state: 'later' }],
+      clock: () => new Date(NOW),
+    }, acceptance);
+
+    expect(result).toMatchObject({
+      status: 'conflict',
+      errorCode: 'acceptance_location_conflict',
+    });
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it.each([
     { kind: 'group' as const, groupId: 'group-a' },
     { kind: 'user' as const, userId: 'other-user' },
@@ -222,5 +242,97 @@ describe('notify acceptance', () => {
     });
     expect(uuids).toHaveLength(2);
     expect(uuids[0]).toBe(uuids[1]);
+  });
+
+  it('retries only retryable failed notifications whose exact version is still pending', async () => {
+    const current = object();
+    const ledger = memoryLedger();
+    const failed = await notifyAcceptance({
+      ledger,
+      delivery: {
+        send: async () => {
+          throw Object.assign(new Error('synthetic delivery failure'), {
+            code: 'dingtalk_delivery_failed',
+          });
+        },
+      },
+      target: { kind: 'self' },
+      listAcceptanceObjects: async () => [current],
+      clock: () => new Date(NOW),
+    }, current);
+    await ledger.save({
+      ...failed,
+      idempotencyKey: 'artifact:task-artifact-old:1',
+      objectId: 'task-artifact-old',
+      version: 1,
+      uuid: 'cc9169e9-5326-54f8-a190-419f55ae8004',
+    });
+    await ledger.save({
+      ...failed,
+      idempotencyKey: 'artifact:task-artifact-unsafe:1',
+      objectId: 'task-artifact-unsafe',
+      version: 1,
+      uuid: 'a49b6575-911f-5ce6-8f35-61d5d9750081',
+      errorCode: 'acceptance_payload_rejected',
+    });
+    await ledger.save({
+      ...failed,
+      idempotencyKey: 'weekly:weekly-later:1',
+      objectType: 'weekly',
+      objectId: 'weekly-later',
+      version: 1,
+      uuid: '4fd0df82-fcbb-5bf5-b3eb-5daaffef3915',
+    });
+    await ledger.save({
+      ...failed,
+      idempotencyKey: 'weekly:weekly-sent:1',
+      objectType: 'weekly',
+      objectId: 'weekly-sent',
+      version: 1,
+      uuid: 'b2a33a37-5c52-5d44-923a-c95b28fb1f69',
+      status: 'sent',
+      errorCode: null,
+      taskId: 'task-dingtalk-sent',
+    });
+    const send = vi.fn<AcceptanceDelivery['send']>(async () => ({
+      taskId: 'task-dingtalk-retried',
+      messageId: null,
+    }));
+
+    const retried = await retryFailedAcceptanceNotifications({
+      ledger,
+      delivery: { send },
+      target: { kind: 'self' },
+      listAcceptanceObjects: async () => [
+        current,
+        object({
+          objectType: 'weekly',
+          objectId: 'weekly-later',
+          version: 1,
+          title: '2026-W33 工作进展周报',
+          state: 'later',
+          artifact: undefined,
+        }),
+      ],
+      clock: () => new Date('2026-08-11T14:15:00.000Z'),
+    });
+
+    expect(retried).toEqual([expect.objectContaining({
+      idempotencyKey: 'artifact:task-artifact-a:2',
+      status: 'sent',
+      attemptedAt: '2026-08-11T14:15:00.000Z',
+      taskId: 'task-dingtalk-retried',
+    })]);
+    expect(send).toHaveBeenCalledOnce();
+    expect(send.mock.calls[0]?.[0].uuid).toBe(failed.uuid);
+    await expect(ledger.get('artifact:task-artifact-old:1')).resolves.toMatchObject({
+      status: 'failed',
+    });
+    await expect(ledger.get('artifact:task-artifact-unsafe:1')).resolves.toMatchObject({
+      errorCode: 'acceptance_payload_rejected',
+    });
+    await expect(ledger.get('weekly:weekly-later:1')).resolves.toMatchObject({
+      status: 'failed',
+    });
   });
 });

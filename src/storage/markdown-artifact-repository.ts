@@ -100,6 +100,16 @@ function fileSha256(content: string): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
+function acceptanceChecks(
+  acceptance: Parameters<ArtifactRepository['write']>[0]['result']['acceptance'],
+): { met: number; partial: number; notMet: number } {
+  return acceptance.reduce((counts, criterion) => {
+    if (criterion.status === 'not_met') counts.notMet += 1;
+    else counts[criterion.status] += 1;
+    return counts;
+  }, { met: 0, partial: 0, notMet: 0 });
+}
+
 function renderArtifact(
   input: Parameters<ArtifactRepository['write']>[0],
   inputDigest: string,
@@ -116,6 +126,7 @@ function renderArtifact(
     ...(input.packId === undefined ? {} : { pack_id: input.packId }),
     summary: input.result.summary,
     evidence_count: input.result.evidence.length,
+    acceptance_checks: acceptanceChecks(input.result.acceptance),
     input_digest: inputDigest,
   });
   const evidence = input.result.evidence.length === 0
@@ -265,6 +276,22 @@ export class MarkdownArtifactRepository implements ArtifactRepository {
       throw new ArtifactNotFoundError();
     }
     const data = parseTaskDocument(raw).data;
+    const checks = data.acceptance_checks as Record<string, unknown> | null | undefined;
+    const parsedChecks = (
+      checks !== null
+      && typeof checks === 'object'
+      && !Array.isArray(checks)
+      && Number.isSafeInteger(checks.met)
+      && Number.isSafeInteger(checks.partial)
+      && Number.isSafeInteger(checks.notMet)
+      && Number(checks.met) >= 0
+      && Number(checks.partial) >= 0
+      && Number(checks.notMet) >= 0
+    ) ? {
+        met: Number(checks.met),
+        partial: Number(checks.partial),
+        notMet: Number(checks.notMet),
+      } : undefined;
     if (
       data.type !== 'artifact'
       || data.schema_version !== 1
@@ -280,6 +307,7 @@ export class MarkdownArtifactRepository implements ArtifactRepository {
     return {
       summary: data.summary,
       evidenceCount: data.evidence_count,
+      ...(parsedChecks === undefined ? {} : { checks: parsedChecks }),
       sha256: fileSha256(raw),
     };
   }

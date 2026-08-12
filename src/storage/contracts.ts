@@ -36,6 +36,11 @@ export interface ArtifactRepository {
   readSummary(ref: string): Promise<{
     summary: string;
     evidenceCount: number;
+    checks?: {
+      met: number;
+      partial: number;
+      notMet: number;
+    };
     sha256: string;
   }>;
 }

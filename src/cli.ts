@@ -242,7 +242,7 @@ async function runnerController(driverName: string) {
   }
   const { config, ctx } = contextForWrite();
   const driver = await createClaudeResearchDriver();
-  return createRunnerController({
+  const controller = createRunnerController({
     ctx,
     driver,
     runtimeRoot: join(process.cwd(), '.atl-runtime'),
@@ -252,6 +252,19 @@ async function runnerController(driverName: string) {
     agent: driver.name,
     runId: () => `run-${createTaskId()}`,
   });
+  return {
+    controller,
+    retryAcceptanceNotifications: async () => {
+      if (ctx.notifyAcceptance?.retryFailed === undefined) {
+        return { attempted: 0, sent: 0 };
+      }
+      const records = await ctx.notifyAcceptance.retryFailed();
+      return {
+        attempted: records.length,
+        sent: records.filter((record) => record.status === 'sent').length,
+      };
+    },
+  };
 }
 
 async function synchronizeQianwen(mode: 'scheduled' | 'manual') {
@@ -724,8 +737,9 @@ function buildProgram(): Command {
     .requiredOption('--driver <driver>')
     .option('--json')
     .action(async (options: { driver: string; json?: boolean }) => {
-      const controller = await runnerController(options.driver);
+      const { controller, retryAcceptanceNotifications } = await runnerController(options.driver);
       output(await runHourlyCycle({
+        retryAcceptanceNotifications,
         syncQianwen: () => synchronizeQianwen('scheduled'),
         runTask: () => controller.runAndWait({ mode: 'automatic' }),
       }), options);
@@ -741,7 +755,7 @@ function buildProgram(): Command {
       driver: string;
       json?: boolean;
     }) => {
-      const controller = await runnerController(options.driver);
+      const { controller } = await runnerController(options.driver);
       output(await controller.runAndWait({
         mode: 'manual',
         taskId: required(options.taskId, '--task-id'),
@@ -770,7 +784,7 @@ function buildProgram(): Command {
       driver: string;
       json?: boolean;
     }) => {
-      const controller = await runnerController(options.driver);
+      const { controller } = await runnerController(options.driver);
       output(await controller.continueAfterDecision({
         taskId: required(options.taskId, '--task-id'),
         decisionRequestId: required(options.decisionRequestId, '--decision-request-id'),

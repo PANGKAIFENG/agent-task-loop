@@ -188,6 +188,7 @@ describe('artifact review loop', () => {
     await expect(context.ctx.artifacts.readSummary(ref)).resolves.toMatchObject({
       summary: 'Public pricing evidence was reviewed.',
       evidenceCount: 1,
+      checks: { met: 1, partial: 0, notMet: 0 },
       sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
     expect(await context.ctx.audit.listForTask(task.taskId)).toContainEqual({

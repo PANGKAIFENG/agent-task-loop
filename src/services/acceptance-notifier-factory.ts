@@ -9,13 +9,22 @@ import {
   type AcceptanceObject,
   type AcceptanceWeeklyProjection,
 } from '../domain/acceptance-object.js';
+import { parseArtifactReference } from '../storage/artifact-reference.js';
 import { FileAcceptanceNotificationLedger } from '../storage/file-acceptance-notification-ledger.js';
+import { MarkdownArtifactRepository } from '../storage/markdown-artifact-repository.js';
 import { MarkdownTaskRepository } from '../storage/markdown-task-repository.js';
 import { MarkdownWeeklyReportRepository } from '../storage/markdown-weekly-report-repository.js';
 import { FileWeeklyReviewDecisionRepository } from '../storage/weekly-review-decision-repository.js';
-import { notifyAcceptance } from './notify-acceptance.js';
+import {
+  notifyAcceptance,
+  retryFailedAcceptanceNotifications,
+  type AcceptanceNotificationRecord,
+} from './notify-acceptance.js';
 
-export type AcceptanceNotifier = (object: AcceptanceObject) => Promise<unknown>;
+export interface AcceptanceNotifier {
+  (object: AcceptanceObject): Promise<unknown>;
+  retryFailed(): Promise<AcceptanceNotificationRecord[]>;
+}
 
 interface AcceptanceNotifierOptions {
   vaultRoot: string;
@@ -39,6 +48,7 @@ export function createAcceptanceNotifier(
   if (options.profile === null) return undefined;
 
   const tasks = new MarkdownTaskRepository(options.vaultRoot);
+  const artifacts = new MarkdownArtifactRepository(options.vaultRoot);
   const weeklyReports = new MarkdownWeeklyReportRepository(options.vaultRoot);
   const weeklyDecisions = new FileWeeklyReviewDecisionRepository(options.vaultRoot);
   const ledger = new FileAcceptanceNotificationLedger(join(
@@ -76,11 +86,49 @@ export function createAcceptanceNotifier(
     return projectAcceptanceObjects(currentTasks, weekly);
   };
 
-  return (object) => notifyAcceptance({
+  const context = {
     ledger,
     delivery,
     target: { kind: 'self' },
     listAcceptanceObjects,
     clock: options.clock ?? (() => new Date()),
-  }, object);
+  } as const;
+  const notify = (object: AcceptanceObject) => notifyAcceptance(context, object);
+  const listHydratedAcceptanceObjects = async (): Promise<AcceptanceObject[]> => {
+    const visible = await listAcceptanceObjects();
+    const hydrated = await Promise.all(visible.map(async (object) => {
+      if (object.objectType !== 'artifact') return object;
+      const task = await tasks.get(object.objectId);
+      const ref = task.artifactRefs.find((candidate) => (
+        parseArtifactReference(candidate, task.taskId)?.attempt === object.version
+      ));
+      if (ref === undefined) return null;
+      let summary: Awaited<ReturnType<typeof artifacts.readSummary>>;
+      try {
+        summary = await artifacts.readSummary(ref);
+      } catch {
+        return null;
+      }
+      if (summary.checks === undefined) return null;
+      return {
+        ...object,
+        artifact: {
+          reference: `${task.taskId}@v${object.version}`,
+          summary: summary.summary,
+          evidenceCount: summary.evidenceCount,
+          checks: summary.checks,
+        },
+      };
+    }));
+    return hydrated.filter(
+      (object): object is AcceptanceObject => object !== null,
+    );
+  };
+  notify.retryFailed = async (): Promise<AcceptanceNotificationRecord[]> => {
+    return retryFailedAcceptanceNotifications({
+      ...context,
+      listAcceptanceObjects: listHydratedAcceptanceObjects,
+    });
+  };
+  return notify;
 }
