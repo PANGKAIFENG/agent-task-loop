@@ -177,6 +177,44 @@ describe('persistRuntimePack', () => {
     })).rejects.toMatchObject({ code: 'invalid_runtime_pack_input' });
   });
 
+  it('does not label a later rework run as the earlier decision continuation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'atl-runtime-pack-'));
+    roots.push(root);
+    const reworkTask: Task = {
+      ...task(),
+      claim: {
+        ...task().claim!,
+        runId: 'run-artifact-rework',
+      },
+      lastDecision: {
+        schemaVersion: 1,
+        requestId: 'decision-runtime-pack-001',
+        selectedOptionId: 'option-b',
+        selectedOptionLabel: 'Option B',
+        responseText: 'Continue with option B.',
+        responseEventId: 'event-runtime-pack-001',
+        respondedAt: NOW,
+        continuationRunId: 'run-decision-continuation',
+        continuationOfRunId: 'run-initial',
+        continuationStartedAt: NOW,
+      },
+    };
+    const context = await buildContextBundle(reworkTask, project(), {
+      allowedLocalRoots: [],
+    });
+
+    const persisted = await persistRuntimePack(root, {
+      task: reworkTask,
+      project: project(),
+      context,
+      executionProfile: resolveExecutionProfile(reworkTask),
+      asOf: NOW,
+      expiresAt: reworkTask.claim!.leaseExpiresAt,
+    });
+
+    expect(persisted.pack.continuationOfRunId).toBeNull();
+  });
+
   it('rejects a symlinked runtime root without creating directories outside it', async () => {
     const root = await mkdtemp(join(tmpdir(), 'atl-runtime-pack-'));
     const outside = await mkdtemp(join(tmpdir(), 'atl-runtime-pack-outside-'));

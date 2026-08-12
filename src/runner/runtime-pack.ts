@@ -122,11 +122,14 @@ function createRuntimePack(options: PersistRuntimePackOptions): RuntimePack {
   const previousArtifactRef = includesPreviousArtifact
     ? task.artifactRefs.at(-1)
     : undefined;
+  const continuationOfRunId = task.lastDecision?.continuationRunId === task.claim.runId
+    ? task.lastDecision.continuationOfRunId ?? null
+    : null;
   const unsigned = {
     schemaVersion: 2 as const,
     taskId: task.taskId,
     runId: task.claim?.runId ?? '',
-    continuationOfRunId: task.lastDecision?.continuationOfRunId ?? null,
+    continuationOfRunId,
     stateVersion: task.updatedAt,
     asOf: options.asOf,
     objective: redactSecrets(task.objective ?? ''),
