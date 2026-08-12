@@ -159,6 +159,8 @@ ATL Runner 可以在每天 `08:00` 至 `22:00` 的每个整点检查一次队列
 
 Runner 在实质执行前会冻结本次 Runtime Pack，记录任务与运行 ID、权限、实际加载的上下文块哈希、来源引用和上一版 Artifact 引用。Manifest 保存在本机 `.atl-runtime/context-packs/`，不复制来源文件正文；Agent 产出的 Artifact 和 Audit 都会绑定同一个 `pack_id`。决策续跑或要求修改会生成新的 Runtime Pack，因此可以核对每一版结果实际使用了哪一版上下文。
 
+每次运行还会确定并冻结一个版本化 Execution Profile，用来解释本次为什么选择这个执行角色、实际加载哪些 Skill 指令、开放哪些 Tool、要求哪些上下文，以及如何验收。当前只支持确定性 `research_v1`：`decision-research@1` 与 `evidence-collection@1`、`WebSearch/WebFetch/Read`、只读公开调研和人工验收。不匹配的任务会明确失败，不会让模型自由选择其他 Agent、Skill 或 Tool。完整产品契约见 [Execution Profile 产品契约](docs/Execution-Profile-Product-Contract.md)。
+
 当前 Runtime Pack 只冻结任务已明确关联的来源：任务来源笔记、项目描述、项目资源和上一版 Artifact 摘要。它尚不负责自动发现更多代码仓库、会议、长期记忆或 Skill；这些候选源的动态选择和解释属于后续 Context Control Plane。
 
 ## 安装

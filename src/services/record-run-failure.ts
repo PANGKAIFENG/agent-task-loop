@@ -6,6 +6,11 @@ import type { ServiceContext } from './service-context.js';
 
 export type RunFailureOutcome = 'requeued' | 'blocked';
 
+const NON_RETRYABLE_ERROR_CODES = new Set([
+  'execution_profile_not_supported',
+  'execution_profile_context_missing',
+]);
+
 export interface RecordRunFailureInput {
   runId: string;
   errorCode: string;
@@ -58,7 +63,10 @@ export async function recordRunFailure(
     ) {
       throw new RunFailureInvalidStateError();
     }
-    const outcome: RunFailureOutcome = task.attempts >= 2
+    const outcome: RunFailureOutcome = (
+      NON_RETRYABLE_ERROR_CODES.has(input.errorCode)
+      || task.attempts >= 2
+    )
       ? 'blocked'
       : 'requeued';
     const status = outcome === 'blocked' ? 'blocked' : 'agent_executable';

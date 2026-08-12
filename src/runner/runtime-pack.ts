@@ -10,6 +10,11 @@ import {
   type StorageReadBoundary,
 } from '../storage/file-io.js';
 import type { ContextBundle } from './context-bundle.js';
+import {
+  parseSupportedExecutionProfile,
+  validateExecutionProfileContext,
+  type ExecutionProfile,
+} from './execution-profile.js';
 
 export interface RuntimePackBlock {
   label: string;
@@ -18,7 +23,7 @@ export interface RuntimePackBlock {
 }
 
 export interface RuntimePack {
-  schemaVersion: 1;
+  schemaVersion: 2;
   packId: string;
   taskId: string;
   runId: string;
@@ -35,6 +40,8 @@ export interface RuntimePack {
   allowedSources: string[];
   forbiddenSources: string[];
   permissionProfile: Task['permissionProfile'];
+  executionProfile: ExecutionProfile;
+  executionProfileSha256: string;
   contextGaps: string[];
   expiresAt: string;
   blocks: RuntimePackBlock[];
@@ -51,6 +58,7 @@ export interface PersistRuntimePackOptions {
   task: Task;
   project: Project;
   context: ContextBundle;
+  executionProfile: ExecutionProfile;
   asOf: string;
   expiresAt: string;
 }
@@ -106,6 +114,8 @@ function createRuntimePack(options: PersistRuntimePackOptions): RuntimePack {
   ) {
     throw new InvalidRuntimePackInputError();
   }
+  const executionProfile = parseSupportedExecutionProfile(options.executionProfile);
+  validateExecutionProfileContext(executionProfile, context);
   const includesPreviousArtifact = context.blocks.some((block) => (
     block.kind === 'artifact_review'
   ));
@@ -113,7 +123,7 @@ function createRuntimePack(options: PersistRuntimePackOptions): RuntimePack {
     ? task.artifactRefs.at(-1)
     : undefined;
   const unsigned = {
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
     taskId: task.taskId,
     runId: task.claim?.runId ?? '',
     continuationOfRunId: task.lastDecision?.continuationOfRunId ?? null,
@@ -136,6 +146,8 @@ function createRuntimePack(options: PersistRuntimePackOptions): RuntimePack {
       'configuration_writes',
     ],
     permissionProfile: task.permissionProfile,
+    executionProfile,
+    executionProfileSha256: sha256(stableJson(executionProfile)),
     contextGaps: [],
     expiresAt: options.expiresAt,
     blocks: context.blocks.map(({ label, kind, sha256: digest }) => ({

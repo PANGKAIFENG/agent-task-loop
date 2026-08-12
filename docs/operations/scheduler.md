@@ -52,7 +52,7 @@ ATL 只管理 Label 为 `ai.agent-task-loop.runner` 的配置。若同一路径�
 <ATL 工作目录>/.atl-runtime/context-packs/<pack_id>.json
 ```
 
-Manifest 只保存任务合同、来源引用、上下文块类型与哈希等运行证据，不复制来源文件正文。`context_pack.frozen` Audit、成功 Artifact 的 `pack_id` 和 manifest 文件名应一致。决策续跑、失败重试和 Artifact 返工都必须使用新的 `run_id` 并重新冻结 Pack。
+Manifest 只保存任务合同、来源引用、上下文块类型与哈希等运行证据，不复制来源文件正文。它还冻结本次 Execution Profile，包括角色、Skill 指令、Tool allowlist、必需 Context、输出合同、验收策略及其 SHA-256。`context_pack.frozen` Audit、成功 Artifact 的 `pack_id` 和 manifest 文件名应一致。决策续跑、失败重试和 Artifact 返工都必须使用新的 `run_id` 并重新冻结 Pack。
 
 ## 开发者：构建与手动安装
 

@@ -1,6 +1,10 @@
 import { buildContextBundle } from './context-bundle.js';
 import { persistRuntimePack } from './runtime-pack.js';
 import {
+  resolveExecutionProfile,
+  validateExecutionProfileContext,
+} from './execution-profile.js';
+import {
   acquireProcessLock,
   type AcquireProcessLockOptions,
 } from './process-lock.js';
@@ -145,10 +149,13 @@ export async function executeClaimedRun(
       allowedLocalRoots: dependencies.allowedLocalRoots,
       ...(previousArtifact === undefined ? {} : { previousArtifact }),
     });
+    const executionProfile = resolveExecutionProfile(task);
+    validateExecutionProfileContext(executionProfile, context);
     const runtimePack = await persistRuntimePack(dependencies.runtimeRoot, {
       task,
       project,
       context,
+      executionProfile,
       asOf: dependencies.ctx.clock().toISOString(),
       expiresAt: task.claim.leaseExpiresAt,
     });
@@ -164,11 +171,15 @@ export async function executeClaimedRun(
         packSha256: runtimePack.sha256,
         blockCount: runtimePack.pack.blocks.length,
         permissionProfile: runtimePack.pack.permissionProfile,
+        executionProfileId: executionProfile.profileId,
+        executionProfileVersion: executionProfile.profileVersion,
+        executionProfileSha256: runtimePack.pack.executionProfileSha256,
       },
     });
     const rawResult = await dependencies.driver.execute({
       task,
       context: { ...context, packId: runtimePack.packId },
+      profile: executionProfile,
       timeoutMs: dependencies.timeoutMs,
     });
     const parsedResult = driverResultSchema.safeParse(rawResult);

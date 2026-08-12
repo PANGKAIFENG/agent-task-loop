@@ -164,6 +164,11 @@ describe('bounded run-once orchestration', () => {
     expect(execute.mock.calls[0]?.[0]).toMatchObject({
       task: { taskId: 'task-runner-default', status: 'in_progress', attempts: 1 },
       context: { taskId: 'task-runner-default' },
+      profile: {
+        profileId: 'research_v1',
+        profileVersion: 1,
+        allowedTools: ['WebSearch', 'WebFetch', 'Read'],
+      },
       timeoutMs: 30 * 60 * 1000,
     });
     await expect(context.ctx.tasks.get('task-runner-default')).resolves.toMatchObject({
@@ -215,6 +220,8 @@ describe('bounded run-once orchestration', () => {
             packId: bundle?.packId,
             blockCount: 2,
             permissionProfile: 'read_only_research',
+            executionProfileId: 'research_v1',
+            executionProfileVersion: 1,
           }),
         }),
         expect.objectContaining({
@@ -689,6 +696,35 @@ describe('bounded run-once orchestration', () => {
       attempts: 2,
       claim: null,
     });
+  });
+
+  it.each([
+    'execution_profile_not_supported',
+    'execution_profile_context_missing',
+  ])('blocks deterministic Profile failure %s without retrying', async (code) => {
+    const context = await setup();
+    const execute = vi.fn<ResearchDriver['execute']>().mockRejectedValue(
+      Object.assign(new Error('sanitized deterministic failure'), { code }),
+    );
+
+    await expect(controller(context, fakeDriver(execute)).runAndWait({
+      mode: 'automatic',
+    })).resolves.toEqual({
+      status: 'blocked',
+      taskId: 'task-runner-default',
+      runId: 'run-runner-001',
+      errorCode: code,
+    });
+    await expect(context.ctx.tasks.get('task-runner-default')).resolves.toMatchObject({
+      status: 'blocked',
+      attempts: 1,
+      claim: null,
+    });
+    await expect(context.ctx.audit.listForTask('task-runner-default')).resolves
+      .toContainEqual(expect.objectContaining({
+        event: 'runner.failed',
+        details: expect.objectContaining({ errorCode: code, outcome: 'blocked' }),
+      }));
   });
 
   it('lets a named manual run proceed regardless of earlier automatic claims', async () => {

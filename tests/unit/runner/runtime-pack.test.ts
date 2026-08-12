@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { Project } from '../../../src/domain/project.js';
 import type { Task } from '../../../src/domain/task.js';
 import { buildContextBundle } from '../../../src/runner/context-bundle.js';
+import { resolveExecutionProfile } from '../../../src/runner/execution-profile.js';
 import {
   persistRuntimePack,
   type RuntimePack,
@@ -92,11 +93,13 @@ describe('persistRuntimePack', () => {
         },
       },
     );
+    const executionProfile = resolveExecutionProfile(task());
 
     const first = await persistRuntimePack(root, {
       task: { ...task(), sourceNote: source },
       project: project(),
       context,
+      executionProfile,
       asOf: NOW,
       expiresAt: '2026-07-15T01:00:00.000Z',
     });
@@ -104,6 +107,7 @@ describe('persistRuntimePack', () => {
       task: { ...task(), sourceNote: source },
       project: project(),
       context,
+      executionProfile,
       asOf: NOW,
       expiresAt: '2026-07-15T01:00:00.000Z',
     });
@@ -112,12 +116,18 @@ describe('persistRuntimePack', () => {
 
     expect(second).toEqual(first);
     expect(manifest).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       packId: first.packId,
       taskId: task().taskId,
       runId: task().claim?.runId,
       stateVersion: task().updatedAt,
       permissionProfile: 'read_only_research',
+      executionProfile: {
+        profileId: 'research_v1',
+        profileVersion: 1,
+        allowedTools: ['WebSearch', 'WebFetch', 'Read'],
+      },
+      executionProfileSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
       projectContextRefs: [`project:project-runtime-pack@${NOW}`],
       previousArtifactRefs: ['Artifacts/task-runtime-pack-001/attempt-002.md'],
       asOf: NOW,
@@ -139,11 +149,13 @@ describe('persistRuntimePack', () => {
     const context = await buildContextBundle(task(), project(), {
       allowedLocalRoots: [],
     });
+    const executionProfile = resolveExecutionProfile(task());
 
     await expect(persistRuntimePack(root, {
       task: { ...task(), claim: null },
       project: project(),
       context,
+      executionProfile,
       asOf: NOW,
       expiresAt: '2026-07-15T01:00:00.000Z',
     })).rejects.toMatchObject({ code: 'invalid_runtime_pack_input' });
@@ -151,6 +163,7 @@ describe('persistRuntimePack', () => {
       task: task(),
       project: project(),
       context: { ...context, taskId: 'task-other' },
+      executionProfile,
       asOf: NOW,
       expiresAt: '2026-07-15T01:00:00.000Z',
     })).rejects.toMatchObject({ code: 'invalid_runtime_pack_input' });
@@ -158,6 +171,7 @@ describe('persistRuntimePack', () => {
       task: task(),
       project: project(),
       context,
+      executionProfile,
       asOf: NOW,
       expiresAt: '2026-07-15T02:00:00.000Z',
     })).rejects.toMatchObject({ code: 'invalid_runtime_pack_input' });
@@ -172,11 +186,13 @@ describe('persistRuntimePack', () => {
     const context = await buildContextBundle(task(), project(), {
       allowedLocalRoots: [],
     });
+    const executionProfile = resolveExecutionProfile(task());
 
     await expect(persistRuntimePack(runtimeRoot, {
       task: task(),
       project: project(),
       context,
+      executionProfile,
       asOf: NOW,
       expiresAt: '2026-07-15T01:00:00.000Z',
     })).rejects.toMatchObject({ code: 'invalid_storage_entry' });
@@ -193,11 +209,13 @@ describe('persistRuntimePack', () => {
     const context = await buildContextBundle(task(), project(), {
       allowedLocalRoots: [],
     });
+    const executionProfile = resolveExecutionProfile(task());
 
     await expect(persistRuntimePack(runtimeRoot, {
       task: task(),
       project: project(),
       context,
+      executionProfile,
       asOf: NOW,
       expiresAt: '2026-07-15T01:00:00.000Z',
     })).rejects.toMatchObject({ code: 'invalid_storage_entry' });
