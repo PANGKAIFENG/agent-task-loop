@@ -189,6 +189,29 @@ describe('bounded run-once orchestration', () => {
       .rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('rejects a research result that does not answer every task acceptance criterion', async () => {
+    const context = await setup([agentExecutableTask({
+      acceptanceCriteria: [
+        'Cite one official HTTPS source.',
+        'State the remaining uncertainty.',
+      ],
+    })]);
+    const execute = vi.fn<ResearchDriver['execute']>().mockResolvedValue(result());
+
+    await expect(controller(context, fakeDriver(execute)).runAndWait({
+      mode: 'automatic',
+    })).resolves.toEqual({
+      status: 'requeued',
+      taskId: 'task-runner-default',
+      runId: 'run-runner-001',
+      errorCode: 'invalid_research_result',
+    });
+    await expect(context.ctx.tasks.get('task-runner-default')).resolves.toMatchObject({
+      status: 'agent_executable',
+      artifactRefs: [],
+    });
+  });
+
   it('freezes one Runtime Pack before execution and binds it to the Artifact and audit', async () => {
     const context = await setup();
     const execute = vi.fn<ResearchDriver['execute']>().mockImplementation(async ({ context: bundle }) => {

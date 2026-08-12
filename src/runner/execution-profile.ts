@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import type { Task } from '../domain/task.js';
 import type { ContextBundle } from './context-bundle.js';
+import type { ResearchResult } from './result-contract.js';
 
 const skillInstructionSchema = z.object({
   id: z.enum(['decision-research', 'evidence-collection']),
@@ -130,4 +131,23 @@ export function validateExecutionProfileContext(
   if (supported.requiredContextKinds.some((kind) => !available.has(kind))) {
     throw new ExecutionProfileContextMissingError();
   }
+}
+
+export function executionProfileResultMatchesTask(
+  profile: ExecutionProfile,
+  task: Task,
+  result: ResearchResult,
+): boolean {
+  const supported = parseSupportedExecutionProfile(profile);
+  if (!supported.acceptancePolicy.taskCriteriaRequired) return true;
+  const expected = task.acceptanceCriteria
+    .map((criterion) => criterion.trim())
+    .filter((criterion) => criterion !== '')
+    .sort();
+  const actual = result.acceptance
+    .map(({ criterion }) => criterion.trim())
+    .filter((criterion) => criterion !== '')
+    .sort();
+  return expected.length === actual.length
+    && expected.every((criterion, index) => criterion === actual[index]);
 }

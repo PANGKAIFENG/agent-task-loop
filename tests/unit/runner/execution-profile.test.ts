@@ -3,9 +3,11 @@ import { describe, expect, it } from 'vitest';
 import type { Task } from '../../../src/domain/task.js';
 import type { ContextBundle } from '../../../src/runner/context-bundle.js';
 import {
+  executionProfileResultMatchesTask,
   resolveExecutionProfile,
   validateExecutionProfileContext,
 } from '../../../src/runner/execution-profile.js';
+import type { ResearchResult } from '../../../src/runner/result-contract.js';
 
 const NOW = '2026-07-15T00:00:00.000Z';
 
@@ -54,6 +56,21 @@ function context(kinds: ContextBundle['blocks'][number]['kind'][]): ContextBundl
       kind,
       content: `${kind} content`,
       sha256: String(index).padStart(64, '0'),
+    })),
+  };
+}
+
+function researchResult(criteria: string[]): ResearchResult {
+  return {
+    summary: 'Synthetic result.',
+    findings: ['Synthetic finding.'],
+    evidence: [],
+    uncertainties: [],
+    recommendedActions: [],
+    acceptance: criteria.map((criterion) => ({
+      criterion,
+      status: 'met',
+      note: 'Synthetic check.',
     })),
   };
 }
@@ -114,5 +131,38 @@ describe('validateExecutionProfileContext', () => {
 
     expect(() => validateExecutionProfileContext(profile, context(['task'])))
       .toThrow(expect.objectContaining({ code: 'execution_profile_context_missing' }));
+  });
+});
+
+describe('executionProfileResultMatchesTask', () => {
+  const officialSourceCriterion = 'Cite one official HTTPS source.';
+  const uncertaintyCriterion = 'State the remaining uncertainty.';
+  const criteria = [
+    officialSourceCriterion,
+    uncertaintyCriterion,
+  ];
+
+  it('accepts the exact task criteria regardless of response order', () => {
+    const task = claimedResearchTask({ acceptanceCriteria: criteria });
+
+    expect(executionProfileResultMatchesTask(
+      resolveExecutionProfile(task),
+      task,
+      researchResult([...criteria].reverse()),
+    )).toBe(true);
+  });
+
+  it.each([
+    ['missing', [officialSourceCriterion]],
+    ['additional', [...criteria, 'Undeclared criterion.']],
+    ['duplicate', [officialSourceCriterion, officialSourceCriterion]],
+  ])('rejects %s acceptance responses', (_label, actual) => {
+    const task = claimedResearchTask({ acceptanceCriteria: criteria });
+
+    expect(executionProfileResultMatchesTask(
+      resolveExecutionProfile(task),
+      task,
+      researchResult(actual),
+    )).toBe(false);
   });
 });

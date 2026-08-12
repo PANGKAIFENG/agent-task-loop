@@ -1,6 +1,7 @@
 import { buildContextBundle } from './context-bundle.js';
 import { persistRuntimePack } from './runtime-pack.js';
 import {
+  executionProfileResultMatchesTask,
   resolveExecutionProfile,
   validateExecutionProfileContext,
 } from './execution-profile.js';
@@ -198,6 +199,13 @@ export async function executeClaimedRun(
         decisionRequestId: waiting.pendingDecision?.requestId
           ?? parsedResult.data.decisionRequestId,
       };
+    }
+    if (!executionProfileResultMatchesTask(
+      executionProfile,
+      task,
+      parsedResult.data,
+    )) {
+      throw new InvalidRunnerResultError();
     }
     result = parsedResult.data;
   } catch (error) {
