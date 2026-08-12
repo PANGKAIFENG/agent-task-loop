@@ -78,7 +78,7 @@ function hasMatchingAnchors(
   details: z.infer<typeof evalDetailsSchema>,
   earlierEvents: AuditEvent[],
 ): boolean {
-  const frozen = earlierEvents.findLast((candidate) => (
+  const isMatchingFrozen = (candidate: AuditEvent): boolean => (
     candidate.event === 'context_pack.frozen'
     && candidate.runId === event.runId
     && candidate.details?.packId === details.packId
@@ -86,15 +86,15 @@ function hasMatchingAnchors(
     && candidate.details.executionProfileId === details.executionProfileId
     && candidate.details.executionProfileVersion === details.executionProfileVersion
     && candidate.details.executionProfileSha256 === details.executionProfileSha256
-  ));
-  const submitted = earlierEvents.findLast((candidate) => (
+  );
+  return earlierEvents.some((candidate, index) => (
     candidate.event === 'artifact.submitted'
     && candidate.runId === event.runId
     && candidate.details?.packId === details.packId
     && candidate.details.artifactRef === details.artifactRef
     && candidate.details.artifactSha256 === details.artifactSha256
+    && earlierEvents.slice(0, index).some(isMatchingFrozen)
   ));
-  return frozen !== undefined && submitted !== undefined;
 }
 
 function capabilitySample(
@@ -159,12 +159,14 @@ export async function queryEvalSamples(
   const eventsByTask = await Promise.all(
     tasks.map(({ taskId }) => ctx.audit.listForTask(taskId)),
   );
-  const capabilitySamples = eventsByTask
+  const samples = eventsByTask
     .flatMap((events) => events.map((event, index) => (
       capabilitySample(event, events.slice(0, index))
     )))
-    .filter((sample): sample is CapabilityEvalSample => sample !== null)
-    .sort(compareSamples);
+    .filter((sample): sample is CapabilityEvalSample => sample !== null);
+  const capabilitySamples = [...new Map(
+    samples.map((sample) => [sample.sampleId, sample]),
+  ).values()].sort(compareSamples);
   const regressionCandidates = capabilitySamples.flatMap((sample) => (
     sample.humanOutcome === 'approve' || sample.feedbackSha256 === null
       ? []

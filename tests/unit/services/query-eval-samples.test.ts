@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { describe, expect, it } from 'vitest';
 
 import type { Task } from '../../../src/domain/task.js';
@@ -6,6 +8,72 @@ import type { ServiceContext } from '../../../src/services/service-context.js';
 import type { AuditEvent } from '../../../src/storage/contracts.js';
 
 const NOW = '2026-07-15T00:00:00.000Z';
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function validEvalEvents(taskId: string): AuditEvent[] {
+  const runId = `run-${taskId}`;
+  const packId = `pack-${'b'.repeat(24)}`;
+  const packSha256 = 'c'.repeat(64);
+  const executionProfileSha256 = 'd'.repeat(64);
+  const artifactRef = `Artifacts/${taskId}/attempt-001.md`;
+  const artifactSha256 = 'e'.repeat(64);
+  const feedbackSha256 = null;
+  const humanOutcome = 'approve';
+  const evalSampleId = `eval-${sha256(JSON.stringify({
+    taskId,
+    runId,
+    packId,
+    artifactRef,
+    artifactSha256,
+    humanOutcome,
+    feedbackSha256,
+  })).slice(0, 24)}`;
+  return [{
+    event: 'context_pack.frozen',
+    at: '2026-07-15T00:00:00.000Z',
+    taskId,
+    runId,
+    details: {
+      packId,
+      packSha256,
+      executionProfileId: 'research_v1',
+      executionProfileVersion: 1,
+      executionProfileSha256,
+    },
+  }, {
+    event: 'artifact.submitted',
+    at: '2026-07-15T00:01:00.000Z',
+    taskId,
+    runId,
+    details: { packId, artifactRef, artifactSha256 },
+  }, {
+    event: 'task.reviewed',
+    at: '2026-07-15T00:02:00.000Z',
+    taskId,
+    runId,
+    details: {
+      decision: humanOutcome,
+      evalSampleId,
+      evalSampleType: 'capability',
+      evalSampleStatus: 'pending_review',
+      regressionCandidateStatus: 'not_proposed',
+      packId,
+      packSha256,
+      executionProfileId: 'research_v1',
+      executionProfileVersion: 1,
+      executionProfileSha256,
+      artifactRef,
+      artifactSha256,
+      runOutcome: 'artifact_submitted',
+      humanOutcome,
+      feedbackSha256,
+      harnessMutationAllowed: false,
+    },
+  }];
+}
 
 function task(taskId: string): Task {
   return {
@@ -122,5 +190,31 @@ describe('queryEvalSamples', () => {
       capabilitySamples: [],
       regressionCandidates: [],
     });
+  });
+
+  it('ignores a sample whose Artifact anchor predates its Context Pack', async () => {
+    const taskId = 'task-out-of-order';
+    const [frozen, submitted, reviewed] = validEvalEvents(taskId);
+    submitted!.at = '2026-07-15T00:00:00.000Z';
+    frozen!.at = '2026-07-15T00:01:00.000Z';
+
+    await expect(queryEvalSamples(context({
+      [taskId]: [submitted!, frozen!, reviewed!],
+    }))).resolves.toEqual({
+      capabilitySamples: [],
+      regressionCandidates: [],
+    });
+  });
+
+  it('returns one sample when the same review Audit event is replayed', async () => {
+    const taskId = 'task-replayed-review';
+    const events = validEvalEvents(taskId);
+
+    const result = await queryEvalSamples(context({
+      [taskId]: [...events, events[2]!],
+    }));
+
+    expect(result.capabilitySamples).toHaveLength(1);
+    expect(result.regressionCandidates).toEqual([]);
   });
 });
