@@ -50,7 +50,7 @@ describe('packaged ATL runner', () => {
 
     const result = await execa(process.execPath, [runnerPath, '--version']);
 
-    expect(result.stdout).toBe('0.8.6');
+    expect(result.stdout).toBe('0.9.0');
   });
 
   it('deduplicates daily and real-time stdin capture in the packaged runner', async () => {

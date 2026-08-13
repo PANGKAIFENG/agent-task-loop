@@ -170,7 +170,7 @@ Runner 在实质执行前会冻结本次 Runtime Pack，记录任务与运行 ID
 ATL 尚未进入 Obsidian 社区插件市场。安装插件本身不需要终端：
 
 1. 打开 [GitHub Releases](https://github.com/PANGKAIFENG/agent-task-loop/releases)，下载最新的插件压缩包。
-2. 解压并确认包含 `main.js`、`manifest.json`、`styles.css` 和 `atl-runner.mjs`。
+2. 解压并确认包含 `main.js`、`manifest.json`、`styles.css`、`atl-runner.mjs`、`atl-dingtalk-bridge.mjs` 和 `qianwen-accessibility-helper`。
 3. 在 Finder 中打开 Vault，按 `Command + Shift + .` 显示隐藏文件。
 4. 进入 `.obsidian/plugins/`，创建 `agent-task-loop` 文件夹并放入上述文件。
 5. 重启 Obsidian，在“设置 → 第三方插件”中启用 `Agent Task Loop`。

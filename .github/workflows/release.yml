@@ -47,6 +47,7 @@ jobs:
           test -f build/obsidian-plugin/manifest.json
           test -f build/obsidian-plugin/styles.css
           test -f build/obsidian-plugin/atl-runner.mjs
+          test -f build/obsidian-plugin/atl-dingtalk-bridge.mjs
           test -x build/obsidian-plugin/qianwen-accessibility-helper
           lipo build/obsidian-plugin/qianwen-accessibility-helper -verify_arch arm64 x86_64
 
@@ -55,7 +56,7 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           cd build/obsidian-plugin
-          zip -X "agent-task-loop-${RELEASE_TAG}.zip" main.js manifest.json styles.css atl-runner.mjs qianwen-accessibility-helper
+          zip -X "agent-task-loop-${RELEASE_TAG}.zip" main.js manifest.json styles.css atl-runner.mjs atl-dingtalk-bridge.mjs qianwen-accessibility-helper
           PACKAGE_ROOT="$(mktemp -d)"
           unzip -q "agent-task-loop-${RELEASE_TAG}.zip" -d "$PACKAGE_ROOT"
           test -x "$PACKAGE_ROOT/qianwen-accessibility-helper"
@@ -71,6 +72,7 @@ jobs:
             "build/obsidian-plugin/manifest.json#manifest.json" \
             "build/obsidian-plugin/styles.css#styles.css" \
             "build/obsidian-plugin/atl-runner.mjs#atl-runner.mjs" \
+            "build/obsidian-plugin/atl-dingtalk-bridge.mjs#atl-dingtalk-bridge.mjs" \
             "build/obsidian-plugin/qianwen-accessibility-helper#qianwen-accessibility-helper" \
             "build/obsidian-plugin/agent-task-loop-${RELEASE_TAG}.zip#agent-task-loop-${RELEASE_TAG}.zip" \
             --title "Agent Task Loop ${RELEASE_TAG}" \
