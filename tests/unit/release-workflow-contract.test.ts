@@ -30,4 +30,14 @@ describe('release workflow contract', () => {
       'lipo "$PACKAGE_ROOT/qianwen-accessibility-helper" -verify_arch arm64 x86_64',
     );
   });
+
+  it('ships the DingTalk bridge in both the installable ZIP and release assets', async () => {
+    const workflow = await readFile('.github/workflows/release.yml', 'utf8');
+
+    expect(workflow).toContain('test -f build/obsidian-plugin/atl-dingtalk-bridge.mjs');
+    expect(workflow).toMatch(/zip[^\n]*atl-dingtalk-bridge\.mjs/u);
+    expect(workflow).toContain(
+      'build/obsidian-plugin/atl-dingtalk-bridge.mjs#atl-dingtalk-bridge.mjs',
+    );
+  });
 });

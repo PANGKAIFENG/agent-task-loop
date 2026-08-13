@@ -23,10 +23,10 @@ Agent Task Loop（ATL）负责收集、去重、任务文件和可选的 AI 能�
 ## 安装插件
 
 1. 从项目 [Releases](https://github.com/PANGKAIFENG/agent-task-loop/releases) 下载最新插件压缩包。
-2. 解压后确认有 `main.js`、`manifest.json`、`styles.css`、`atl-runner.mjs`。
+2. 解压后确认有 `main.js`、`manifest.json`、`styles.css`、`atl-runner.mjs`、`atl-dingtalk-bridge.mjs` 和 `qianwen-accessibility-helper`。
 3. 在 Finder 中打开 Vault，按 `Command + Shift + .` 显示隐藏文件。
 4. 进入 `.obsidian/plugins/agent-task-loop/`；没有该文件夹时直接新建。
-5. 放入四个文件并重启 Obsidian。
+5. 放入上述文件并重启 Obsidian。
 6. 打开“设置 → 第三方插件”，启用 `Agent Task Loop`。
 
 安装和日常手工管理不需要终端。推荐同时安装 TaskNotes。
