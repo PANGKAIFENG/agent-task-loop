@@ -17,7 +17,6 @@ function missingFields(task: TaskDto): string[] {
   if (task.objective === null || task.objective.trim() === '') missing.push('目标');
   if (task.acceptanceCriteria.length === 0) missing.push('验收标准');
   if (task.permissionProfile !== 'read_only_research') missing.push('权限');
-  if (!task.autoExecutable) missing.push('自动执行');
   return missing;
 }
 

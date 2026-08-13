@@ -19,7 +19,13 @@ import {
   type ProcessResult,
 } from '../../../src/runner/claude-driver.js';
 import type { ContextBundle } from '../../../src/runner/context-bundle.js';
-import { researchResultJsonSchema } from '../../../src/runner/result-contract.js';
+import { resolveExecutionProfile } from '../../../src/runner/execution-profile.js';
+import type {
+  ResearchDriver,
+  ResearchDriverInput,
+} from '../../../src/runner/research-driver.js';
+import type { DriverResult } from '../../../src/runner/result-contract.js';
+import { driverResultJsonSchema } from '../../../src/runner/result-contract.js';
 
 const NOW = '2026-07-15T00:00:00.000Z';
 const CLAUDE_BIN = '/opt/testing/bin/claude';
@@ -115,6 +121,16 @@ function makeContext(): ContextBundle {
       },
     ],
   };
+}
+
+function executeResearchDriver(
+  driver: ResearchDriver,
+  input: Omit<ResearchDriverInput, 'profile'>,
+): Promise<DriverResult> {
+  return driver.execute({
+    ...input,
+    profile: resolveExecutionProfile(input.task),
+  });
 }
 
 function processResult(overrides: Partial<ProcessResult> = {}): ProcessResult {
@@ -481,7 +497,7 @@ describe('ClaudeResearchDriver.execute', () => {
       });
       const startedAt = Date.now();
 
-      await expect(driver.execute({
+      await expect(executeResearchDriver(driver, {
         task: makeTask(),
         context: makeContext(),
         timeoutMs: 250,
@@ -509,7 +525,7 @@ describe('ClaudeResearchDriver.execute', () => {
       });
       const startedAt = Date.now();
 
-      await expect(driver.execute({
+      await expect(executeResearchDriver(driver, {
         task: makeTask(),
         context: makeContext(),
         timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
@@ -536,7 +552,7 @@ describe('ClaudeResearchDriver.execute', () => {
       });
       const startedAt = Date.now();
 
-      await expect(driver.execute({
+      await expect(executeResearchDriver(driver, {
         task: makeTask(),
         context: makeContext(),
         timeoutMs: 500,
@@ -564,7 +580,7 @@ describe('ClaudeResearchDriver.execute', () => {
           maxProcessOutputBytes: 512,
         });
 
-        await expect(driver.execute({
+        await expect(executeResearchDriver(driver, {
           task: makeTask(),
           context: makeContext(),
           timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
@@ -590,7 +606,7 @@ describe('ClaudeResearchDriver.execute', () => {
           maxProcessOutputBytes: 512,
         });
 
-        await expect(driver.execute({
+        await expect(executeResearchDriver(driver, {
           task: makeTask(),
           context: makeContext(),
           timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
@@ -618,16 +634,24 @@ describe('ClaudeResearchDriver.execute', () => {
         environment: { ATL_CLAUDE_BIN: fixture.executable },
       });
 
-      await expect(driver.execute({
+      await expect(executeResearchDriver(driver, {
         task: makeTask(),
         context: {
           taskId: 'task-driver-001',
-          blocks: [{
-            label: 'task',
-            kind: 'task',
-            content: 'x'.repeat(2 * 1024 * 1024),
-            sha256: 'd'.repeat(64),
-          }],
+          blocks: [
+            {
+              label: 'task',
+              kind: 'task',
+              content: 'x'.repeat(2 * 1024 * 1024),
+              sha256: 'd'.repeat(64),
+            },
+            {
+              label: 'project',
+              kind: 'project',
+              content: 'Synthetic project.',
+              sha256: 'e'.repeat(64),
+            },
+          ],
         },
         timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
       })).rejects.toMatchObject({
@@ -652,7 +676,7 @@ describe('ClaudeResearchDriver.execute', () => {
     const driver = await createDriver({ executor, fileSystem });
     ino = 74;
 
-    await expect(driver.execute({
+    await expect(executeResearchDriver(driver, {
       task: makeTask(),
       context: makeContext(),
       timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
@@ -683,7 +707,7 @@ describe('ClaudeResearchDriver.execute', () => {
     });
     const driver = await createDriver({ executor, fileSystem });
 
-    await expect(driver.execute({
+    await expect(executeResearchDriver(driver, {
       task: makeTask(),
       context: makeContext(),
       timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
@@ -700,7 +724,7 @@ describe('ClaudeResearchDriver.execute', () => {
     const fileSystem = fakeFileSystem();
     const driver = await createDriver({ executor, fileSystem });
 
-    await expect(driver.execute({
+    await expect(executeResearchDriver(driver, {
       task: makeTask(),
       context: { ...makeContext(), taskId: 'task-other' },
       timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
@@ -713,6 +737,42 @@ describe('ClaudeResearchDriver.execute', () => {
     expect(executor.execute).not.toHaveBeenCalled();
   });
 
+  it('rejects a tampered Execution Profile before creating a run directory', async () => {
+    const executor = fakeExecutor(async () => processResult());
+    const fileSystem = fakeFileSystem();
+    const driver = await createDriver({ executor, fileSystem });
+    const task = makeTask();
+    const profile = resolveExecutionProfile(task);
+
+    await expect(driver.execute({
+      task,
+      context: makeContext(),
+      profile: {
+        ...profile,
+        allowedTools: ['WebSearch', 'WebFetch', 'Read', 'Bash'],
+      } as never,
+      timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
+    })).rejects.toMatchObject({ code: 'execution_profile_not_supported' });
+    expect(fileSystem.mkdtemp).not.toHaveBeenCalled();
+    expect(executor.execute).not.toHaveBeenCalled();
+  });
+
+  it('rejects a valid Profile paired with an unauthorized task', async () => {
+    const executor = fakeExecutor(async () => processResult());
+    const fileSystem = fakeFileSystem();
+    const driver = await createDriver({ executor, fileSystem });
+    const authorizedTask = makeTask();
+
+    await expect(driver.execute({
+      task: { ...authorizedTask, permissionProfile: null },
+      context: makeContext(),
+      profile: resolveExecutionProfile(authorizedTask),
+      timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
+    })).rejects.toMatchObject({ code: 'execution_profile_not_supported' });
+    expect(fileSystem.mkdtemp).not.toHaveBeenCalled();
+    expect(executor.execute).not.toHaveBeenCalled();
+  });
+
   it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
     'rejects invalid timeout %s before creating a run directory',
     async (timeoutMs) => {
@@ -720,7 +780,7 @@ describe('ClaudeResearchDriver.execute', () => {
       const fileSystem = fakeFileSystem();
       const driver = await createDriver({ executor, fileSystem });
 
-      await expect(driver.execute({
+      await expect(executeResearchDriver(driver, {
         task: makeTask(),
         context: makeContext(),
         timeoutMs,
@@ -759,7 +819,7 @@ describe('ClaudeResearchDriver.execute', () => {
     };
     const driver = await createDriver({ executor, fileSystem, environment });
 
-    const result = await driver.execute({
+    const result = await executeResearchDriver(driver, {
       task: makeTask(),
       context: makeContext(),
       timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
@@ -788,7 +848,7 @@ describe('ClaudeResearchDriver.execute', () => {
       'json',
       '--json-schema',
       JSON.stringify(Object.fromEntries(
-        Object.entries(researchResultJsonSchema)
+        Object.entries(driverResultJsonSchema)
           .filter(([key]) => key !== '$schema'),
       )),
       '--max-budget-usd',
@@ -819,12 +879,16 @@ describe('ClaudeResearchDriver.execute', () => {
     expect(prompt).toContain('Compare the documented public product limits.');
     expect(prompt).toContain('Cite an official source.');
     expect(prompt).toContain('Only use the official public documentation.');
+    expect(prompt).toContain('Execution role: bounded_public_researcher');
+    expect(prompt).toContain('decision-research@1');
+    expect(prompt).toContain('evidence-collection@1');
     expect(prompt).toContain('public sources only');
     expect(prompt).toContain('Do not log in');
     expect(prompt).toContain('Do not send messages');
     expect(prompt).toContain('Do not change code');
     expect(prompt).toContain('Do not change configuration');
     expect(prompt).toContain('Do not create or modify calendar events');
+    expect(prompt).toContain('return a decision_request');
     expect(prompt).toContain('Output contract');
     expect(prompt).not.toContain('TITLE_SENTINEL_MUST_NOT_ENTER_PROMPT');
     expect(prompt).not.toContain('BODY_SENTINEL_MUST_NOT_ENTER_PROMPT');
@@ -843,6 +907,33 @@ describe('ClaudeResearchDriver.execute', () => {
     });
   });
 
+  it('accepts a decision request from the Claude driver contract', async () => {
+    const decisionRequest = {
+      kind: 'decision_request',
+      decisionRequestId: 'decision-driver-001',
+      question: 'Which research scope should be used?',
+      options: [
+        { id: 'narrow', label: 'Use the narrow scope' },
+        { id: 'broad', label: 'Use the broad scope' },
+      ],
+    };
+    const executor = fakeExecutor(async (execution) => {
+      if (execution.args[0] === '--help') {
+        return processResult({ stdout: REQUIRED_HELP });
+      }
+      return processResult({
+        stdout: JSON.stringify({ structured_output: decisionRequest }),
+      });
+    });
+    const driver = await createDriver({ executor });
+
+    await expect(executeResearchDriver(driver, {
+      task: makeTask(),
+      context: makeContext(),
+      timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
+    })).resolves.toEqual(decisionRequest);
+  });
+
   it('builds stdin only from the already-redacted context bundle', async () => {
     const rawObjectiveToken = 'sk-objective-provider-token-123456';
     const rawCriterionToken = 'ghp_123456789012345678901234567890';
@@ -858,25 +949,33 @@ describe('ClaudeResearchDriver.execute', () => {
     });
     const driver = await createDriver({ executor });
 
-    await driver.execute({
+    await executeResearchDriver(driver, {
       task: makeTask({
         objective: `Research ${rawObjectiveToken}`,
         acceptanceCriteria: [`Do not expose ${rawCriterionToken}`],
       }),
       context: {
         taskId: 'task-driver-001',
-        blocks: [{
-          label: 'task',
-          kind: 'task',
-          content: [
-            'Objective:',
-            'Research [REDACTED]',
-            '',
-            'Acceptance Criteria:',
-            '- Do not expose [REDACTED]',
-          ].join('\n'),
-          sha256: 'c'.repeat(64),
-        }],
+        blocks: [
+          {
+            label: 'task',
+            kind: 'task',
+            content: [
+              'Objective:',
+              'Research [REDACTED]',
+              '',
+              'Acceptance Criteria:',
+              '- Do not expose [REDACTED]',
+            ].join('\n'),
+            sha256: 'c'.repeat(64),
+          },
+          {
+            label: 'project',
+            kind: 'project',
+            content: 'Synthetic project.',
+            sha256: 'd'.repeat(64),
+          },
+        ],
       },
       timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
     });
@@ -909,7 +1008,7 @@ describe('ClaudeResearchDriver.execute', () => {
     });
     const driver = await createDriver({ executor });
 
-    await expect(driver.execute({
+    await expect(executeResearchDriver(driver, {
       task: makeTask(),
       context: makeContext(),
       timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
@@ -934,7 +1033,7 @@ describe('ClaudeResearchDriver.execute', () => {
     });
     const driver = await createDriver({ executor });
 
-    await expect(driver.execute({
+    await expect(executeResearchDriver(driver, {
       task: makeTask(),
       context: makeContext(),
       timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
@@ -959,7 +1058,7 @@ describe('ClaudeResearchDriver.execute', () => {
     });
     const driver = await createDriver({ executor });
 
-    await expect(driver.execute({
+    await expect(executeResearchDriver(driver, {
       task: makeTask(),
       context: makeContext(),
       timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
@@ -1017,7 +1116,7 @@ describe('ClaudeResearchDriver.execute', () => {
     });
     const driver = await createDriver({ executor });
 
-    await expect(driver.execute({
+    await expect(executeResearchDriver(driver, {
       task: makeTask(),
       context: makeContext(),
       timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
@@ -1046,7 +1145,7 @@ describe('ClaudeResearchDriver.execute', () => {
     });
     const driver = await createDriver({ executor });
 
-    await expect(driver.execute({
+    await expect(executeResearchDriver(driver, {
       task: makeTask(),
       context: makeContext(),
       timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
@@ -1075,7 +1174,7 @@ describe('ClaudeResearchDriver.execute', () => {
     });
     const driver = await createDriver({ executor });
 
-    await expect(driver.execute({
+    await expect(executeResearchDriver(driver, {
       task: makeTask(),
       context: makeContext(),
       timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
@@ -1115,7 +1214,7 @@ describe('ClaudeResearchDriver.execute', () => {
     });
     const driver = await createDriver({ executor });
 
-    await expect(driver.execute({
+    await expect(executeResearchDriver(driver, {
       task: makeTask(),
       context: makeContext(),
       timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
@@ -1147,7 +1246,7 @@ describe('ClaudeResearchDriver.execute', () => {
     });
     const driver = await createDriver({ executor });
 
-    await expect(driver.execute({
+    await expect(executeResearchDriver(driver, {
       task: makeTask(),
       context: makeContext(),
       timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
@@ -1176,7 +1275,7 @@ describe('ClaudeResearchDriver.execute', () => {
     });
     const driver = await createDriver({ executor });
 
-    await expect(driver.execute({
+    await expect(executeResearchDriver(driver, {
       task: makeTask(),
       context: makeContext(),
       timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
@@ -1211,7 +1310,7 @@ describe('ClaudeResearchDriver.execute', () => {
     });
     const driver = await createDriver({ executor });
 
-    await expect(driver.execute({
+    await expect(executeResearchDriver(driver, {
       task: makeTask(),
       context: makeContext(),
       timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
@@ -1238,7 +1337,7 @@ describe('ClaudeResearchDriver.execute', () => {
     });
     const driver = await createDriver({ executor });
 
-    await driver.execute({
+    await executeResearchDriver(driver, {
       task: makeTask(),
       context: makeContext(),
       timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
@@ -1260,7 +1359,7 @@ describe('ClaudeResearchDriver.execute', () => {
     });
     const driver = await createDriver({ executor });
 
-    await driver.execute({
+    await executeResearchDriver(driver, {
       task: makeTask(),
       context: makeContext(),
       timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS * 2,
@@ -1297,7 +1396,7 @@ describe('ClaudeResearchDriver.execute', () => {
 
     let caught: unknown;
     try {
-      await driver.execute({
+      await executeResearchDriver(driver, {
         task: makeTask(),
         context: makeContext(),
         timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
@@ -1328,7 +1427,7 @@ describe('ClaudeResearchDriver.execute', () => {
 
     let caught: unknown;
     try {
-      await driver.execute({
+      await executeResearchDriver(driver, {
         task: makeTask(),
         context: makeContext(),
         timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
@@ -1355,7 +1454,7 @@ describe('ClaudeResearchDriver.execute', () => {
 
     let caught: unknown;
     try {
-      await driver.execute({
+      await executeResearchDriver(driver, {
         task: makeTask(),
         context: makeContext(),
         timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
@@ -1386,7 +1485,7 @@ describe('ClaudeResearchDriver.execute', () => {
     });
     const driver = await createDriver({ fileSystem, executor });
 
-    await expect(driver.execute({
+    await expect(executeResearchDriver(driver, {
       task: makeTask(),
       context: makeContext(),
       timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,

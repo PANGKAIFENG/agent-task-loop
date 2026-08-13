@@ -288,6 +288,35 @@ describe('weekly focus service', () => {
     )).rejects.toThrow('至少确认一项本周判断');
   });
 
+  it('rejects focus items combined with the no-new-focus flag before saving', async () => {
+    const gateway = new MemoryGateway();
+
+    await expect(saveWeeklyFocusDraft(
+      gateway,
+      () => NOW,
+      input({ noNewFocus: true }),
+      null,
+      'Asia/Shanghai',
+    )).rejects.toThrow('已有本周判断时，不能选择本周暂不新增重点');
+
+    expect(gateway.files.size).toBe(0);
+  });
+
+  it('rejects a manually edited record that combines focuses with no-new-focus', async () => {
+    const gateway = new MemoryGateway();
+    const saved = await saveWeeklyFocusDraft(gateway, () => NOW, input(), null, 'Asia/Shanghai');
+    gateway.files.set(saved.path, saved.raw.replace(
+      '本周暂不新增重点: false',
+      '本周暂不新增重点: true',
+    ));
+
+    await expect(loadCurrentWeeklyFocus(
+      gateway,
+      () => NOW,
+      'Asia/Shanghai',
+    )).rejects.toThrow('已有本周判断时，不能选择本周暂不新增重点');
+  });
+
   it('rejects a stale session week immediately before formal confirmation writes', async () => {
     const gateway = new MemoryGateway();
 

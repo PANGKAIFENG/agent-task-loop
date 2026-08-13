@@ -45,6 +45,12 @@ export interface NotifyAcceptanceContext {
   clock: () => Date;
 }
 
+const RETRYABLE_ERROR_CODES = new Set([
+  'acceptance_delivery_failed',
+  'dingtalk_delivery_failed',
+  'dingtalk_self_resolution_failed',
+]);
+
 function idempotencyKey(object: AcceptanceObject): string {
   return `${object.objectType}:${object.objectId}:${object.version}`;
 }
@@ -106,6 +112,25 @@ class AcceptancePayloadRejectedError extends Error {
 
 function assertSafePayload(object: AcceptanceObject): void {
   const title = object.title;
+  const artifact = object.artifact;
+  const unsafeSummary = artifact !== undefined && (
+    artifact.summary.trim().length === 0
+    || artifact.summary !== artifact.summary.trim()
+    || artifact.summary.length > 300
+    || hasControlCharacters(artifact.summary)
+    || /\r|\n/u.test(artifact.summary)
+    || /\b[a-z][a-z0-9+.-]*:\/\//iu.test(artifact.summary)
+    || /(?:^|[\s(])(?:\/Users\/|\/home\/|[A-Za-z]:\\)/u.test(artifact.summary)
+    || /\b(?:localhost|127\.0\.0\.1|0\.0\.0\.0)\b/iu.test(artifact.summary)
+    || /\b(?:token|secret|app[_-]?secret|access[_-]?key)\b\s*[:=]/iu.test(artifact.summary)
+    || !/^task-[a-z0-9-]+@v[1-9]\d*$/u.test(artifact.reference)
+    || !Number.isSafeInteger(artifact.evidenceCount)
+    || artifact.evidenceCount < 0
+    || artifact.evidenceCount > 999
+    || Object.values(artifact.checks).some((count) => (
+      !Number.isSafeInteger(count) || count < 0 || count > 999
+    ))
+  );
   const unsafeTitle = (
     title.trim().length === 0
     || title !== title.trim()
@@ -120,6 +145,7 @@ function assertSafePayload(object: AcceptanceObject): void {
   );
   if (
     unsafeTitle
+    || unsafeSummary
     || !Number.isSafeInteger(object.pendingCount)
     || object.pendingCount < 0
     || object.pendingCount > 999
@@ -130,13 +156,32 @@ function assertSafePayload(object: AcceptanceObject): void {
 
 function messageFor(object: AcceptanceObject): { title: string; text: string } {
   assertSafePayload(object);
+  const artifactLines = object.artifact === undefined
+    ? []
+    : [
+        `任务 ID：${object.objectId}`,
+        `Artifact：${object.artifact.reference}`,
+        `结果：${object.artifact.summary}`,
+        `自检：通过 ${object.artifact.checks.met}；部分通过 ${object.artifact.checks.partial}；未通过 ${object.artifact.checks.notMet}；证据 ${object.artifact.evidenceCount}`,
+      ];
+  const actionLines = object.artifact === undefined
+    ? []
+    : [
+        '回复操作：',
+        `接受 ${object.objectId} v${object.version}`,
+        `要求修改 ${object.objectId} v${object.version}：请说明需要修改的内容`,
+        `阻塞 ${object.objectId} v${object.version}：请说明阻塞原因`,
+        `取消 ${object.objectId} v${object.version}：请说明取消原因`,
+      ];
   return {
     title: 'ATL 待验收通知',
     text: [
       `标题：${object.title}`,
+      ...artifactLines,
       `状态：${stateLabel(object.state)}`,
       `待确认：${object.pendingCount} 项`,
       `位置：${ACCEPTANCE_NAVIGATION}`,
+      ...actionLines,
     ].join('\n'),
   };
 }
@@ -144,7 +189,9 @@ function messageFor(object: AcceptanceObject): { title: string; text: string } {
 function sameObject(left: AcceptanceObject, right: AcceptanceObject): boolean {
   return left.objectType === right.objectType
     && left.objectId === right.objectId
-    && left.version === right.version;
+    && left.version === right.version
+    && left.state === 'pending'
+    && right.state === 'pending';
 }
 
 export async function notifyAcceptance(
@@ -210,4 +257,34 @@ export async function notifyAcceptance(
       return failed;
     }
   });
+}
+
+export async function retryFailedAcceptanceNotifications(
+  context: NotifyAcceptanceContext,
+): Promise<AcceptanceNotificationRecord[]> {
+  const [records, visible] = await Promise.all([
+    context.ledger.list(),
+    context.listAcceptanceObjects(),
+  ]);
+  const current = new Map(visible.map((object) => [
+    idempotencyKey(object),
+    object,
+  ]));
+  const retryable = records
+    .filter((record) => (
+      record.status === 'failed'
+      && record.errorCode !== null
+      && RETRYABLE_ERROR_CODES.has(record.errorCode)
+      && current.get(record.idempotencyKey)?.state === 'pending'
+    ))
+    .sort((left, right) => left.idempotencyKey.localeCompare(right.idempotencyKey));
+
+  const results: AcceptanceNotificationRecord[] = [];
+  for (const record of retryable) {
+    const object = current.get(record.idempotencyKey);
+    if (object !== undefined) {
+      results.push(await notifyAcceptance(context, object));
+    }
+  }
+  return results;
 }

@@ -1,14 +1,16 @@
 import type { Task } from '../domain/task.js';
-import { localBusinessDate } from '../services/claim-task.js';
 import { peekNextTask } from '../services/query-tasks.js';
 import type { ServiceContext } from '../services/service-context.js';
 import type { AuditEvent } from '../storage/contracts.js';
+import { recordDecision } from '../services/record-decision.js';
+import { startDecisionContinuation } from '../services/start-decision-continuation.js';
 import {
   acquireProcessLock,
 } from './process-lock.js';
 import {
   appendBusyAudit,
   errorCode,
+  executeClaimedRun,
   executeRun,
   runOnce,
   type RunOnceDependencies,
@@ -16,13 +18,25 @@ import {
 
 export type RunOutcome =
   | { status: 'submitted'; taskId: string; runId: string; artifactRef: string }
-  | { status: 'no_task' | 'daily_limit' | 'runner_busy' }
+  | {
+    status: 'waiting_for_decision';
+    taskId: string;
+    runId: string;
+    decisionRequestId: string;
+  }
+  | { status: 'no_task' | 'runner_busy' }
   | {
     status: 'requeued' | 'blocked';
     taskId: string;
     runId: string;
     errorCode: string;
   };
+
+export type DecisionContinuationOutcome = RunOutcome | {
+  status: 'duplicate_decision';
+  taskId: string;
+  decisionRequestId: string;
+};
 
 export interface RunnerController {
   runAndWait(input: {
@@ -33,14 +47,21 @@ export interface RunnerController {
     taskId: string;
     mode: 'manual';
   }): Promise<{ runId: string }>;
+  continueAfterDecision(input: {
+    taskId: string;
+    decisionRequestId: string;
+    responseEventId: string;
+    senderUserId: string;
+    conversationId: string;
+    selectedOptionId: string;
+    responseText?: string;
+  }): Promise<DecisionContinuationOutcome>;
 }
 
 export type CreateRunnerControllerOptions = RunOnceDependencies;
 
 export interface RunnerStatus {
   latestRun: AuditEvent | null;
-  automaticClaimsToday: number;
-  dailyLimit: number;
   blockedTasks: Task[];
   nextEligibleTask: Task | null;
 }
@@ -90,6 +111,68 @@ export function createRunnerController(
 ): RunnerController {
   return {
     runAndWait: (input) => runOnce(dependencies, input),
+    async continueAfterDecision(input) {
+      const recorded = await recordDecision(dependencies.ctx, input.taskId, {
+        decisionRequestId: input.decisionRequestId,
+        responseEventId: input.responseEventId,
+        senderUserId: input.senderUserId,
+        conversationId: input.conversationId,
+        selectedOptionId: input.selectedOptionId,
+        ...(input.responseText === undefined ? {} : { responseText: input.responseText }),
+      });
+      if (
+        !recorded.accepted
+        && (
+          recorded.task.status !== 'agent_executable'
+          || recorded.task.lastDecision?.continuationRunId !== null
+        )
+      ) {
+        return {
+          status: 'duplicate_decision',
+          taskId: input.taskId,
+          decisionRequestId: input.decisionRequestId,
+        };
+      }
+      const lock = await acquireProcessLock({
+        ...dependencies.processLock,
+        runtimeRoot: dependencies.runtimeRoot,
+        clock: dependencies.ctx.clock,
+      });
+      if (lock === null) {
+        await appendBusyAudit(dependencies.ctx, 'manual');
+        return { status: 'runner_busy' };
+      }
+      try {
+        const runId = dependencies.runId();
+        const continuation = await startDecisionContinuation(
+          dependencies.ctx,
+          input.taskId,
+          {
+            decisionRequestId: input.decisionRequestId,
+            responseEventId: input.responseEventId,
+            mode: 'manual',
+            agent: dependencies.agent,
+            runId,
+            leaseMinutes: dependencies.leaseMinutes,
+          },
+        );
+        if (!continuation.started) {
+          return {
+            status: 'duplicate_decision',
+            taskId: input.taskId,
+            decisionRequestId: input.decisionRequestId,
+          };
+        }
+        return executeClaimedRun(
+          dependencies,
+          { mode: 'manual', taskId: input.taskId },
+          runId,
+          continuation.task,
+        );
+      } finally {
+        await lock.release();
+      }
+    },
     async start(input) {
       const lock = await acquireProcessLock({
         ...dependencies.processLock,
@@ -122,9 +205,8 @@ export function createRunnerController(
 
 export async function getRunnerStatus(
   ctx: ServiceContext,
-  options: { dailyLimit: number },
 ): Promise<RunnerStatus> {
-  const [latestRun, automaticClaimsToday, tasks, nextEligibleTask] = await Promise.all([
+  const [latestRun, tasks, nextEligibleTask] = await Promise.all([
     ctx.audit.latest({
       events: [
         'task.claimed',
@@ -133,18 +215,11 @@ export async function getRunnerStatus(
         'artifact.submitted',
       ],
     }),
-    ctx.audit.count({
-      event: 'task.claimed',
-      localDate: localBusinessDate(ctx.clock()),
-      mode: 'automatic',
-    }),
     ctx.tasks.list(),
     peekNextTask(ctx),
   ]);
   return {
     latestRun,
-    automaticClaimsToday,
-    dailyLimit: options.dailyLimit,
     blockedTasks: tasks.filter((task) => task.status === 'blocked'),
     nextEligibleTask,
   };

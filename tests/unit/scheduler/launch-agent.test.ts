@@ -91,7 +91,6 @@ function renderOptions(paths: Awaited<ReturnType<typeof fixture>>) {
       ATL_CLAUDE_MODEL: 'glm-4-flash',
       ATL_DINGTALK_PROFILE: 'synthetic-current-profile',
       ATL_ALLOWED_LOCAL_ROOTS: paths.allowedRoot,
-      ATL_DAILY_LIMIT: '2',
     },
     homeDirectory: paths.home,
     nodeExecutable: process.execPath,
@@ -216,7 +215,6 @@ describe('renderLaunchAgent', () => {
       ATL_CLAUDE_MODEL: 'glm-4-flash',
       ATL_DINGTALK_PROFILE: 'synthetic-current-profile',
       ATL_ALLOWED_LOCAL_ROOTS: canonical.allowedRoot,
-      ATL_DAILY_LIMIT: '2',
       HOME: canonical.home,
       PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
     });
@@ -229,11 +227,10 @@ describe('renderLaunchAgent', () => {
     expect(rendered.plist).not.toContain('RunAtLoad');
     expect(rendered.plist).not.toContain('SECRET_SENTINEL');
     expect(rendered.plist).not.toContain('REAL_TASK_SENTINEL');
-    expect(rendered.plist.match(/<key>Hour<\/key>/g)).toHaveLength(15);
-    expect(rendered.plist.match(/<integer>(?:8|9|1\d|2[0-2])<\/integer>/g))
-      .toHaveLength(15);
-    expect(rendered.plist.match(/<key>Minute<\/key>\s*<integer>0<\/integer>/g))
-      .toHaveLength(15);
+    expect(rendered.plist).toContain(
+      '<key>StartInterval</key>\n  <integer>900</integer>',
+    );
+    expect(rendered.plist).not.toContain('StartCalendarInterval');
     expect(rendered.environmentVariables.ATL_ALLOWED_LOCAL_ROOTS.split(delimiter))
       .toEqual([canonical.allowedRoot]);
   });

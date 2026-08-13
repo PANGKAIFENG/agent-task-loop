@@ -14,14 +14,20 @@ import { delimiter, dirname, isAbsolute, join } from 'node:path';
 import type { ZodType } from 'zod';
 
 import type { ContextBundle } from './context-bundle.js';
+import {
+  parseSupportedExecutionProfile,
+  resolveExecutionProfile,
+  validateExecutionProfileContext,
+  type ExecutionProfile,
+} from './execution-profile.js';
 import type {
   ResearchDriver,
   ResearchDriverInput,
 } from './research-driver.js';
 import {
-  researchResultJsonSchema,
-  researchResultSchema,
-  type ResearchResult,
+  driverResultJsonSchema,
+  driverResultSchema,
+  type DriverResult,
 } from './result-contract.js';
 
 export const CLAUDE_RESEARCH_TIMEOUT_MS = 30 * 60 * 1000;
@@ -40,7 +46,7 @@ const REQUIRED_HELP_MARKERS = [
   '--max-budget-usd',
 ] as const;
 const claudeResearchJsonSchema = Object.fromEntries(
-  Object.entries(researchResultJsonSchema)
+  Object.entries(driverResultJsonSchema)
     .filter(([key]) => key !== '$schema'),
 );
 
@@ -354,9 +360,18 @@ function configuredModel(value: string | undefined): string | undefined {
   return value;
 }
 
-function buildPrompt(context: ContextBundle): string {
+function buildPrompt(
+  context: ContextBundle,
+  profile: ExecutionProfile,
+): string {
   return [
-    'You are executing a restricted read-only research task.',
+    `Execution role: ${profile.role.id}`,
+    `Selection reason: ${profile.role.selectionReason}`,
+    '',
+    'Capability instructions:',
+    ...profile.skills.map((skill) => (
+      `- ${skill.id}@${skill.version}: ${skill.instructions}`
+    )),
     '',
     'Allowed context bundle:',
     JSON.stringify(context),
@@ -368,6 +383,12 @@ function buildPrompt(context: ContextBundle): string {
     '- Do not change code or create files.',
     '- Do not change configuration or settings.',
     '- Do not create or modify calendar events.',
+    '- If the task can be completed with the allowed context and public sources, return a research result.',
+    '- If a user decision or authorization is required before continuing, return a decision_request with a stable request ID and concrete options.',
+    '- Do not invent a decision or perform any action that requires user authorization.',
+    '- Every task acceptance criterion must have an explicit acceptance response.',
+    '- Evidence URLs must use HTTPS.',
+    '- The result always requires human review and must not mark the task complete.',
     '',
     'Output contract:',
     JSON.stringify(claudeResearchJsonSchema),
@@ -404,14 +425,14 @@ function extractStructuredOutput(envelope: unknown): unknown {
   return record;
 }
 
-function parseResult(stdout: string): ResearchResult {
+function parseResult(stdout: string): DriverResult {
   let envelope: unknown;
   try {
     envelope = JSON.parse(stdout);
   } catch {
     throw new ClaudeDriverError('invalid_claude_json');
   }
-  const result = researchResultSchema.safeParse(
+  const result = driverResultSchema.safeParse(
     extractStructuredOutput(envelope),
   );
   if (!result.success) {
@@ -835,7 +856,9 @@ class ClaudeResearchDriver implements ResearchDriver {
     private readonly model: string | undefined,
   ) {}
 
-  async execute(input: ResearchDriverInput): Promise<ResearchResult> {
+  async execute(input: ResearchDriverInput): Promise<DriverResult> {
+    resolveExecutionProfile(input.task);
+    const profile = parseSupportedExecutionProfile(input.profile);
     if (
       input.task.taskId !== input.context.taskId
       || !Number.isFinite(input.timeoutMs)
@@ -843,6 +866,7 @@ class ClaudeResearchDriver implements ResearchDriver {
     ) {
       throw new ClaudeDriverError('invalid_driver_input');
     }
+    validateExecutionProfileContext(profile, input.context);
     const runDirectory = await this.fileSystem.mkdtemp(
       join(tmpdir(), 'atl-claude-'),
     );
@@ -853,12 +877,17 @@ class ClaudeResearchDriver implements ResearchDriver {
       this.claudeConfigDirectory,
     );
     let outcome:
-      | { success: true; value: ResearchResult }
+      | { success: true; value: DriverResult }
       | { success: false; error: unknown };
     try {
       outcome = {
         success: true,
-        value: await this.executeInDirectory(input, runDirectory, environment),
+        value: await this.executeInDirectory(
+          input,
+          profile,
+          runDirectory,
+          environment,
+        ),
       };
     } catch (error) {
       outcome = { success: false, error };
@@ -880,9 +909,10 @@ class ClaudeResearchDriver implements ResearchDriver {
 
   private async executeInDirectory(
     input: ResearchDriverInput,
+    profile: ExecutionProfile,
     runDirectory: string,
     environment: NodeJS.ProcessEnv,
-  ): Promise<ResearchResult> {
+  ): Promise<DriverResult> {
     await verifyExecutable(this.executable, this.fileSystem);
     let help: ProcessResult;
     try {
@@ -911,7 +941,7 @@ class ClaudeResearchDriver implements ResearchDriver {
       '--permission-mode',
       'dontAsk',
       '--tools',
-      'WebSearch,WebFetch,Read',
+      profile.allowedTools.join(','),
       '--output-format',
       'json',
       '--json-schema',
@@ -934,7 +964,7 @@ class ClaudeResearchDriver implements ResearchDriver {
         args,
         cwd: runDirectory,
         environment,
-        input: buildPrompt(input.context),
+        input: buildPrompt(input.context, profile),
         timeoutMs: Math.min(
           input.timeoutMs,
           CLAUDE_RESEARCH_TIMEOUT_MS,

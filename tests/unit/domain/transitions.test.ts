@@ -14,9 +14,18 @@ const expectedTransitions: Record<
   readonly ControlledTaskStatus[]
 > = {
   inbox: ['ready', 'cancelled'],
-  ready: ['in_progress', 'blocked', 'cancelled'],
-  in_progress: ['review', 'ready', 'blocked', 'cancelled'],
-  review: ['done', 'ready', 'blocked', 'cancelled'],
+  ready: ['agent_executable', 'in_progress', 'blocked', 'cancelled'],
+  agent_executable: ['in_progress', 'blocked', 'cancelled'],
+  in_progress: [
+    'waiting_for_decision',
+    'review',
+    'ready',
+    'agent_executable',
+    'blocked',
+    'cancelled',
+  ],
+  waiting_for_decision: ['agent_executable', 'blocked', 'cancelled'],
+  review: ['done', 'ready', 'agent_executable', 'blocked', 'cancelled'],
   done: ['ready'],
   blocked: ['ready', 'cancelled'],
   cancelled: [],

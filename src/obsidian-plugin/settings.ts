@@ -61,7 +61,6 @@ export const DEFAULT_BACKGROUND_SETTINGS: BackgroundSettings = {
   model: 'claude-sonnet-4-5',
   baseUrl: '',
   dingtalkProfile: '',
-  dailyLimit: 3,
 };
 
 export const DEFAULT_SETTINGS: AtlPluginSettings = {
@@ -543,10 +542,6 @@ export function normalizeSettings(value: unknown): AtlPluginSettings {
       model,
       baseUrl,
       dingtalkProfile: optionalDingTalkProfile(rawBackground.dingtalkProfile) ?? '',
-      dailyLimit: Number.isSafeInteger(rawBackground.dailyLimit)
-        && Number(rawBackground.dailyLimit) > 0
-        ? Number(rawBackground.dailyLimit)
-        : DEFAULT_BACKGROUND_SETTINGS.dailyLimit,
     },
     dashboard,
     dingtalkCalendar,

@@ -67,6 +67,7 @@ export async function reopenTask(
     const reopened: Task = {
       ...task,
       status: 'ready',
+      autoExecutable: false,
       reviewFeedback: input.reason,
       readyAt: timestamp,
       updatedAt: timestamp,

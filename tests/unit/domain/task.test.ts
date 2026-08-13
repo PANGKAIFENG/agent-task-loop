@@ -105,6 +105,56 @@ describe('priorityRank', () => {
 });
 
 describe('taskSchema', () => {
+  it('accepts bounded pending and completed decision context', () => {
+    const task = makeTask({
+      status: 'waiting_for_decision',
+      pendingDecision: {
+        schemaVersion: 1,
+        requestId: 'decision-001',
+        question: 'Which direction should continue?',
+        options: [
+          { id: 'option-a', label: 'Option A' },
+          { id: 'option-b', label: 'Option B' },
+        ],
+        requestedAt: '2026-07-14T00:00:00.000Z',
+        requestedByRunId: 'run-001',
+      },
+      lastDecision: {
+        schemaVersion: 1,
+        requestId: 'decision-000',
+        selectedOptionId: 'option-a',
+        selectedOptionLabel: 'Option A',
+        responseText: 'Continue with A.',
+        responseEventId: 'dingtalk-event-000',
+        respondedAt: '2026-07-13T00:00:00.000Z',
+      },
+    });
+
+    expect(taskSchema.parse(task)).toMatchObject({
+      status: 'waiting_for_decision',
+      pendingDecision: { requestId: 'decision-001' },
+      lastDecision: { responseEventId: 'dingtalk-event-000' },
+    });
+  });
+
+  it('rejects a decision request with duplicate option IDs', () => {
+    const task = makeTask({
+      pendingDecision: {
+        schemaVersion: 1,
+        requestId: 'decision-001',
+        question: 'Which direction should continue?',
+        options: [
+          { id: 'duplicate', label: 'Option A' },
+          { id: 'duplicate', label: 'Option B' },
+        ],
+        requestedAt: '2026-07-14T00:00:00.000Z',
+        requestedByRunId: 'run-001',
+      },
+    });
+
+    expect(taskSchema.safeParse(task).success).toBe(false);
+  });
+
   it.each([
     'waiting_external',
     '等待回复',

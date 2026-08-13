@@ -130,7 +130,14 @@ describe('ContributionDashboardController', () => {
     expect(states.some((state) => state.token.status === 'cached')).toBe(true);
     expect(controller.getState().contribution.snapshot?.kpis.completedToday).toBe(1);
     expect(controller.getState().home.snapshot).toMatchObject({
-      counts: { inbox: 0, ready: 0, inProgress: 0, review: 0, blocked: 0 },
+      counts: {
+        inbox: 0,
+        ready: 0,
+        agentExecutable: 0,
+        inProgress: 0,
+        review: 0,
+        blocked: 0,
+      },
       nextAction: null,
     });
     refresh.resolve(snapshot());

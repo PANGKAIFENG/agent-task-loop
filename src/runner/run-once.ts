@@ -1,28 +1,36 @@
 import { buildContextBundle } from './context-bundle.js';
+import { persistRuntimePack } from './runtime-pack.js';
+import {
+  executionProfileResultMatchesTask,
+  resolveExecutionProfile,
+  validateExecutionProfileContext,
+} from './execution-profile.js';
 import {
   acquireProcessLock,
   type AcquireProcessLockOptions,
 } from './process-lock.js';
 import type { ResearchDriver } from './research-driver.js';
-import { researchResultSchema } from './result-contract.js';
+import { driverResultSchema, type ResearchResult } from './result-contract.js';
 import { claimNextTask } from '../services/claim-next-task.js';
 import {
   claimTask,
-  localBusinessDate,
   type ClaimMode,
 } from '../services/claim-task.js';
+import { requestDecision } from '../services/request-decision.js';
 import { recordRunFailure } from '../services/record-run-failure.js';
 import { recoverExpiredClaims } from '../services/recover-expired-claims.js';
+import { peekNextDecisionContinuation } from '../services/query-tasks.js';
 import type { ServiceContext } from '../services/service-context.js';
+import { startDecisionContinuation } from '../services/start-decision-continuation.js';
 import { submitArtifact } from '../services/submit-artifact.js';
 import type { RunOutcome } from './runner-controller.js';
+import type { Task } from '../domain/task.js';
 
 export interface RunOnceDependencies {
   ctx: ServiceContext;
   driver: ResearchDriver;
   runtimeRoot: string;
   allowedLocalRoots: readonly string[];
-  dailyLimit: number;
   leaseMinutes: number;
   timeoutMs: number;
   agent: string;
@@ -92,21 +100,29 @@ export async function executeRun(
 
   let task;
   if (input.mode === 'automatic') {
-    const claimedToday = await dependencies.ctx.audit.count({
-      event: 'task.claimed',
-      localDate: localBusinessDate(dependencies.ctx.clock()),
-      mode: 'automatic',
-    });
-    if (claimedToday >= dependencies.dailyLimit) {
-      return { status: 'daily_limit' };
+    const continuation = await peekNextDecisionContinuation(dependencies.ctx);
+    if (continuation?.lastDecision !== null && continuation?.lastDecision !== undefined) {
+      const started = await startDecisionContinuation(
+        dependencies.ctx,
+        continuation.taskId,
+        {
+          decisionRequestId: continuation.lastDecision.requestId,
+          responseEventId: continuation.lastDecision.responseEventId,
+          agent: dependencies.agent,
+          runId,
+          mode: 'automatic',
+          leaseMinutes: dependencies.leaseMinutes,
+        },
+      );
+      task = started.started ? started.task : null;
+    } else {
+      task = await claimNextTask(dependencies.ctx, {
+        agent: dependencies.agent,
+        runId,
+        mode: 'automatic',
+        leaseMinutes: dependencies.leaseMinutes,
+      });
     }
-    task = await claimNextTask(dependencies.ctx, {
-      agent: dependencies.agent,
-      runId,
-      mode: 'automatic',
-      dailyLimit: dependencies.dailyLimit,
-      leaseMinutes: dependencies.leaseMinutes,
-    });
     if (task === null) {
       return { status: 'no_task' };
     }
@@ -115,29 +131,102 @@ export async function executeRun(
       agent: dependencies.agent,
       runId,
       mode: 'manual',
-      dailyLimit: dependencies.dailyLimit,
       leaseMinutes: dependencies.leaseMinutes,
     });
   }
 
-  let result;
+  return executeClaimedRun(dependencies, input, runId, task);
+}
+
+export async function executeClaimedRun(
+  dependencies: RunOnceDependencies,
+  input: RunInput,
+  runId: string,
+  task: Task,
+): Promise<Exclude<RunOutcome, { status: 'runner_busy' | 'no_task' }>> {
+  if (
+    task.status !== 'in_progress'
+    || task.claim === null
+    || task.claim.runId !== runId
+  ) {
+    throw new InvalidRunnerInputError();
+  }
+  let result: ResearchResult;
+  let resultContextPackId: string | undefined;
   try {
     if (task.projectId === null) {
       throw new InvalidRunnerInputError();
     }
     const project = await dependencies.ctx.projects.get(task.projectId);
+    const previousArtifactRef = task.artifactRefs.at(-1);
+    const previousArtifact = previousArtifactRef === undefined
+      ? undefined
+      : {
+          reference: previousArtifactRef,
+          ...await dependencies.ctx.artifacts.readSummary(previousArtifactRef),
+        };
     const context = await buildContextBundle(task, project, {
       allowedLocalRoots: dependencies.allowedLocalRoots,
+      ...(previousArtifact === undefined ? {} : { previousArtifact }),
+    });
+    const executionProfile = resolveExecutionProfile(task);
+    validateExecutionProfileContext(executionProfile, context);
+    const runtimePack = await persistRuntimePack(dependencies.runtimeRoot, {
+      task,
+      project,
+      context,
+      executionProfile,
+      asOf: dependencies.ctx.clock().toISOString(),
+      expiresAt: task.claim.leaseExpiresAt,
+    });
+    resultContextPackId = runtimePack.packId;
+    await dependencies.ctx.audit.append({
+      event: 'context_pack.frozen',
+      at: dependencies.ctx.clock().toISOString(),
+      taskId: task.taskId,
+      projectId: project.projectId,
+      runId,
+      details: {
+        packId: runtimePack.packId,
+        packSha256: runtimePack.sha256,
+        blockCount: runtimePack.pack.blocks.length,
+        permissionProfile: runtimePack.pack.permissionProfile,
+        executionProfileId: executionProfile.profileId,
+        executionProfileVersion: executionProfile.profileVersion,
+        executionProfileSha256: runtimePack.pack.executionProfileSha256,
+      },
     });
     const rawResult = await dependencies.driver.execute({
       task,
-      context,
+      context: { ...context, packId: runtimePack.packId },
+      profile: executionProfile,
       timeoutMs: dependencies.timeoutMs,
     });
-    result = researchResultSchema.safeParse(rawResult);
-    if (!result.success) {
+    const parsedResult = driverResultSchema.safeParse(rawResult);
+    if (!parsedResult.success) {
       throw new InvalidRunnerResultError();
     }
+    if ('kind' in parsedResult.data) {
+      const waiting = await requestDecision(dependencies.ctx, task.taskId, {
+        ...parsedResult.data,
+        runId,
+      });
+      return {
+        status: 'waiting_for_decision',
+        taskId: task.taskId,
+        runId,
+        decisionRequestId: waiting.pendingDecision?.requestId
+          ?? parsedResult.data.decisionRequestId,
+      };
+    }
+    if (!executionProfileResultMatchesTask(
+      executionProfile,
+      task,
+      parsedResult.data,
+    )) {
+      throw new InvalidRunnerResultError();
+    }
+    result = parsedResult.data;
   } catch (error) {
     const code = errorCode(error);
     const failed = await recordRunFailure(dependencies.ctx, task.taskId, {
@@ -154,7 +243,8 @@ export async function executeRun(
   }
   const submitted = await submitArtifact(dependencies.ctx, task.taskId, {
     runId,
-    result: result.data,
+    result,
+    packId: resultContextPackId,
   });
   const artifactRef = submitted.artifactRefs.at(-1);
   if (artifactRef === undefined) {

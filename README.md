@@ -16,14 +16,14 @@ Agent Task Loop（ATL）是一套运行在 Obsidian 里的个人待办工作流�
 4. **推进**：自己把任务从“待办”移到“进行中”，完成后移到“已完成”。
 5. **需要 AI 时再用**：在任意 TaskNotes 任务上选择“智能完善任务”，共同补全目标、下一步和完成条件；也可以让思考教练启发你确认本周重点，或授权 ATL Runner 做只读调研。
 
-默认看板只有四列：
+默认看板有五个主要状态：
 
 ```text
-收件箱 → 待办 → 进行中 → 已完成
- Inbox     Ready   In Progress   Done
+收件箱 → 待办 → Agent 待执行 → 进行中 → 已完成
+ Inbox     Ready   Agent Executable   In Progress   Done
 ```
 
-这四列只是推荐起点。状态由 TaskNotes 管理，你可以改显示名称、调整顺序或增加“等待回复”“以后再做”等状态；ATL 会保留这些自定义状态，不会强制改回固定七列。
+“Agent 待执行”只用于已经明确交给 Agent 的任务，普通人工任务可以一直留在其余四列中。这五列只是推荐起点。状态由 TaskNotes 管理，你可以改显示名称、调整顺序或增加“等待回复”“以后再做”等状态；ATL 会保留这些自定义状态。
 
 ## 产品能力
 
@@ -146,16 +146,24 @@ AI 分析只接收当前日程信息、听记原文和你显式勾选的可解�
 
 ### 10. 可选的自动调研
 
-ATL Runner 可以在每天 `08:00` 至 `22:00` 的每个整点检查一次队列，并执行明确授权的只读调研。只有同时满足以下条件的任务才会被领取：
+ATL Runner 每 15 分钟检查一次队列，并执行明确授权的只读调研。先在 Inbox 中把任务“移到待办”，补齐执行上下文后，再从任务文件菜单选择“授权 Agent 执行”；命令面板也提供同名命令。只有同时满足以下条件的任务才会被领取：
 
-1. 状态为 `ready`；
+1. 状态为 `agent_executable`；
 2. 类型为 `research`；
 3. 已关联项目；
 4. 已填写目标和至少一条完成条件；
 5. 权限为 `read_only_research`；
-6. 用户显式设置 `auto_executable=true`。
+6. 用户已经完成上述显式授权。
 
-普通手工待办默认是 `auto_executable=false`，不会被 Runner 领取。
+普通手工待办保持 `ready`，不会被 Runner 领取。`auto_executable` 只保留为兼容镜像字段，不再作为领取授权信号。当前不设每日执行数量上限，但同一时间仍只运行一个 Agent 任务。
+
+Runner 在实质执行前会冻结本次 Runtime Pack，记录任务与运行 ID、权限、实际加载的上下文块哈希、来源引用和上一版 Artifact 引用。Manifest 保存在本机 `.atl-runtime/context-packs/`，不复制来源文件正文；Agent 产出的 Artifact 和 Audit 都会绑定同一个 `pack_id`。决策续跑或要求修改会生成新的 Runtime Pack，因此可以核对每一版结果实际使用了哪一版上下文。
+
+每次运行还会确定并冻结一个版本化 Execution Profile，用来解释本次为什么选择这个执行角色、实际加载哪些 Skill 指令、开放哪些 Tool、要求哪些上下文，以及如何验收。当前只支持确定性 `research_v1`：`decision-research@1` 与 `evidence-collection@1`、`WebSearch/WebFetch/Read`、只读公开调研和人工验收。不匹配的任务会明确失败，不会让模型自由选择其他 Agent、Skill 或 Tool。完整产品契约见 [Execution Profile 产品契约](docs/Execution-Profile-Product-Contract.md)。
+
+人工验收还会把本次 Runtime Pack、Execution Profile、Artifact 和结论关联成一条待审查 Eval 样本。要求修改、阻塞或取消会额外成为回归候选，但不会自动进入回归集，更不会自动修改 Agent、Skill、Tool 或路由。可以用 `pnpm --silent atl eval list --json` 只读查看这些样本；完整规则见 [Eval 反馈闭环产品契约](docs/Eval-Feedback-Loop-Product-Contract.md)。
+
+当前 Runtime Pack 只冻结任务已明确关联的来源：任务来源笔记、项目描述、项目资源和上一版 Artifact 摘要。它尚不负责自动发现更多代码仓库、会议、长期记忆或 Skill；这些候选源的动态选择和解释属于后续 Context Control Plane。
 
 ## 安装
 
@@ -249,6 +257,7 @@ pnpm build
 ```
 
 - 产品需求：[Agent Task Loop V0.1 PRD](docs/PRD-Agent-Task-Loop-V0.1.md)
+- Eval 反馈闭环：[Eval 反馈闭环产品契约](docs/Eval-Feedback-Loop-Product-Contract.md)
 - 用户操作：[Obsidian 用户操作指南](docs/operations/obsidian-plugin.md)
 - CLI 与本地开发：[开发者快速开始](docs/operations/developer-cli.md)
 - 调度器维护：[本地研究任务调度](docs/operations/scheduler.md)

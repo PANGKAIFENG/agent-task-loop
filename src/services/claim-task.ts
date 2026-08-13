@@ -7,14 +7,13 @@ import type { ServiceContext } from './service-context.js';
 
 export type ClaimMode = 'automatic' | 'manual';
 
-export const AUTOMATIC_CLAIM_LOCK_KEY = 'claim-automatic-global';
+export const AGENT_CLAIM_LOCK_KEY = 'claim-agent-global';
 
 export interface ClaimTaskOptions {
   mode: ClaimMode;
   agent?: string;
   runId?: string;
   leaseMinutes?: number;
-  dailyLimit?: number;
 }
 
 export interface ResolvedClaimTaskOptions {
@@ -22,7 +21,6 @@ export interface ResolvedClaimTaskOptions {
   agent: string;
   runId: string;
   leaseMinutes: number;
-  dailyLimit: number;
 }
 
 export class InvalidClaimTaskOptionsError extends Error {
@@ -69,7 +67,6 @@ const claimTaskOptionsSchema = z
     agent: z.string().min(1).max(200).optional(),
     runId: z.string().min(1).max(200).optional(),
     leaseMinutes: z.number().positive().finite().optional(),
-    dailyLimit: z.number().int().nonnegative().optional(),
   })
   .strict();
 
@@ -85,14 +82,13 @@ export function resolveClaimTaskOptions(
     agent: parsed.data.agent ?? 'manual',
     runId: parsed.data.runId ?? 'manual',
     leaseMinutes: parsed.data.leaseMinutes ?? 15,
-    dailyLimit: parsed.data.dailyLimit ?? 3,
   };
 }
 
 export function isClaimEligible(task: Task): boolean {
-  return task.status === 'ready'
+  return task.status === 'agent_executable'
     && task.reviewState === 'confirmed'
-    && task.autoExecutable
+    && task.lastDecision?.continuationRunId !== null
     && readinessErrors(task).length === 0;
 }
 
@@ -108,18 +104,9 @@ export function localBusinessDate(now: Date): string {
 
 export async function automaticClaimSlotAvailable(
   ctx: ServiceContext,
-  localDate: string,
-  dailyLimit: number,
 ): Promise<boolean> {
-  if ((await ctx.tasks.list()).some((task) => task.status === 'in_progress')) {
-    return false;
-  }
-  const claimedToday = await ctx.audit.count({
-    event: 'task.claimed',
-    localDate,
-    mode: 'automatic',
-  });
-  return claimedToday < dailyLimit;
+  return !(await ctx.tasks.list())
+    .some((task) => task.status === 'in_progress' && task.claim !== null);
 }
 
 export async function claimTaskWithoutQuotaCheck(
@@ -141,7 +128,7 @@ export async function claimTaskWithoutQuotaCheck(
     if (!isClaimEligible(task)) {
       throw new ClaimTaskNotEligibleError();
     }
-    assertTransition('ready', 'in_progress');
+    assertTransition(task.status, 'in_progress');
     const claimed: Task = {
       ...task,
       status: 'in_progress',
@@ -177,7 +164,10 @@ export async function claimTaskWithoutQuotaCheck(
     } catch {
       try {
         await ctx.tasks.save(task);
-      } catch {
+      } catch (error) {
+        if (error instanceof TaskSavedIndexStaleError) {
+          throw new ClaimTaskAuditFailedError();
+        }
         throw new ClaimTaskRecoveryError();
       }
       throw new ClaimTaskAuditFailedError();
@@ -196,17 +186,8 @@ export async function claimTask(
 ): Promise<Task> {
   const options = resolveClaimTaskOptions(rawOptions);
   const now = ctx.clock();
-  if (options.mode === 'manual') {
-    return claimTaskWithoutQuotaCheck(ctx, taskId, options, now);
-  }
-
-  const localDate = localBusinessDate(now);
-  return ctx.tasks.withTaskLock(AUTOMATIC_CLAIM_LOCK_KEY, async () => {
-    if (!(await automaticClaimSlotAvailable(
-      ctx,
-      localDate,
-      options.dailyLimit,
-    ))) {
+  return ctx.tasks.withTaskLock(AGENT_CLAIM_LOCK_KEY, async () => {
+    if (!(await automaticClaimSlotAvailable(ctx))) {
       throw new ClaimTaskNotEligibleError();
     }
     return claimTaskWithoutQuotaCheck(ctx, taskId, options, now);

@@ -127,10 +127,18 @@ async function confirmTask(root: string, taskId: string): Promise<void> {
     'Cite an official HTTPS page.',
     '--priority',
     'high',
-    '--auto-executable',
     '--json',
   ]);
-  expect(json<Task>(result).status).toBe('ready');
+  expect(json<Task>(result)).toMatchObject({
+    status: 'ready',
+    autoExecutable: false,
+  });
+}
+
+async function authorizeAgent(root: string, taskId: string): Promise<Task> {
+  return json<Task>(await runCli(root, [
+    'task', 'authorize-agent', '--task-id', taskId, '--json',
+  ]));
 }
 
 afterEach(async () => {
@@ -174,6 +182,7 @@ describe('atl CLI core loop', () => {
     expect(help.exitCode, help.stderr).toBe(0);
     expect(help.stdout).toContain('run-once');
     expect(help.stdout).toContain('run-task');
+    expect(help.stdout).toContain('continue-decision');
     expect(help.stdout).toContain('status');
 
     for (const args of [
@@ -197,19 +206,39 @@ describe('atl CLI core loop', () => {
     const before = await readdir(root);
     const status = json<{
       latestRun: null;
-      automaticClaimsToday: number;
-      dailyLimit: number;
       blockedTasks: Task[];
       nextEligibleTask: Task | null;
     }>(await runCli(root, ['runner', 'status', '--json']));
     expect(status).toEqual({
       latestRun: null,
-      automaticClaimsToday: 0,
-      dailyLimit: 3,
       blockedTasks: [],
       nextEligibleTask: null,
     });
     expect(await readdir(root)).toEqual(before);
+  });
+
+  it('lists pending Eval samples without changing the Vault', async () => {
+    const root = await makeVault();
+    const help = await runCli(root, ['eval', '--help']);
+    expect(help.exitCode, help.stderr).toBe(0);
+    expect(help.stdout).toContain('list');
+
+    const before = await readdir(root);
+    expect(json(await runCli(root, ['eval', 'list', '--json']))).toEqual({
+      capabilitySamples: [],
+      regressionCandidates: [],
+    });
+    expect(await readdir(root)).toEqual(before);
+  });
+
+  it('uses a separate authorization command instead of a confirm flag', async () => {
+    const root = await makeVault();
+    const confirmHelp = await runCli(root, ['task', 'confirm', '--help']);
+    const taskHelp = await runCli(root, ['task', '--help']);
+
+    expect(confirmHelp.exitCode, confirmHelp.stderr).toBe(0);
+    expect(confirmHelp.stdout).not.toContain('--auto-executable');
+    expect(taskHelp.stdout).toContain('authorize-agent');
   });
 
   it('exposes a manual Qianwen synchronization command', async () => {
@@ -384,8 +413,26 @@ describe('atl CLI core loop', () => {
     expect(inbox[0]?.taskId).toBe(captured.taskId);
 
     await confirmTask(root, captured.taskId);
+    const unauthorizedClaim = await runCli(root, [
+      'task', 'next', '--claim', '--task-id', captured.taskId,
+      '--run-id', 'run-unauthorized', '--json',
+    ]);
+    expect(unauthorizedClaim.exitCode).toBe(1);
+    expect(JSON.parse(unauthorizedClaim.stdout)).toMatchObject({
+      ok: false,
+      error: { code: 'task_not_eligible_for_claim' },
+    });
+
+    const authorized = await authorizeAgent(root, captured.taskId);
+    expect(authorized).toMatchObject({
+      status: 'agent_executable',
+      autoExecutable: true,
+    });
     const next = json<Task | null>(await runCli(root, ['task', 'next', '--json']));
-    expect(next).toMatchObject({ taskId: captured.taskId, status: 'ready' });
+    expect(next).toMatchObject({
+      taskId: captured.taskId,
+      status: 'agent_executable',
+    });
 
     const readOnlyTaskPath = join(
       root,
@@ -548,6 +595,7 @@ describe('atl CLI core loop', () => {
     await createProject(root);
     const first = await captureTask(root, 'manual:cli:stop');
     await confirmTask(root, first.taskId);
+    await authorizeAgent(root, first.taskId);
     await runCli(root, [
       'task', 'next', '--claim', '--task-id', first.taskId,
       '--run-id', 'run-stop', '--json',
@@ -556,7 +604,9 @@ describe('atl CLI core loop', () => {
       'task', 'stop', '--task-id', first.taskId, '--json',
     ]));
     expect(stopped.status).toBe('ready');
+    expect(stopped.autoExecutable).toBe(false);
 
+    await authorizeAgent(root, first.taskId);
     await runCli(root, [
       'task', 'next', '--claim', '--task-id', first.taskId,
       '--run-id', 'run-stop-done', '--json',
@@ -581,6 +631,7 @@ describe('atl CLI core loop', () => {
 
     const second = await captureTask(root, 'manual:cli:block');
     await confirmTask(root, second.taskId);
+    await authorizeAgent(root, second.taskId);
     await runCli(root, [
       'task', 'next', '--claim', '--task-id', second.taskId,
       '--run-id', 'run-block', '--json',

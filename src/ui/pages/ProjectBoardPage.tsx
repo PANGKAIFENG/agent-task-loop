@@ -13,6 +13,7 @@ import {
 const knownColumns: Array<{ status: TaskStatus; label: string }> = [
   { status: 'inbox', label: '待规划' },
   { status: 'ready', label: '待办' },
+  { status: 'agent_executable', label: 'Agent 待执行' },
   { status: 'in_progress', label: '进行中' },
   { status: 'review', label: '审核中' },
   { status: 'done', label: '已完成' },
@@ -38,7 +39,6 @@ export function ProjectBoardPage({ projectId, navigate }: ProjectBoardPageProps)
   const [status, setStatus] = useState('all');
   const [source, setSource] = useState('all');
   const [priority, setPriority] = useState('all');
-  const [autoExecutable, setAutoExecutable] = useState('all');
 
   const project = projectsQuery.data?.find((candidate) => candidate.projectId === projectId);
   const sources = useMemo(
@@ -61,7 +61,6 @@ export function ProjectBoardPage({ projectId, navigate }: ProjectBoardPageProps)
     (status === 'all' || task.status === status)
     && (source === 'all' || task.origin === source)
     && (priority === 'all' || task.priority === priority)
-    && (autoExecutable === 'all' || String(task.autoExecutable) === autoExecutable)
   ));
   const pending = projectsQuery.isPending || tasksQuery.isPending;
   const error = projectsQuery.isError || tasksQuery.isError;
@@ -79,7 +78,6 @@ export function ProjectBoardPage({ projectId, navigate }: ProjectBoardPageProps)
         <label>状态筛选<select aria-label="状态筛选" value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">全部状态</option>{columns.map((column) => <option value={column.status} key={column.status}>{column.label}</option>)}</select></label>
         <label>来源筛选<select aria-label="来源筛选" value={source} onChange={(event) => setSource(event.target.value)}><option value="all">全部来源</option>{sources.map((item) => <option value={item} key={item}>{item}</option>)}</select></label>
         <label>优先级筛选<select aria-label="优先级筛选" value={priority} onChange={(event) => setPriority(event.target.value)}><option value="all">全部优先级</option>{Object.entries(priorityLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
-        <label>自动执行筛选<select aria-label="自动执行筛选" value={autoExecutable} onChange={(event) => setAutoExecutable(event.target.value)}><option value="all">全部</option><option value="true">可自动执行</option><option value="false">仅手动</option></select></label>
       </div>
       {pending && <div className="page-state board-state" role="status"><CircleDotDashed aria-hidden="true" />正在载入项目看板</div>}
       {error && (
@@ -98,7 +96,7 @@ export function ProjectBoardPage({ projectId, navigate }: ProjectBoardPageProps)
                     {columnTasks.map((task: TaskDto) => (
                       <article className="task-card" key={task.taskId}>
                         <h3>{task.title}</h3><p>{task.origin}</p>
-                        <footer><span className={`priority priority-${task.priority}`}>{priorityLabels[task.priority]}</span>{task.autoExecutable && <span className="signal signal-success">自动</span>}</footer>
+                        <footer><span className={`priority priority-${task.priority}`}>{priorityLabels[task.priority]}</span>{task.status === 'agent_executable' && <span className="signal signal-success">Agent</span>}</footer>
                       </article>
                     ))}
                   </div>

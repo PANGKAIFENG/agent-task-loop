@@ -18,6 +18,16 @@ export interface AcceptanceObject {
   state: AcceptanceObjectState;
   pendingCount: number;
   path: string;
+  artifact?: {
+    reference: string;
+    summary: string;
+    evidenceCount: number;
+    checks: {
+      met: number;
+      partial: number;
+      notMet: number;
+    };
+  } | undefined;
   notification: AcceptanceNotificationSnapshot | null;
 }
 

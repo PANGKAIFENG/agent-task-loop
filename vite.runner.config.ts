@@ -1,5 +1,6 @@
 import { builtinModules } from 'node:module';
 import { resolve } from 'node:path';
+import { copyFile } from 'node:fs/promises';
 
 import { defineConfig } from 'vite';
 
@@ -9,6 +10,15 @@ const nodeModules = new Set([
 ]);
 
 export default defineConfig({
+  plugins: [{
+    name: 'copy-dingtalk-bridge',
+    async closeBundle() {
+      await copyFile(
+        resolve('scripts/atl-dingtalk-bridge.mjs'),
+        resolve('build/obsidian-plugin/atl-dingtalk-bridge.mjs'),
+      );
+    },
+  }],
   build: {
     emptyOutDir: false,
     lib: {

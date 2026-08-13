@@ -1,4 +1,5 @@
 import {
+  isDecisionContinuationPending,
   priorityRank,
   type Task,
   type TaskStatus,
@@ -27,6 +28,19 @@ export async function peekNextTask(ctx: ServiceContext): Promise<Task | null> {
     .sort((left, right) => (
       priorityRank[left.priority] - priorityRank[right.priority]
       || readyTimestamp(left) - readyTimestamp(right)
+      || left.taskId.localeCompare(right.taskId)
+    ))[0] ?? null;
+}
+
+export async function peekNextDecisionContinuation(
+  ctx: ServiceContext,
+): Promise<Task | null> {
+  return (await ctx.tasks.list())
+    .filter(isDecisionContinuationPending)
+    .sort((left, right) => (
+      priorityRank[left.priority] - priorityRank[right.priority]
+      || Date.parse(left.lastDecision?.respondedAt ?? '')
+        - Date.parse(right.lastDecision?.respondedAt ?? '')
       || left.taskId.localeCompare(right.taskId)
     ))[0] ?? null;
 }

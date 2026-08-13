@@ -16,7 +16,6 @@ export interface ConfirmationFormInput {
   objective: string;
   acceptanceCriteria: string[];
   priority: Priority;
-  autoExecutable: boolean;
 }
 
 export type NormalizedProjectForm = {
@@ -36,7 +35,6 @@ export interface NormalizedConfirmationForm {
   objective: string | null;
   acceptanceCriteria: string[];
   priority: Priority;
-  autoExecutable: boolean;
 }
 
 export interface ConfirmationFormErrors {
@@ -110,7 +108,6 @@ export function validateConfirmationForm(
       objective,
       acceptanceCriteria,
       priority: input.priority,
-      autoExecutable: input.autoExecutable,
     },
   };
 }

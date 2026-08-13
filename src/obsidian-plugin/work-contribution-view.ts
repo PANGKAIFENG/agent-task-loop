@@ -70,7 +70,8 @@ const PULSE_HEATMAP_LABELS: Record<Exclude<PulseMode, 'consumption'>, string> = 
 
 const STATUS_LABELS: Record<string, string> = {
   inbox: '收件箱',
-  ready: '待执行',
+  ready: '待办',
+  agent_executable: 'Agent 待执行',
   in_progress: '执行中',
   review: '待验收',
   blocked: '已阻塞',
@@ -727,7 +728,9 @@ export class WorkContributionView extends ItemView {
       area.body.append(element('p', 'atl-contribution-empty', '当前没有执行中或待执行任务'));
     } else {
       const grid = element('div', 'atl-home-focus-grid');
-      for (const [index, task] of tasks.slice(0, 3).entries()) {
+      const visibleTasks = tasks.slice(0, 3);
+      grid.dataset.itemCount = String(visibleTasks.length);
+      for (const [index, task] of visibleTasks.entries()) {
         const card = element('button', 'atl-home-focus-card');
         card.type = 'button';
         card.dataset.taskId = task.taskId;
@@ -777,7 +780,9 @@ export class WorkContributionView extends ItemView {
       return;
     }
     const grid = element('div', 'atl-home-focus-grid');
-    for (const [index, focus] of input.focuses.slice(0, 3).entries()) {
+    const visibleFocuses = input.focuses.slice(0, 3);
+    grid.dataset.itemCount = String(visibleFocuses.length);
+    for (const [index, focus] of visibleFocuses.entries()) {
       const card = element('button', 'atl-home-focus-card atl-home-weekly-focus-card');
       card.type = 'button';
       card.dataset.weeklyFocusPath = document.path;
@@ -793,8 +798,8 @@ export class WorkContributionView extends ItemView {
       );
       const meta = element('span', 'atl-home-focus-meta');
       meta.append(
-        element('span', undefined, focus.outcome),
-        element('span', undefined, focus.whyThisWeek),
+        this.renderFocusMetaRow('预期结果', focus.outcome),
+        this.renderFocusMetaRow('为什么是本周', focus.whyThisWeek),
       );
       card.append(top, title, meta);
       card.addEventListener('click', () => {
@@ -805,6 +810,15 @@ export class WorkContributionView extends ItemView {
     container.append(grid);
   }
 
+  private renderFocusMetaRow(label: string, value: string): HTMLElement {
+    const row = element('span', 'atl-home-focus-meta-row');
+    row.append(
+      element('span', 'atl-home-focus-meta-label', label),
+      element('span', 'atl-home-focus-meta-value', value),
+    );
+    return row;
+  }
+
   private renderOverviewMetrics(state: ContributionDashboardState): HTMLElement {
     const counts = state.home.snapshot?.counts;
     const inboxTasks = state.home.snapshot?.inboxTasks ?? [];
@@ -813,7 +827,7 @@ export class WorkContributionView extends ItemView {
     )).length;
     const activeCount = counts === undefined
       ? null
-      : counts.ready + counts.inProgress + counts.review;
+      : counts.ready + counts.agentExecutable + counts.inProgress + counts.review;
     const health = [
       state.contribution.status === 'ready',
       state.home.status === 'ready',
@@ -842,7 +856,7 @@ export class WorkContributionView extends ItemView {
         tone: 'is-green',
         detail: counts === undefined
           ? '正在读取任务状态'
-          : `${formatNumber(counts.ready)} 待执行 · ${formatNumber(counts.inProgress)} 执行中 · ${formatNumber(counts.review)} 待验收`,
+          : `${formatNumber(counts.ready)} 待办 · ${formatNumber(counts.agentExecutable)} Agent 待执行 · ${formatNumber(counts.review)} 待验收`,
         action: '查看推进任务',
         tab: 'today' as const,
       },
@@ -895,7 +909,8 @@ export class WorkContributionView extends ItemView {
     const counts = state.home.snapshot?.counts;
     const values: Array<[string, number | null]> = [
       ['收件箱', counts?.inbox ?? null],
-      ['待执行', counts?.ready ?? null],
+      ['待办', counts?.ready ?? null],
+      ['Agent 待执行', counts?.agentExecutable ?? null],
       ['执行中', counts?.inProgress ?? null],
       ['待验收', counts?.review ?? null],
       ['已阻塞', counts?.blocked ?? null],

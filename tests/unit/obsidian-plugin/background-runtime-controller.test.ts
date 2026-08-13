@@ -49,7 +49,6 @@ function settings(paths: Awaited<ReturnType<typeof fixture>>): BackgroundSetting
     model: 'claude-sonnet-4-5',
     baseUrl: '',
     dingtalkProfile: 'synthetic-current-profile',
-    dailyLimit: 3,
   };
 }
 
@@ -193,7 +192,6 @@ describe('BackgroundRuntimeController', () => {
           await realpath(paths.sourceRoot),
         ].join(delimiter),
         ATL_DINGTALK_PROFILE: 'synthetic-current-profile',
-        ATL_DAILY_LIMIT: '3',
       }),
     }));
     const environment = vi.mocked(deps.installScheduler).mock.calls[0]?.[0].environment;

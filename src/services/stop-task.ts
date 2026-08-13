@@ -46,6 +46,7 @@ export async function stopTask(
     const stopped: Task = {
       ...task,
       status: 'ready',
+      autoExecutable: false,
       claim: null,
       readyAt: timestamp,
       updatedAt: timestamp,

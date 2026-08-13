@@ -4,9 +4,9 @@
 
 ## 用户可见行为
 
-ATL 使用 macOS LaunchAgent，在 `Asia/Shanghai` 时区每天 `08:00` 至 `22:00` 的每个整点检查一次任务队列，共 15 个触发点。
+ATL 使用 macOS LaunchAgent，每 15 分钟检查一次任务队列。系统时区仍要求为 `Asia/Shanghai`，以便任务时间与本地记录保持一致。
 
-每次检查最多领取一个符合条件的 Ready 调研任务。没有合格任务时正常结束；调度器不会自动确认 Inbox 任务。
+每次检查先补发仍处于待验收状态的失败钉钉通知，再同步千问听记，最后最多领取一个符合条件的 Ready 调研任务。通知补发或听记同步失败都不会阻塞普通任务领取。已经发送、已经验收、稍后处理、已退回、冲突或内容安全校验失败的通知不会自动重发。没有合格任务时正常结束；调度器不会自动确认 Inbox 任务。
 
 插件设置提供：
 
@@ -16,7 +16,7 @@ ATL 使用 macOS LaunchAgent，在 `Asia/Shanghai` 时区每天 `08:00` 至 `22:
 - “立即试跑”一次队列检查；
 - 停用 ATL 管理的后台任务。
 
-LaunchAgent 不通过 shell 启动，也不保存 API token 或任务正文。它只保存 Runner 所需的固定程序路径、Vault 路径、Claude 配置目录、模型名、每日限额和已授权资料目录。
+LaunchAgent 不通过 shell 启动，也不保存 API token 或任务正文。它只保存 Runner 所需的固定程序路径、Vault 路径、Claude 配置目录、模型名和已授权资料目录。
 
 ## 安全更新
 
@@ -45,6 +45,16 @@ ATL 只管理 Label 为 `ai.agent-task-loop.runner` 的配置。若同一路径�
 ```
 
 日志用于排查任务是否被领取、运行失败原因和有界执行结果。ATL 不应把 token、完整登录配置或未授权笔记写入日志。
+
+每次实质执行前冻结的 Runtime Pack manifest 位于：
+
+```text
+<ATL 工作目录>/.atl-runtime/context-packs/<pack_id>.json
+```
+
+Manifest 只保存任务合同、来源引用、上下文块类型与哈希等运行证据，不复制来源文件正文。它还冻结本次 Execution Profile，包括角色、Skill 指令、Tool allowlist、必需 Context、输出合同、验收策略及其 SHA-256。`context_pack.frozen` Audit、成功 Artifact 的 `pack_id` 和 manifest 文件名应一致。决策续跑、失败重试和 Artifact 返工都必须使用新的 `run_id` 并重新冻结 Pack。
+
+如果钉钉决策回复已经写入任务，但即时续跑因为 runner 正忙而未启动，下一次 15 分钟周期会优先恢复该决策续跑，不依赖钉钉重复推送同一事件。
 
 ## 开发者：构建与手动安装
 
@@ -78,7 +88,6 @@ export ATL_CLAUDE_BIN=/absolute/path/to/claude
 export ATL_CLAUDE_CONFIG_DIR=/absolute/path/to/claude-config
 export ATL_CLAUDE_MODEL=claude-sonnet-4-5
 export ATL_ALLOWED_LOCAL_ROOTS=/absolute/path/to/allowed-sources
-export ATL_DAILY_LIMIT=3
 ```
 
 `ATL_ALLOWED_LOCAL_ROOTS` 使用系统 path delimiter 分隔多个路径；macOS 上是冒号。不要把 token 放进 ATL 环境变量或 plist。

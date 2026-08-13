@@ -208,6 +208,59 @@ describe('buildContextBundle', () => {
     if (source !== undefined) expectValidDigest(source);
   });
 
+  it('includes the latest user decision in the next run context', async () => {
+    const bundle = await buildContextBundle(
+      makeTask({
+        lastDecision: {
+          schemaVersion: 1,
+          requestId: 'decision-001',
+          selectedOptionId: 'option-b',
+          selectedOptionLabel: '先做方案 B',
+          responseText: '优先验证 B 的真实流程。',
+          responseEventId: 'dingtalk-event-001',
+          respondedAt: NOW,
+        },
+      }),
+      makeProject(),
+      { allowedLocalRoots: [] },
+    );
+
+    expect(bundle.blocks[0]?.content).toContain('Request ID: decision-001');
+    expect(bundle.blocks[0]?.content).toContain('Selected Option: 先做方案 B');
+    expect(bundle.blocks[0]?.content).toContain('Selected Option ID: option-b');
+    expect(bundle.blocks[0]?.content).toContain('Response: 优先验证 B 的真实流程。');
+  });
+
+  it('includes review feedback and the previous Artifact summary in rework context', async () => {
+    const artifactRef = 'Artifacts/task-context-001/attempt-001.md';
+    const bundle = await buildContextBundle(
+      makeTask({
+        attempts: 2,
+        artifactRefs: [artifactRef],
+        reviewFeedback: '补充真实用户证据，并解释样本边界。',
+      }),
+      makeProject(),
+      {
+        allowedLocalRoots: [],
+        previousArtifact: {
+          reference: artifactRef,
+          summary: '第一版只覆盖了公开文档。',
+          evidenceCount: 1,
+        },
+      },
+    );
+
+    expect(bundle.blocks[0]?.content).toContain('Review Feedback:');
+    expect(bundle.blocks[0]?.content).toContain('补充真实用户证据，并解释样本边界。');
+    expect(bundle.blocks).toContainEqual(expect.objectContaining({
+      label: 'previous_artifact',
+      kind: 'artifact_review',
+      content: expect.stringContaining('Summary: 第一版只覆盖了公开文档。'),
+    }));
+    expect(bundle.blocks.find(({ label }) => label === 'previous_artifact')?.content)
+      .toContain('Evidence Count: 1');
+  });
+
   it('does not let the meeting root expose sibling notes in the same Vault', async () => {
     const vaultRoot = await temporaryRoot();
     const meetingRoot = join(vaultRoot, '08_Meetings');

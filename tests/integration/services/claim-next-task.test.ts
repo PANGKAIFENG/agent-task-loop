@@ -31,7 +31,7 @@ function readyTask(overrides: Partial<Task> = {}): Task {
     taskId: 'task-ready-default',
     title: 'Synthetic public research task',
     body: '\nSanitized synthetic task body.\n',
-    status: 'ready',
+    status: 'agent_executable',
     reviewState: 'confirmed',
     projectId: 'project-public-research',
     taskType: 'research',
@@ -70,7 +70,6 @@ const automaticOptions = {
   agent: 'synthetic-agent',
   runId: 'run-synthetic-automatic',
   mode: 'automatic' as const,
-  dailyLimit: 3,
   leaseMinutes: 15,
 };
 
@@ -79,6 +78,100 @@ afterEach(async () => {
 });
 
 describe('claimNextTask', () => {
+  it('uses agent_executable as the single claim authorization signal', async () => {
+    const context = await makeContext();
+    const candidate = readyTask({
+      taskId: 'task-agent-executable-compatibility',
+      sourceKey: 'synthetic:agent-executable-compatibility',
+      autoExecutable: false,
+    });
+    await context.ctx.tasks.save(candidate);
+
+    await expect(claimNextTask(context.ctx, automaticOptions)).resolves
+      .toMatchObject({
+        taskId: candidate.taskId,
+        status: 'in_progress',
+        attempts: 1,
+      });
+  });
+
+  it('allows a newly authorized revision after an earlier decision continuation', async () => {
+    const context = await makeContext();
+    const revision = readyTask({
+      taskId: 'task-authorized-revision-after-decision',
+      sourceKey: 'synthetic:authorized-revision-after-decision',
+      lastDecision: {
+        schemaVersion: 1,
+        requestId: 'decision-previous-run',
+        selectedOptionId: 'option-a',
+        selectedOptionLabel: 'Option A',
+        responseText: 'Use option A.',
+        responseEventId: 'dingtalk-event-previous-run',
+        senderUserId: 'trusted-user-001',
+        conversationId: 'trusted-conversation-001',
+        respondedAt: '2026-07-14T06:30:00.000Z',
+        continuationRunId: 'run-previous-continuation',
+        continuationOfRunId: 'run-previous',
+        continuationStartedAt: '2026-07-14T06:31:00.000Z',
+      },
+    });
+    await context.ctx.tasks.save(revision);
+
+    await expect(claimNextTask(context.ctx, automaticOptions)).resolves.toMatchObject({
+      taskId: revision.taskId,
+      status: 'in_progress',
+      claim: { runId: automaticOptions.runId },
+    });
+  });
+
+  it.each<[string, Partial<Task>]>([
+    ['unconfirmed', { reviewState: 'ready_for_confirm' }],
+    ['missing-project', { projectId: null }],
+    ['missing-type', { taskType: null }],
+    ['missing-objective', { objective: null }],
+    ['missing-criteria', { acceptanceCriteria: [] }],
+    ['missing-permission', { permissionProfile: null }],
+  ])('rechecks %s execution context before claiming', async (_label, overrides) => {
+    const context = await makeContext();
+    const incomplete = readyTask({
+      taskId: `task-incomplete-${_label}`,
+      sourceKey: `synthetic:incomplete-${_label}`,
+      ...overrides,
+    });
+    await context.ctx.tasks.save(incomplete);
+
+    await expect(claimNextTask(context.ctx, automaticOptions)).resolves.toBeNull();
+    await expect(context.ctx.tasks.get(incomplete.taskId)).resolves.toMatchObject({
+      status: 'agent_executable',
+      attempts: 0,
+      claim: null,
+    });
+  });
+
+  it('ignores an in-progress human task without an Agent claim', async () => {
+    const context = await makeContext();
+    const humanTask = readyTask({
+      taskId: 'task-human-in-progress',
+      sourceKey: 'synthetic:human-in-progress',
+      status: 'in_progress',
+      claim: null,
+    });
+    const agentTask = readyTask({
+      taskId: 'task-agent-waiting',
+      sourceKey: 'synthetic:agent-waiting',
+    });
+    await saveReadyTasks(context, [humanTask, agentTask]);
+
+    await expect(claimNextTask(context.ctx, automaticOptions)).resolves
+      .toMatchObject({
+        taskId: agentTask.taskId,
+        status: 'in_progress',
+        attempts: 1,
+      });
+    await expect(context.ctx.tasks.get(humanTask.taskId)).resolves
+      .toMatchObject({ status: 'in_progress', claim: null });
+  });
+
   it('claims urgent before high and the older ready task within one priority', async () => {
     const context = await makeContext();
     const highOld = readyTask({
@@ -118,61 +211,22 @@ describe('claimNextTask', () => {
     expect(persisted.filter(({ status }) => status === 'in_progress'))
       .toHaveLength(1);
     expect(persisted.find(({ taskId }) => taskId === highOld.taskId)?.status)
-      .toBe('ready');
+      .toBe('agent_executable');
     expect(persisted.find(({ taskId }) => taskId === urgentNew.taskId)?.status)
-      .toBe('ready');
+      .toBe('agent_executable');
   });
 
-  it('excludes tasks that do not satisfy the complete Ready admission', async () => {
+  it('excludes every status other than agent_executable', async () => {
     const context = await makeContext();
     const inbox = readyTask({
       taskId: 'task-inbox',
       sourceKey: 'synthetic:inbox',
       status: 'inbox',
-      reviewState: 'ready_for_confirm',
-      projectId: null,
-      readyAt: null,
     });
-    const nonResearch = readyTask({
-      taskId: 'task-non-research',
-      sourceKey: 'synthetic:non-research',
-      taskType: null,
-      priority: 'urgent',
-    });
-    const nonAuto = readyTask({
-      taskId: 'task-non-auto',
-      sourceKey: 'synthetic:non-auto',
-      autoExecutable: false,
-      priority: 'urgent',
-    });
-    const unconfirmed = readyTask({
-      taskId: 'task-unconfirmed',
-      sourceKey: 'synthetic:unconfirmed',
-      reviewState: 'ready_for_confirm',
-      priority: 'urgent',
-    });
-    const missingProject = readyTask({
-      taskId: 'task-missing-project',
-      sourceKey: 'synthetic:missing-project',
-      projectId: null,
-      priority: 'urgent',
-    });
-    const missingObjective = readyTask({
-      taskId: 'task-missing-objective',
-      sourceKey: 'synthetic:missing-objective',
-      objective: null,
-      priority: 'urgent',
-    });
-    const missingCriteria = readyTask({
-      taskId: 'task-missing-criteria',
-      sourceKey: 'synthetic:missing-criteria',
-      acceptanceCriteria: [],
-      priority: 'urgent',
-    });
-    const wrongPermission = readyTask({
-      taskId: 'task-wrong-permission',
-      sourceKey: 'synthetic:wrong-permission',
-      permissionProfile: null,
+    const ready = readyTask({
+      taskId: 'task-ready',
+      sourceKey: 'synthetic:ready',
+      status: 'ready',
       priority: 'urgent',
     });
     const eligible = readyTask({
@@ -180,16 +234,7 @@ describe('claimNextTask', () => {
       sourceKey: 'synthetic:eligible',
       priority: 'low',
     });
-    const ineligible = [
-      inbox,
-      nonResearch,
-      nonAuto,
-      unconfirmed,
-      missingProject,
-      missingObjective,
-      missingCriteria,
-      wrongPermission,
-    ];
+    const ineligible = [inbox, ready];
     await saveReadyTasks(context, [...ineligible, eligible]);
 
     await expect(claimNextTask(context.ctx, automaticOptions)).resolves
@@ -200,17 +245,13 @@ describe('claimNextTask', () => {
     }
   });
 
-  it('stops automatic claims at the local-date quota but permits a manual claim', async () => {
+  it('does not stop automatic claims at the legacy local-date quota', async () => {
     const context = await makeContext();
     const automaticCandidate = readyTask({
       taskId: 'task-quota-automatic',
       sourceKey: 'synthetic:quota-automatic',
     });
-    const manualCandidate = readyTask({
-      taskId: 'task-quota-manual',
-      sourceKey: 'synthetic:quota-manual',
-    });
-    await saveReadyTasks(context, [automaticCandidate, manualCandidate]);
+    await saveReadyTasks(context, [automaticCandidate]);
     for (let index = 0; index < 3; index += 1) {
       await context.ctx.audit.append({
         event: 'task.claimed',
@@ -219,38 +260,15 @@ describe('claimNextTask', () => {
         details: { mode: 'automatic' },
       });
     }
-    await context.ctx.audit.append({
-      event: 'task.claimed',
-      at: '2026-07-14T00:00:10.000Z',
-      taskId: 'task-earlier-manual',
-      details: { mode: 'manual' },
-    });
-
-    await expect(claimNextTask(context.ctx, automaticOptions)).resolves.toBeNull();
+    await expect(claimNextTask(context.ctx, automaticOptions)).resolves
+      .toMatchObject({ taskId: automaticCandidate.taskId, status: 'in_progress' });
     await expect(context.ctx.tasks.get(automaticCandidate.taskId)).resolves
-      .toMatchObject({ status: 'ready', attempts: 0, claim: null });
-
-    const manuallyClaimed = await claimTask(
-      context.ctx,
-      manualCandidate.taskId,
-      { mode: 'manual' },
-    );
-
-    expect(manuallyClaimed).toMatchObject({
-      taskId: manualCandidate.taskId,
-      status: 'in_progress',
-      attempts: 1,
-    });
+      .toMatchObject({ status: 'in_progress', attempts: 1 });
     await expect(context.ctx.audit.count({
       event: 'task.claimed',
       localDate: '2026-07-14',
       mode: 'automatic',
-    })).resolves.toBe(3);
-    await expect(context.ctx.audit.count({
-      event: 'task.claimed',
-      localDate: '2026-07-14',
-      mode: 'manual',
-    })).resolves.toBe(2);
+    })).resolves.toBe(4);
   });
 
   it('allows only one in-progress automatic claim across concurrent contexts', async () => {
@@ -357,7 +375,7 @@ describe('claimNextTask', () => {
     })).resolves.toBeNull();
 
     await expect(context.ctx.tasks.get(waiting.taskId)).resolves.toMatchObject({
-      status: 'ready',
+      status: 'agent_executable',
       attempts: 0,
       claim: null,
     });
@@ -384,7 +402,6 @@ describe('claimNextTask', () => {
       runId: privateRunId,
       // @ts-expect-error claimNextTask is automatic-only.
       mode: 'manual',
-      dailyLimit: 3,
       leaseMinutes: 15,
     }).catch((caught: unknown) => caught);
 
@@ -406,16 +423,39 @@ describe('claimNextTask', () => {
 });
 
 describe('claimTask', () => {
+  it('rejects a manual claim while another Agent claim is in progress', async () => {
+    const context = await makeContext();
+    const running = readyTask({
+      taskId: 'task-manual-slot-running',
+      sourceKey: 'synthetic:manual-slot-running',
+      status: 'in_progress',
+      claim: {
+        runId: 'run-manual-slot-running',
+        agent: 'synthetic-agent',
+        claimedAt: '2026-07-13T23:55:00.000Z',
+        leaseExpiresAt: '2026-07-14T00:10:00.000Z',
+      },
+    });
+    const waiting = readyTask({
+      taskId: 'task-manual-slot-waiting',
+      sourceKey: 'synthetic:manual-slot-waiting',
+    });
+    await saveReadyTasks(context, [running, waiting]);
+
+    await expect(claimTask(context.ctx, waiting.taskId, { mode: 'manual' }))
+      .rejects.toBeInstanceOf(ClaimTaskNotEligibleError);
+    await expect(context.ctx.tasks.get(waiting.taskId)).resolves.toMatchObject({
+      status: 'agent_executable',
+      attempts: 0,
+      claim: null,
+    });
+  });
+
   it.each<[string, Partial<Task>]>([
     ['Inbox', { status: 'inbox', reviewState: 'ready_for_confirm' }],
-    ['non-research', { taskType: null }],
-    ['non-auto-executable', { autoExecutable: false }],
-    ['unconfirmed', { reviewState: 'ready_for_confirm' }],
-    ['missing-project', { projectId: null }],
-    ['missing-objective', { objective: null }],
-    ['missing-criteria', { acceptanceCriteria: [] }],
-    ['wrong-permission', { permissionProfile: null }],
-  ])('rejects an otherwise valid %s task', async (_label, overrides) => {
+    ['Ready', { status: 'ready' }],
+    ['Review', { status: 'review' }],
+  ])('rejects a non-agent-executable %s task', async (_label, overrides) => {
     const context = await makeContext();
     const task = readyTask({
       taskId: `task-manual-rejected-${_label}`,
@@ -433,7 +473,7 @@ describe('claimTask', () => {
     });
   });
 
-  it('restores the Ready task when the claim audit append fails', async () => {
+  it('restores the agent-executable task when the claim audit append fails', async () => {
     const context = await makeContext();
     const task = readyTask({
       taskId: 'task-claim-audit-failure',
@@ -455,6 +495,30 @@ describe('claimTask', () => {
       code: 'task_claim_audit_failed',
       message: 'Task claim audit failed',
     });
+    await expect(context.ctx.tasks.get(task.taskId)).resolves.toEqual(task);
+  });
+
+  it('reports audit failure when claim rollback saves the task but leaves a stale index', async () => {
+    const context = await makeContext();
+    const task = readyTask({
+      taskId: 'task-claim-rollback-stale-index',
+      sourceKey: 'synthetic:claim-rollback-stale-index',
+    });
+    await context.ctx.tasks.save(task);
+    const save = context.ctx.tasks.save.bind(context.ctx.tasks);
+    context.ctx.tasks.save = async (submitted) => {
+      const saved = await save(submitted);
+      if (submitted.status === 'agent_executable') {
+        throw new TaskSavedIndexStaleError();
+      }
+      return saved;
+    };
+    context.ctx.audit.append = async () => {
+      throw new Error('synthetic audit failure');
+    };
+
+    await expect(claimTask(context.ctx, task.taskId, { mode: 'manual' }))
+      .rejects.toBeInstanceOf(ClaimTaskAuditFailedError);
     await expect(context.ctx.tasks.get(task.taskId)).resolves.toEqual(task);
   });
 
@@ -494,7 +558,7 @@ describe('claimTask', () => {
 });
 
 describe('recoverExpiredClaims', () => {
-  it('returns an expired claim to Ready without incrementing attempts or changing body', async () => {
+  it('returns an expired claim to agent_executable without incrementing attempts or changing body', async () => {
     const context = await makeContext();
     const body = '\nSanitized body without runtime error metadata.\n';
     const expired = readyTask({
@@ -517,7 +581,7 @@ describe('recoverExpiredClaims', () => {
     expect(recovered).toHaveLength(1);
     expect(recovered[0]).toMatchObject({
       taskId: expired.taskId,
-      status: 'ready',
+      status: 'agent_executable',
       attempts: 2,
       claim: null,
       body,
@@ -530,7 +594,7 @@ describe('recoverExpiredClaims', () => {
       at: '2026-07-14T00:00:00.000Z',
       taskId: expired.taskId,
       runId: 'run-expired',
-      details: { lastError: 'lease_expired' },
+      details: { lastError: 'lease_expired', outcome: 'requeued' },
     });
   });
 

@@ -8,6 +8,7 @@ import { assertTransition } from '../../../src/domain/transitions.js';
 import { captureTask } from '../../../src/services/capture-task.js';
 import {
   confirmTask,
+  TaskConfirmationAuditFailedError,
   type ConfirmTaskInput,
 } from '../../../src/services/confirm-task.js';
 import { createProject } from '../../../src/services/create-project.js';
@@ -35,7 +36,6 @@ function confirmInput(
     acceptanceCriteria: ['Cite at least two official public sources.'],
     permissionProfile: 'read_only_research',
     priority: 'high',
-    autoExecutable: true,
     ...overrides,
   };
 }
@@ -80,7 +80,6 @@ describe('confirmTask', () => {
 
     const confirmed = await confirmTask(context.ctx, task.taskId, {
       priority: 'normal',
-      autoExecutable: false,
     });
 
     expect(confirmed).toMatchObject({
@@ -95,17 +94,19 @@ describe('confirmTask', () => {
     });
   });
 
-  it('still requires complete readiness when automatic execution is requested', async () => {
+  it('rejects the legacy autoExecutable confirmation field', async () => {
     const context = await makeContext();
     const task = await captureSyntheticTask(context);
 
     await expect(confirmTask(context.ctx, task.taskId, {
       priority: 'normal',
       autoExecutable: true,
-    })).rejects.toThrow('Task is not ready: projectId is required');
+    } as unknown as ConfirmTaskInput)).rejects.toMatchObject({
+      code: 'invalid_confirm_task_input',
+    });
   });
 
-  it('rejects confirmation when projectId is missing', async () => {
+  it('allows confirmation when projectId is missing', async () => {
     const context = await makeContext();
     const task = await captureSyntheticTask(context);
     const incompleteInput = {
@@ -113,28 +114,28 @@ describe('confirmTask', () => {
       projectId: undefined,
     } as unknown as ConfirmTaskInput;
 
-    await expect(
-      confirmTask(context.ctx, task.taskId, incompleteInput),
-    ).rejects.toThrow('Task is not ready: projectId is required');
+    await expect(confirmTask(context.ctx, task.taskId, incompleteInput))
+      .resolves.toMatchObject({ status: 'ready', projectId: null, autoExecutable: false });
   });
 
   it.each([[[]], [[' ', '\t']]])(
-    'rejects confirmation when acceptance criteria are missing or blank',
+    'allows confirmation when acceptance criteria are missing or blank',
     async (acceptanceCriteria) => {
       const context = await makeContext();
       await createSyntheticProject(context);
       const task = await captureSyntheticTask(context);
       const incompleteInput = confirmInput({ acceptanceCriteria });
 
-      await expect(
-        confirmTask(context.ctx, task.taskId, incompleteInput),
-      ).rejects.toThrow(
-        'Task is not ready: acceptanceCriteria requires at least one item',
-      );
+      await expect(confirmTask(context.ctx, task.taskId, incompleteInput))
+        .resolves.toMatchObject({
+          status: 'ready',
+          acceptanceCriteria,
+          autoExecutable: false,
+        });
     },
   );
 
-  it('rejects confirmation when permissionProfile is missing', async () => {
+  it('allows confirmation when permissionProfile is missing', async () => {
     const context = await makeContext();
     await createSyntheticProject(context);
     const task = await captureSyntheticTask(context);
@@ -145,12 +146,12 @@ describe('confirmTask', () => {
       context.ctx,
       task.taskId,
       incompleteInput as ConfirmTaskInput,
-    )).rejects.toThrow(
-      'Task is not ready: permissionProfile must be read_only_research',
-    );
+    )).resolves.toMatchObject({
+      status: 'ready',
+      permissionProfile: null,
+    });
 
-    await expect(context.ctx.tasks.get(task.taskId)).resolves.toEqual(task);
-    await expect(context.ctx.audit.listForTask(task.taskId)).resolves.toHaveLength(1);
+    await expect(context.ctx.audit.listForTask(task.taskId)).resolves.toHaveLength(2);
   });
 
   it('confirms a complete task without enabling automatic execution', async () => {
@@ -161,7 +162,7 @@ describe('confirmTask', () => {
     const confirmed = await confirmTask(
       context.ctx,
       task.taskId,
-      confirmInput({ autoExecutable: false }),
+      confirmInput(),
     );
 
     expect(confirmed).toMatchObject({
@@ -246,7 +247,7 @@ describe('confirmTask', () => {
       acceptanceCriteria: input.acceptanceCriteria,
       permissionProfile: 'read_only_research',
       priority: 'urgent',
-      autoExecutable: true,
+      autoExecutable: false,
       reviewFeedback: null,
     });
     expect(confirmed).toMatchObject({
@@ -336,7 +337,7 @@ describe('confirmTask', () => {
       projectId: input.projectId,
       objective: input.objective,
       acceptanceCriteria: input.acceptanceCriteria,
-      autoExecutable: true,
+      autoExecutable: false,
     });
     expect((await stat(activePath)).isFile()).toBe(true);
     await expect(stat(inboxPath)).rejects.toMatchObject({ code: 'ENOENT' });
@@ -416,6 +417,27 @@ describe('confirmTask', () => {
       .filter(({ event }) => event === 'task.confirmed')).toEqual([]);
   });
 
+  it('reports audit failure when confirmation rollback only leaves a stale index', async () => {
+    const context = await makeContext();
+    await createSyntheticProject(context);
+    const original = await captureSyntheticTask(context);
+    const save = context.ctx.tasks.save.bind(context.ctx.tasks);
+    context.ctx.tasks.save = async (task) => {
+      const saved = await save(task);
+      if (task.status === 'inbox') throw new TaskSavedIndexStaleError();
+      return saved;
+    };
+    context.ctx.audit.append = async (event) => {
+      if (event.event === 'task.confirmed') {
+        throw new Error('synthetic audit failure');
+      }
+    };
+
+    await expect(confirmTask(context.ctx, original.taskId, confirmInput()))
+      .rejects.toBeInstanceOf(TaskConfirmationAuditFailedError);
+    await expect(context.ctx.tasks.get(original.taskId)).resolves.toEqual(original);
+  });
+
   it('reports typed partial state when audit rollback also fails', async () => {
     const context = await makeContext();
     await createSyntheticProject(context);
@@ -468,7 +490,7 @@ describe('confirmTask', () => {
     await expect(context.ctx.tasks.get(original.taskId)).resolves.toMatchObject({
       status: 'ready',
       reviewState: 'confirmed',
-      autoExecutable: true,
+      autoExecutable: false,
       readyAt: '2026-07-14T00:00:00.000Z',
     });
     expect((await stat(activePath)).isFile()).toBe(true);
@@ -497,7 +519,7 @@ describe('confirmTask', () => {
       context.ctx,
       inProgress.taskId,
       confirmInput(),
-    )).rejects.toThrow('Task must be in Inbox to confirm');
+    )).rejects.toThrow('Task must be in Inbox or unconfirmed Ready to confirm');
 
     await expect(context.ctx.tasks.get(inProgress.taskId)).resolves.toEqual(inProgress);
     expect((await context.ctx.audit.listForTask(inProgress.taskId))
@@ -593,7 +615,7 @@ describe('confirmTask', () => {
       status: 'rejected',
       reason: {
         code: 'task_confirmation_invalid_state',
-        message: 'Task must be in Inbox to confirm',
+        message: 'Task must be in Inbox or unconfirmed Ready to confirm',
       },
     });
     const activeFiles = (await readdir(

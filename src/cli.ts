@@ -32,13 +32,19 @@ import {
   type CaptureTaskInput,
 } from './services/capture-task.js';
 import { createAcceptanceNotifier } from './services/acceptance-notifier-factory.js';
+import { authorizeAgentExecution } from './services/authorize-agent-execution.js';
 import { claimTask } from './services/claim-task.js';
 import { confirmTask } from './services/confirm-task.js';
 import { createProject } from './services/create-project.js';
 import { generateWeeklyReport } from './services/generate-weekly-report.js';
+import { queryEvalSamples } from './services/query-eval-samples.js';
 import { listTasks, peekNextTask } from './services/query-tasks.js';
 import { reopenTask } from './services/reopen-task.js';
 import { reviewTask, type ReviewTaskInput } from './services/review-task.js';
+import {
+  reviewArtifactFromExternalReply,
+  type ExternalArtifactReviewInput,
+} from './services/review-artifact-from-external-reply.js';
 import { createTaskId, type ServiceContext } from './services/service-context.js';
 import { stopTask } from './services/stop-task.js';
 import { submitArtifact } from './services/submit-artifact.js';
@@ -236,17 +242,29 @@ async function runnerController(driverName: string) {
   }
   const { config, ctx } = contextForWrite();
   const driver = await createClaudeResearchDriver();
-  return createRunnerController({
+  const controller = createRunnerController({
     ctx,
     driver,
     runtimeRoot: join(process.cwd(), '.atl-runtime'),
     allowedLocalRoots: allowedLocalRoots(),
-    dailyLimit: config.dailyLimit,
     leaseMinutes: config.leaseMinutes,
     timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
     agent: driver.name,
     runId: () => `run-${createTaskId()}`,
   });
+  return {
+    controller,
+    retryAcceptanceNotifications: async () => {
+      if (ctx.notifyAcceptance?.retryFailed === undefined) {
+        return { attempted: 0, sent: 0 };
+      }
+      const records = await ctx.notifyAcceptance.retryFailed();
+      return {
+        attempted: records.length,
+        sent: records.filter((record) => record.status === 'sent').length,
+      };
+    },
+  };
 }
 
 async function synchronizeQianwen(mode: 'scheduled' | 'manual') {
@@ -479,7 +497,6 @@ function buildProgram(): Command {
       [],
     )
     .option('--priority <priority>', 'Task priority', 'normal')
-    .option('--auto-executable')
     .option('--json')
     .action(async (options: {
       taskId?: string;
@@ -487,7 +504,6 @@ function buildProgram(): Command {
       objective?: string;
       acceptanceCriterion: string[];
       priority: 'urgent' | 'high' | 'normal' | 'low';
-      autoExecutable?: boolean;
       json?: boolean;
     }) => {
       const { ctx } = contextForWrite();
@@ -498,7 +514,6 @@ function buildProgram(): Command {
         acceptanceCriteria: options.acceptanceCriterion,
         permissionProfile: 'read_only_research',
         priority: options.priority,
-        autoExecutable: options.autoExecutable === true,
       });
       output(result, options);
     });
@@ -531,9 +546,20 @@ function buildProgram(): Command {
         agent: options.agent,
         runId: required(options.runId, '--run-id'),
         leaseMinutes: config.leaseMinutes,
-        dailyLimit: config.dailyLimit,
       });
       output(result, options);
+    });
+
+  task
+    .command('authorize-agent')
+    .option('--task-id <id>')
+    .option('--json')
+    .action(async (options: { taskId?: string; json?: boolean }) => {
+      const { ctx } = contextForWrite();
+      output(await authorizeAgentExecution(
+        ctx,
+        required(options.taskId, '--task-id'),
+      ), options);
     });
 
   task
@@ -595,6 +621,76 @@ function buildProgram(): Command {
     });
 
   task
+    .command('review-external')
+    .option('--task-id <id>')
+    .option('--artifact-version <version>')
+    .option('--response-event-id <id>')
+    .option('--sender-user-id <id>')
+    .option('--conversation-id <id>')
+    .option('--approve')
+    .option('--request-changes')
+    .option('--block')
+    .option('--cancel')
+    .option('--feedback <text>')
+    .option('--json')
+    .action(async (options: {
+      taskId?: string;
+      artifactVersion?: string;
+      responseEventId?: string;
+      senderUserId?: string;
+      conversationId?: string;
+      approve?: boolean;
+      requestChanges?: boolean;
+      block?: boolean;
+      cancel?: boolean;
+      feedback?: string;
+      json?: boolean;
+    }) => {
+      const { ctx } = contextForWrite();
+      const decisions = [
+        options.approve ? 'approve' : null,
+        options.requestChanges ? 'request_changes' : null,
+        options.block ? 'block' : null,
+        options.cancel ? 'cancel' : null,
+      ].filter((decision): decision is ExternalArtifactReviewInput['decision'] => decision !== null);
+      if (decisions.length !== 1) {
+        throw new CliUsageError('exactly one external review decision is required');
+      }
+      const decision = decisions[0];
+      if (decision === undefined) {
+        throw new CliUsageError('exactly one external review decision is required');
+      }
+      if (decision === 'approve' && options.feedback !== undefined) {
+        throw new CliUsageError('--feedback is not allowed with --approve');
+      }
+      const version = Number(options.artifactVersion);
+      if (!Number.isInteger(version) || version <= 0) {
+        throw new CliUsageError('--artifact-version must be a positive integer');
+      }
+      const input: ExternalArtifactReviewInput = decision === 'approve'
+        ? {
+            artifactVersion: version,
+            responseEventId: required(options.responseEventId, '--response-event-id'),
+            senderUserId: required(options.senderUserId, '--sender-user-id'),
+            conversationId: required(options.conversationId, '--conversation-id'),
+            decision,
+          }
+        : {
+            artifactVersion: version,
+            responseEventId: required(options.responseEventId, '--response-event-id'),
+            senderUserId: required(options.senderUserId, '--sender-user-id'),
+            conversationId: required(options.conversationId, '--conversation-id'),
+            decision,
+            feedback: required(options.feedback, '--feedback'),
+          };
+      output(await reviewArtifactFromExternalReply(
+        ctx,
+        required(options.taskId, '--task-id'),
+        input,
+      ), options);
+    });
+
+  task
     .command('stop')
     .option('--task-id <id>')
     .option('--json')
@@ -641,8 +737,9 @@ function buildProgram(): Command {
     .requiredOption('--driver <driver>')
     .option('--json')
     .action(async (options: { driver: string; json?: boolean }) => {
-      const controller = await runnerController(options.driver);
+      const { controller, retryAcceptanceNotifications } = await runnerController(options.driver);
       output(await runHourlyCycle({
+        retryAcceptanceNotifications,
         syncQianwen: () => synchronizeQianwen('scheduled'),
         runTask: () => controller.runAndWait({ mode: 'automatic' }),
       }), options);
@@ -658,7 +755,7 @@ function buildProgram(): Command {
       driver: string;
       json?: boolean;
     }) => {
-      const controller = await runnerController(options.driver);
+      const { controller } = await runnerController(options.driver);
       output(await controller.runAndWait({
         mode: 'manual',
         taskId: required(options.taskId, '--task-id'),
@@ -666,13 +763,55 @@ function buildProgram(): Command {
     });
 
   runner
+    .command('continue-decision')
+    .requiredOption('--task-id <id>')
+    .requiredOption('--decision-request-id <id>')
+    .requiredOption('--response-event-id <id>')
+    .requiredOption('--sender-user-id <id>')
+    .requiredOption('--conversation-id <id>')
+    .requiredOption('--selected-option-id <id>')
+    .option('--response-text <text>')
+    .requiredOption('--driver <driver>')
+    .option('--json')
+    .action(async (options: {
+      taskId: string;
+      decisionRequestId: string;
+      responseEventId: string;
+      senderUserId: string;
+      conversationId: string;
+      selectedOptionId: string;
+      responseText?: string;
+      driver: string;
+      json?: boolean;
+    }) => {
+      const { controller } = await runnerController(options.driver);
+      output(await controller.continueAfterDecision({
+        taskId: required(options.taskId, '--task-id'),
+        decisionRequestId: required(options.decisionRequestId, '--decision-request-id'),
+        responseEventId: required(options.responseEventId, '--response-event-id'),
+        senderUserId: required(options.senderUserId, '--sender-user-id'),
+        conversationId: required(options.conversationId, '--conversation-id'),
+        selectedOptionId: required(options.selectedOptionId, '--selected-option-id'),
+        ...(options.responseText === undefined ? {} : { responseText: options.responseText }),
+      }), options);
+    });
+
+  runner
     .command('status')
     .option('--json')
     .action(async (options: { json?: boolean }) => {
-      const { config, ctx } = contextForRead();
-      output(await getRunnerStatus(ctx, {
-        dailyLimit: config.dailyLimit,
-      }), options);
+      const { ctx } = contextForRead();
+      output(await getRunnerStatus(ctx), options);
+    });
+
+  const evalCommand = program.command('eval');
+  evalCommand
+    .command('list')
+    .description('List pending capability Eval samples and regression candidates')
+    .option('--json')
+    .action(async (options: { json?: boolean }) => {
+      const { ctx } = contextForRead();
+      output(await queryEvalSamples(ctx), options);
     });
 
   const qianwen = program.command('qianwen');

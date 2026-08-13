@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AcceptanceObject } from '../../../src/domain/acceptance-object.js';
 import {
   notifyAcceptance,
+  retryFailedAcceptanceNotifications,
   type AcceptanceDelivery,
   type AcceptanceNotificationLedger,
   type AcceptanceNotificationRecord,
@@ -19,6 +20,12 @@ function object(overrides: Partial<AcceptanceObject> = {}): AcceptanceObject {
     state: 'pending',
     pendingCount: 2,
     path: '10_Tasks/Artifacts/task-artifact-a/attempt-002.md',
+    artifact: {
+      reference: 'task-artifact-a@v2',
+      summary: '完成 Staywork 需求方案并验证两个验收项。',
+      evidenceCount: 3,
+      checks: { met: 1, partial: 1, notMet: 0 },
+    },
     notification: null,
     ...overrides,
   };
@@ -38,7 +45,7 @@ function memoryLedger(): AcceptanceNotificationLedger & {
 }
 
 describe('notify acceptance', () => {
-  it('sends a unique visible object once with a stable UUID and minimal payload', async () => {
+  it('sends a unique visible Artifact once with a stable UUID and review-ready payload', async () => {
     const acceptance = object();
     const ledger = memoryLedger();
     const send = vi.fn<AcceptanceDelivery['send']>(async () => ({
@@ -69,17 +76,52 @@ describe('notify acceptance', () => {
       title: 'ATL 待验收通知',
       text: [
         '标题：Staywork 需求方案',
+        '任务 ID：task-artifact-a',
+        'Artifact：task-artifact-a@v2',
+        '结果：完成 Staywork 需求方案并验证两个验收项。',
+        '自检：通过 1；部分通过 1；未通过 0；证据 3',
         '状态：待验收',
         '待确认：2 项',
         '位置：Obsidian -> ATL：工作沉淀 -> 待验收',
+        '回复操作：',
+        '接受 task-artifact-a v2',
+        '要求修改 task-artifact-a v2：请说明需要修改的内容',
+        '阻塞 task-artifact-a v2：请说明阻塞原因',
+        '取消 task-artifact-a v2：请说明取消原因',
       ].join('\n'),
     });
     expect(first.uuid).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
     );
     expect(send.mock.calls[0]?.[0].text).not.toMatch(
-      /obsidian:\/\/|localhost|127\.0\.0\.1|10_Tasks|token|听记原文/u,
+      /obsidian:\/\/|localhost|127\.0\.0\.1|10_Tasks|\/Users\/|token|听记原文/u,
     );
+  });
+
+  it('rejects an Artifact summary containing a private local path', async () => {
+    const acceptance = object({
+      artifact: {
+        reference: 'task-artifact-a@v2',
+        summary: '结果保存在 /Users/example/private.md',
+        evidenceCount: 1,
+        checks: { met: 1, partial: 0, notMet: 0 },
+      },
+    });
+    const send = vi.fn<AcceptanceDelivery['send']>();
+
+    const result = await notifyAcceptance({
+      ledger: memoryLedger(),
+      delivery: { send },
+      target: { kind: 'self' },
+      listAcceptanceObjects: async () => [acceptance],
+      clock: () => new Date(NOW),
+    }, acceptance);
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      errorCode: 'acceptance_payload_rejected',
+    });
+    expect(send).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -96,6 +138,25 @@ describe('notify acceptance', () => {
       listAcceptanceObjects: async () => visible,
       clock: () => new Date(NOW),
     }, object());
+
+    expect(result).toMatchObject({
+      status: 'conflict',
+      errorCode: 'acceptance_location_conflict',
+    });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('blocks delivery when the exact object is no longer pending at send time', async () => {
+    const acceptance = object();
+    const send = vi.fn<AcceptanceDelivery['send']>();
+
+    const result = await notifyAcceptance({
+      ledger: memoryLedger(),
+      delivery: { send },
+      target: { kind: 'self' },
+      listAcceptanceObjects: async () => [{ ...acceptance, state: 'later' }],
+      clock: () => new Date(NOW),
+    }, acceptance);
 
     expect(result).toMatchObject({
       status: 'conflict',
@@ -181,5 +242,97 @@ describe('notify acceptance', () => {
     });
     expect(uuids).toHaveLength(2);
     expect(uuids[0]).toBe(uuids[1]);
+  });
+
+  it('retries only retryable failed notifications whose exact version is still pending', async () => {
+    const current = object();
+    const ledger = memoryLedger();
+    const failed = await notifyAcceptance({
+      ledger,
+      delivery: {
+        send: async () => {
+          throw Object.assign(new Error('synthetic delivery failure'), {
+            code: 'dingtalk_delivery_failed',
+          });
+        },
+      },
+      target: { kind: 'self' },
+      listAcceptanceObjects: async () => [current],
+      clock: () => new Date(NOW),
+    }, current);
+    await ledger.save({
+      ...failed,
+      idempotencyKey: 'artifact:task-artifact-old:1',
+      objectId: 'task-artifact-old',
+      version: 1,
+      uuid: 'cc9169e9-5326-54f8-a190-419f55ae8004',
+    });
+    await ledger.save({
+      ...failed,
+      idempotencyKey: 'artifact:task-artifact-unsafe:1',
+      objectId: 'task-artifact-unsafe',
+      version: 1,
+      uuid: 'a49b6575-911f-5ce6-8f35-61d5d9750081',
+      errorCode: 'acceptance_payload_rejected',
+    });
+    await ledger.save({
+      ...failed,
+      idempotencyKey: 'weekly:weekly-later:1',
+      objectType: 'weekly',
+      objectId: 'weekly-later',
+      version: 1,
+      uuid: '4fd0df82-fcbb-5bf5-b3eb-5daaffef3915',
+    });
+    await ledger.save({
+      ...failed,
+      idempotencyKey: 'weekly:weekly-sent:1',
+      objectType: 'weekly',
+      objectId: 'weekly-sent',
+      version: 1,
+      uuid: 'b2a33a37-5c52-5d44-923a-c95b28fb1f69',
+      status: 'sent',
+      errorCode: null,
+      taskId: 'task-dingtalk-sent',
+    });
+    const send = vi.fn<AcceptanceDelivery['send']>(async () => ({
+      taskId: 'task-dingtalk-retried',
+      messageId: null,
+    }));
+
+    const retried = await retryFailedAcceptanceNotifications({
+      ledger,
+      delivery: { send },
+      target: { kind: 'self' },
+      listAcceptanceObjects: async () => [
+        current,
+        object({
+          objectType: 'weekly',
+          objectId: 'weekly-later',
+          version: 1,
+          title: '2026-W33 工作进展周报',
+          state: 'later',
+          artifact: undefined,
+        }),
+      ],
+      clock: () => new Date('2026-08-11T14:15:00.000Z'),
+    });
+
+    expect(retried).toEqual([expect.objectContaining({
+      idempotencyKey: 'artifact:task-artifact-a:2',
+      status: 'sent',
+      attemptedAt: '2026-08-11T14:15:00.000Z',
+      taskId: 'task-dingtalk-retried',
+    })]);
+    expect(send).toHaveBeenCalledOnce();
+    expect(send.mock.calls[0]?.[0].uuid).toBe(failed.uuid);
+    await expect(ledger.get('artifact:task-artifact-old:1')).resolves.toMatchObject({
+      status: 'failed',
+    });
+    await expect(ledger.get('artifact:task-artifact-unsafe:1')).resolves.toMatchObject({
+      errorCode: 'acceptance_payload_rejected',
+    });
+    await expect(ledger.get('weekly:weekly-later:1')).resolves.toMatchObject({
+      status: 'failed',
+    });
   });
 });

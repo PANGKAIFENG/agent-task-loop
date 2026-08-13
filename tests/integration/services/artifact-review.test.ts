@@ -188,6 +188,7 @@ describe('artifact review loop', () => {
     await expect(context.ctx.artifacts.readSummary(ref)).resolves.toMatchObject({
       summary: 'Public pricing evidence was reviewed.',
       evidenceCount: 1,
+      checks: { met: 1, partial: 0, notMet: 0 },
       sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
     expect(await context.ctx.audit.listForTask(task.taskId)).toContainEqual({
@@ -235,9 +236,9 @@ describe('artifact review loop', () => {
     const context = await makeContext();
     const task = inProgressTask({ taskId: 'task-20260714-notify-failed' });
     await context.ctx.tasks.save(task);
-    const notified: string[] = [];
+    const notified: Parameters<NonNullable<typeof context.ctx.notifyAcceptance>>[0][] = [];
     context.ctx.notifyAcceptance = async (object) => {
-      notified.push(`${object.objectType}:${object.objectId}:${object.version}`);
+      notified.push(object);
       throw new Error('synthetic notification failure');
     };
 
@@ -247,7 +248,17 @@ describe('artifact review loop', () => {
     });
 
     const ref = `Artifacts/${task.taskId}/attempt-001.md`;
-    expect(notified).toEqual([`artifact:${task.taskId}:1`]);
+    expect(notified).toEqual([expect.objectContaining({
+      objectType: 'artifact',
+      objectId: task.taskId,
+      version: 1,
+      artifact: {
+        reference: `${task.taskId}@v1`,
+        summary: artifactResult().summary,
+        evidenceCount: 1,
+        checks: { met: 1, partial: 0, notMet: 0 },
+      },
+    })]);
     expect(submitted).toMatchObject({
       status: 'review',
       claim: null,
@@ -613,6 +624,42 @@ describe('artifact review loop', () => {
       details: { decision },
     });
     expect(submitted.artifactRefs).toEqual([ref]);
+  });
+
+  it('reviews a legacy Runtime Pack Artifact without creating an Eval sample', async () => {
+    const context = await makeContext();
+    const task = inProgressTask({ taskId: 'task-review-legacy-runtime-pack' });
+    const packId = `pack-${'a'.repeat(24)}`;
+    await context.ctx.tasks.save(task);
+    await context.ctx.audit.append({
+      event: 'context_pack.frozen',
+      at: NOW,
+      taskId: task.taskId,
+      ...(task.projectId === null ? {} : { projectId: task.projectId }),
+      ...(task.claim === null ? {} : { runId: task.claim.runId }),
+      details: {
+        packId,
+        packSha256: 'b'.repeat(64),
+        blockCount: 2,
+        permissionProfile: 'read_only_research',
+      },
+    });
+    await submitArtifact(context.ctx, task.taskId, {
+      runId: task.claim?.runId ?? '',
+      result: artifactResult(),
+      packId,
+    });
+
+    await expect(reviewTask(context.ctx, task.taskId, { decision: 'approve' }))
+      .resolves.toMatchObject({ status: 'done' });
+    const reviewed = (await context.ctx.audit.listForTask(task.taskId))
+      .find(({ event }) => event === 'task.reviewed');
+    expect(reviewed).toEqual({
+      event: 'task.reviewed',
+      at: NOW,
+      taskId: task.taskId,
+      details: { decision: 'approve' },
+    });
   });
 
   describe.each([

@@ -7,6 +7,12 @@ import type {
   TaskRepository,
 } from '../storage/contracts.js';
 import type { AcceptanceObject } from '../domain/acceptance-object.js';
+import type { AcceptanceNotificationRecord } from './notify-acceptance.js';
+
+export interface AcceptanceNotifier {
+  (object: AcceptanceObject): Promise<unknown>;
+  retryFailed?: () => Promise<AcceptanceNotificationRecord[]>;
+}
 
 export interface ServiceContext {
   tasks: TaskRepository;
@@ -15,7 +21,7 @@ export interface ServiceContext {
   audit: AuditLog;
   clock: () => Date;
   id: () => string;
-  notifyAcceptance?: (object: AcceptanceObject) => Promise<unknown>;
+  notifyAcceptance?: AcceptanceNotifier;
 }
 
 function padDatePart(value: number): string {

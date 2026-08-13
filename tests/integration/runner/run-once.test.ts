@@ -1,10 +1,11 @@
-import { stat } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Project } from '../../../src/domain/project.js';
 import type { Task } from '../../../src/domain/task.js';
+import type { AcceptanceObject } from '../../../src/domain/acceptance-object.js';
 import { ClaudeDriverError } from '../../../src/runner/claude-driver.js';
 import type { ResearchDriver } from '../../../src/runner/research-driver.js';
 import {
@@ -13,6 +14,10 @@ import {
   RunnerBusyError,
 } from '../../../src/runner/runner-controller.js';
 import type { ResearchResult } from '../../../src/runner/result-contract.js';
+import { recordDecision } from '../../../src/services/record-decision.js';
+import { queryEvalSamples } from '../../../src/services/query-eval-samples.js';
+import { reviewArtifactFromExternalReply } from '../../../src/services/review-artifact-from-external-reply.js';
+import { reviewTask } from '../../../src/services/review-task.js';
 import {
   createTestServiceContext,
   type TestServiceContext,
@@ -32,13 +37,13 @@ function project(): Project {
   };
 }
 
-function readyTask(overrides: Partial<Task> = {}): Task {
+function agentExecutableTask(overrides: Partial<Task> = {}): Task {
   return {
     schemaVersion: 1,
     taskId: 'task-runner-default',
     title: 'Synthetic public research task',
     body: '\nPRIVATE_BODY_SENTINEL_MUST_NOT_ENTER_AUDIT\n',
-    status: 'ready',
+    status: 'agent_executable',
     reviewState: 'confirmed',
     projectId: 'project-runner',
     taskType: 'research',
@@ -88,7 +93,7 @@ function fakeDriver(execute: ResearchDriver['execute']): ResearchDriver {
 }
 
 async function setup(
-  tasks: Task[] = [readyTask()],
+  tasks: Task[] = [agentExecutableTask()],
 ): Promise<TestServiceContext> {
   const context = await createTestServiceContext({
     now: new Date(NOW),
@@ -112,7 +117,6 @@ function controller(
     driver,
     runtimeRoot: join(context.root, '.atl-runtime'),
     allowedLocalRoots: [],
-    dailyLimit: 3,
     leaseMinutes: 60,
     timeoutMs: 30 * 60 * 1000,
     agent: 'synthetic-runner',
@@ -135,10 +139,8 @@ describe('bounded run-once orchestration', () => {
     const context = await createTestServiceContext({ now: new Date(NOW) });
     contexts.push(context);
 
-    await expect(getRunnerStatus(context.ctx, { dailyLimit: 3 })).resolves.toEqual({
+    await expect(getRunnerStatus(context.ctx)).resolves.toEqual({
       latestRun: null,
-      automaticClaimsToday: 0,
-      dailyLimit: 3,
       blockedTasks: [],
       nextEligibleTask: null,
     });
@@ -164,6 +166,11 @@ describe('bounded run-once orchestration', () => {
     expect(execute.mock.calls[0]?.[0]).toMatchObject({
       task: { taskId: 'task-runner-default', status: 'in_progress', attempts: 1 },
       context: { taskId: 'task-runner-default' },
+      profile: {
+        profileId: 'research_v1',
+        profileVersion: 1,
+        allowedTools: ['WebSearch', 'WebFetch', 'Read'],
+      },
       timeoutMs: 30 * 60 * 1000,
     });
     await expect(context.ctx.tasks.get('task-runner-default')).resolves.toMatchObject({
@@ -172,17 +179,224 @@ describe('bounded run-once orchestration', () => {
       claim: null,
       artifactRefs: ['Artifacts/task-runner-default/attempt-001.md'],
     });
-    await expect(getRunnerStatus(context.ctx, { dailyLimit: 3 })).resolves
+    await expect(getRunnerStatus(context.ctx)).resolves
       .toMatchObject({
         latestRun: {
           event: 'artifact.submitted',
           taskId: 'task-runner-default',
           runId: 'run-runner-001',
         },
-        automaticClaimsToday: 1,
       });
     await expect(stat(join(context.root, '.atl-runtime', 'runner.lock')))
       .rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('rejects a research result that does not answer every task acceptance criterion', async () => {
+    const context = await setup([agentExecutableTask({
+      acceptanceCriteria: [
+        'Cite one official HTTPS source.',
+        'State the remaining uncertainty.',
+      ],
+    })]);
+    const execute = vi.fn<ResearchDriver['execute']>().mockResolvedValue(result());
+
+    await expect(controller(context, fakeDriver(execute)).runAndWait({
+      mode: 'automatic',
+    })).resolves.toEqual({
+      status: 'requeued',
+      taskId: 'task-runner-default',
+      runId: 'run-runner-001',
+      errorCode: 'invalid_research_result',
+    });
+    await expect(context.ctx.tasks.get('task-runner-default')).resolves.toMatchObject({
+      status: 'agent_executable',
+      artifactRefs: [],
+    });
+  });
+
+  it('freezes one Runtime Pack before execution and binds it to the Artifact and audit', async () => {
+    const context = await setup();
+    const execute = vi.fn<ResearchDriver['execute']>().mockImplementation(async ({ context: bundle }) => {
+      const files = await readdir(join(context.root, '.atl-runtime', 'context-packs'));
+      expect(files).toEqual([`${bundle.packId}.json`]);
+      return result();
+    });
+
+    await expect(controller(context, fakeDriver(execute)).runAndWait({
+      mode: 'automatic',
+    })).resolves.toMatchObject({ status: 'submitted' });
+
+    const bundle = execute.mock.calls[0]?.[0].context;
+    expect(bundle?.packId).toMatch(/^pack-[0-9a-f]{24}$/);
+    const artifact = await readFile(join(
+      context.root,
+      '10_Tasks',
+      'Artifacts',
+      'task-runner-default',
+      'attempt-001.md',
+    ), 'utf8');
+    expect(artifact).toContain(`pack_id: ${bundle?.packId}`);
+    await expect(context.ctx.audit.listForTask('task-runner-default')).resolves
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: 'context_pack.frozen',
+          runId: 'run-runner-001',
+          details: expect.objectContaining({
+            packId: bundle?.packId,
+            blockCount: 2,
+            permissionProfile: 'read_only_research',
+            executionProfileId: 'research_v1',
+            executionProfileVersion: 1,
+          }),
+        }),
+        expect.objectContaining({
+          event: 'artifact.submitted',
+          details: expect.objectContaining({ packId: bundle?.packId }),
+        }),
+      ]));
+  });
+
+  it('records a pending capability Eval sample when a frozen run is approved', async () => {
+    const context = await setup();
+    const execute = vi.fn<ResearchDriver['execute']>().mockResolvedValue(result());
+
+    await controller(context, fakeDriver(execute)).runAndWait({ mode: 'automatic' });
+    await reviewTask(context.ctx, 'task-runner-default', { decision: 'approve' });
+
+    const events = await context.ctx.audit.listForTask('task-runner-default');
+    const frozen = events.find(({ event }) => event === 'context_pack.frozen');
+    const submitted = events.find(({ event }) => event === 'artifact.submitted');
+    expect(events).toContainEqual(expect.objectContaining({
+      event: 'task.reviewed',
+      taskId: 'task-runner-default',
+      runId: 'run-runner-001',
+      details: expect.objectContaining({
+        decision: 'approve',
+        evalSampleId: expect.stringMatching(/^eval-[0-9a-f]{24}$/),
+        evalSampleType: 'capability',
+        evalSampleStatus: 'pending_review',
+        regressionCandidateStatus: 'not_proposed',
+        packId: frozen?.details?.packId,
+        executionProfileId: 'research_v1',
+        executionProfileVersion: 1,
+        executionProfileSha256: frozen?.details?.executionProfileSha256,
+        artifactRef: submitted?.details?.artifactRef,
+        artifactSha256: submitted?.details?.artifactSha256,
+        runOutcome: 'artifact_submitted',
+        humanOutcome: 'approve',
+        feedbackSha256: null,
+        harnessMutationAllowed: false,
+      }),
+    }));
+    await expect(queryEvalSamples(context.ctx)).resolves.toMatchObject({
+      capabilitySamples: [expect.objectContaining({
+        sampleId: expect.stringMatching(/^eval-[0-9a-f]{24}$/),
+        taskId: 'task-runner-default',
+        runId: 'run-runner-001',
+        profile: expect.objectContaining({ id: 'research_v1', version: 1 }),
+        humanOutcome: 'approve',
+        status: 'pending_review',
+      })],
+      regressionCandidates: [],
+    });
+  });
+
+  it('reworks a DingTalk-reviewed Artifact into a new version and sends it for acceptance again', async () => {
+    const context = await setup();
+    const notifications: AcceptanceObject[] = [];
+    context.ctx.notifyAcceptance = async (object) => {
+      notifications.push(object);
+    };
+    const execute = vi.fn<ResearchDriver['execute']>()
+      .mockResolvedValueOnce(result())
+      .mockImplementationOnce(async ({ context: bundle }) => {
+        expect(bundle.blocks[0]?.content).toContain('补充真实用户证据');
+        expect(bundle.blocks).toContainEqual(expect.objectContaining({
+          label: 'previous_artifact',
+          kind: 'artifact_review',
+          content: expect.stringContaining('Summary: The public limit was verified.'),
+        }));
+        return {
+          ...result(),
+          summary: 'The public limit and user evidence were verified.',
+        };
+      });
+    const runner = controller(context, fakeDriver(execute), [
+      'run-artifact-v1',
+      'run-artifact-v2',
+    ]);
+
+    await runner.runAndWait({ mode: 'automatic' });
+    await reviewArtifactFromExternalReply(context.ctx, 'task-runner-default', {
+      artifactVersion: 1,
+      responseEventId: 'dingtalk-artifact-rework-001',
+      senderUserId: 'trusted-user-001',
+      conversationId: 'trusted-conversation-001',
+      decision: 'request_changes',
+      feedback: '补充真实用户证据。',
+    });
+    const firstReview = (await context.ctx.audit.listForTask('task-runner-default'))
+      .find(({ event }) => event === 'task.reviewed');
+    expect(firstReview).toMatchObject({
+      runId: 'run-artifact-v1',
+      details: {
+        humanOutcome: 'request_changes',
+        regressionCandidateStatus: 'pending_review',
+        feedbackSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+        harnessMutationAllowed: false,
+      },
+    });
+    expect(JSON.stringify(firstReview)).not.toContain('补充真实用户证据');
+    await expect(queryEvalSamples(context.ctx)).resolves.toMatchObject({
+      capabilitySamples: [expect.objectContaining({
+        runId: 'run-artifact-v1',
+        humanOutcome: 'request_changes',
+      })],
+      regressionCandidates: [expect.objectContaining({
+        runId: 'run-artifact-v1',
+        candidateStatus: 'pending_review',
+        promoted: false,
+      })],
+    });
+    await expect(runner.runAndWait({
+      mode: 'manual',
+      taskId: 'task-runner-default',
+    })).resolves.toEqual({
+      status: 'submitted',
+      taskId: 'task-runner-default',
+      runId: 'run-artifact-v2',
+      artifactRef: 'Artifacts/task-runner-default/attempt-002.md',
+    });
+
+    await expect(context.ctx.tasks.get('task-runner-default')).resolves.toMatchObject({
+      status: 'review',
+      attempts: 2,
+      artifactRefs: [
+        'Artifacts/task-runner-default/attempt-001.md',
+        'Artifacts/task-runner-default/attempt-002.md',
+      ],
+      reviewFeedback: null,
+    });
+    const reworkPackIds = execute.mock.calls.map((call) => call[0].context.packId);
+    expect(reworkPackIds[0]).toMatch(/^pack-[0-9a-f]{24}$/);
+    expect(reworkPackIds[1]).toMatch(/^pack-[0-9a-f]{24}$/);
+    expect(reworkPackIds[1]).not.toBe(reworkPackIds[0]);
+    const secondArtifact = await readFile(join(
+      context.root,
+      '10_Tasks',
+      'Artifacts',
+      'task-runner-default',
+      'attempt-002.md',
+    ), 'utf8');
+    expect(secondArtifact).toContain(`pack_id: ${reworkPackIds[1]}`);
+    expect(notifications).toHaveLength(2);
+    expect(notifications[1]).toMatchObject({
+      artifact: {
+        reference: 'task-runner-default@v2',
+        summary: 'The public limit and user evidence were verified.',
+        evidenceCount: 1,
+      },
+    });
   });
 
   it('returns no_task without calling the driver when nothing is eligible', async () => {
@@ -195,7 +409,7 @@ describe('bounded run-once orchestration', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it('reports the daily limit separately and does not claim a task', async () => {
+  it('keeps claiming eligible tasks regardless of earlier claims that day', async () => {
     const context = await setup();
     for (let index = 0; index < 3; index += 1) {
       await context.ctx.audit.append({
@@ -206,16 +420,331 @@ describe('bounded run-once orchestration', () => {
         details: { mode: 'automatic' },
       });
     }
+    const execute = vi.fn<ResearchDriver['execute']>().mockResolvedValue(result());
+
+    await expect(controller(context, fakeDriver(execute)).runAndWait({
+      mode: 'automatic',
+    })).resolves.toMatchObject({
+      status: 'submitted',
+      taskId: 'task-runner-default',
+    });
+    expect(execute).toHaveBeenCalledOnce();
+    await expect(context.ctx.tasks.get('task-runner-default')).resolves.toMatchObject({
+      status: 'review',
+      attempts: 1,
+      claim: null,
+    });
+  });
+
+  it('pauses a task when the driver requests a user decision', async () => {
+    const context = await setup();
+    const execute = vi.fn<ResearchDriver['execute']>().mockResolvedValue({
+      kind: 'decision_request',
+      decisionRequestId: 'decision-runner-001',
+      question: 'Which direction should continue?',
+      options: [
+        { id: 'option-a', label: 'Option A' },
+        { id: 'option-b', label: 'Option B' },
+      ],
+    } as never);
+
+    await expect(controller(context, fakeDriver(execute)).runAndWait({
+      mode: 'automatic',
+    })).resolves.toEqual({
+      status: 'waiting_for_decision',
+      taskId: 'task-runner-default',
+      runId: 'run-runner-001',
+      decisionRequestId: 'decision-runner-001',
+    });
+    await expect(context.ctx.tasks.get('task-runner-default')).resolves
+      .toMatchObject({
+        status: 'waiting_for_decision',
+        claim: null,
+        pendingDecision: { requestId: 'decision-runner-001' },
+      });
+    const audit = await context.ctx.audit.listForTask('task-runner-default');
+    expect(audit.map(({ event }) => event)).toEqual([
+      'task.claimed',
+      'context_pack.frozen',
+      'decision.requested',
+    ]);
+  });
+
+  it('continues the same task with a new run after one exact decision event', async () => {
+    const context = await setup();
+    const execute = vi.fn<ResearchDriver['execute']>()
+      .mockResolvedValueOnce({
+        kind: 'decision_request',
+        decisionRequestId: 'decision-continuation-001',
+        question: 'Which direction should continue?',
+        options: [
+          { id: 'option-a', label: 'Option A' },
+          { id: 'option-b', label: 'Option B' },
+        ],
+      })
+      .mockResolvedValueOnce(result());
+    const runner = controller(context, fakeDriver(execute), [
+      'run-initial',
+      'run-continuation',
+    ]);
+
+    await expect(runner.runAndWait({ mode: 'automatic' })).resolves.toMatchObject({
+      status: 'waiting_for_decision',
+      runId: 'run-initial',
+    });
+    const decisionEvent = {
+      taskId: 'task-runner-default',
+      decisionRequestId: 'decision-continuation-001',
+      responseEventId: 'dingtalk-message-001',
+      senderUserId: 'trusted-user-001',
+      conversationId: 'trusted-conversation-001',
+      selectedOptionId: 'option-b',
+      responseText: 'Use option B and continue.',
+    };
+
+    await expect(runner.continueAfterDecision(decisionEvent)).resolves.toEqual({
+      status: 'submitted',
+      taskId: 'task-runner-default',
+      runId: 'run-continuation',
+      artifactRef: 'Artifacts/task-runner-default/attempt-002.md',
+    });
+    expect(execute).toHaveBeenCalledTimes(2);
+    const initialPackId = execute.mock.calls[0]?.[0].context.packId;
+    const continuationPackId = execute.mock.calls[1]?.[0].context.packId;
+    expect(initialPackId).toMatch(/^pack-[0-9a-f]{24}$/);
+    expect(continuationPackId).toMatch(/^pack-[0-9a-f]{24}$/);
+    expect(continuationPackId).not.toBe(initialPackId);
+    expect(execute.mock.calls[1]?.[0]).toMatchObject({
+      task: {
+        taskId: 'task-runner-default',
+        attempts: 2,
+        claim: { runId: 'run-continuation' },
+        lastDecision: {
+          requestId: 'decision-continuation-001',
+          responseEventId: 'dingtalk-message-001',
+          senderUserId: 'trusted-user-001',
+          conversationId: 'trusted-conversation-001',
+        },
+      },
+      context: {
+        blocks: [expect.objectContaining({
+          content: expect.stringContaining('Use option B and continue.'),
+        }), expect.anything()],
+      },
+    });
+
+    await expect(runner.continueAfterDecision(decisionEvent)).resolves.toEqual({
+      status: 'duplicate_decision',
+      taskId: 'task-runner-default',
+      decisionRequestId: 'decision-continuation-001',
+    });
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it('resumes an exact event replay when the decision committed before a crash', async () => {
+    const context = await setup();
+    const execute = vi.fn<ResearchDriver['execute']>()
+      .mockResolvedValueOnce({
+        kind: 'decision_request',
+        decisionRequestId: 'decision-recovery-001',
+        question: 'Which direction should continue?',
+        options: [
+          { id: 'option-a', label: 'Option A' },
+          { id: 'option-b', label: 'Option B' },
+        ],
+      })
+      .mockResolvedValueOnce(result());
+    const runner = controller(context, fakeDriver(execute), [
+      'run-initial',
+      'run-recovered',
+    ]);
+    const event = {
+      taskId: 'task-runner-default',
+      decisionRequestId: 'decision-recovery-001',
+      responseEventId: 'dingtalk-message-recovery-001',
+      senderUserId: 'trusted-user-001',
+      conversationId: 'trusted-conversation-001',
+      selectedOptionId: 'option-b',
+      responseText: 'Use option B and continue.',
+    };
+    await runner.runAndWait({ mode: 'automatic' });
+
+    const { taskId, ...decision } = event;
+    await expect(recordDecision(context.ctx, taskId, decision))
+      .resolves.toMatchObject({ accepted: true });
+    await expect(runner.continueAfterDecision(event)).resolves.toMatchObject({
+      status: 'submitted',
+      runId: 'run-recovered',
+    });
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it('starts only one continuation when the same reply arrives concurrently', async () => {
+    const context = await setup();
+    let releaseContinuation: (() => void) | undefined;
+    const continuationGate = new Promise<void>((resolve) => {
+      releaseContinuation = resolve;
+    });
+    const execute = vi.fn<ResearchDriver['execute']>()
+      .mockResolvedValueOnce({
+        kind: 'decision_request',
+        decisionRequestId: 'decision-concurrent-001',
+        question: 'Which direction should continue?',
+        options: [
+          { id: 'option-a', label: 'Option A' },
+          { id: 'option-b', label: 'Option B' },
+        ],
+      })
+      .mockImplementationOnce(async () => {
+        await continuationGate;
+        return result();
+      });
+    const runner = controller(context, fakeDriver(execute), [
+      'run-initial',
+      'run-continuation',
+    ]);
+    const event = {
+      taskId: 'task-runner-default',
+      decisionRequestId: 'decision-concurrent-001',
+      responseEventId: 'dingtalk-message-concurrent-001',
+      senderUserId: 'trusted-user-001',
+      conversationId: 'trusted-conversation-001',
+      selectedOptionId: 'option-a',
+      responseText: 'Use option A.',
+    };
+    await runner.runAndWait({ mode: 'automatic' });
+
+    const first = runner.continueAfterDecision(event);
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(2));
+    const second = runner.continueAfterDecision(event);
+    releaseContinuation?.();
+    const outcomes = await Promise.all([first, second]);
+
+    expect(outcomes.filter(({ status }) => status === 'submitted')).toHaveLength(1);
+    expect(execute).toHaveBeenCalledTimes(2);
+    const audit = await context.ctx.audit.listForTask('task-runner-default');
+    expect(audit.filter(({ event: name }) => name === 'decision.continuation_started'))
+      .toHaveLength(1);
+  });
+
+  it('does not execute a failed continuation again when its reply event is replayed', async () => {
+    const context = await setup();
+    const execute = vi.fn<ResearchDriver['execute']>()
+      .mockResolvedValueOnce({
+        kind: 'decision_request',
+        decisionRequestId: 'decision-failed-continuation-001',
+        question: 'Which direction should continue?',
+        options: [{ id: 'option-a', label: 'Option A' }],
+      })
+      .mockRejectedValueOnce(new ClaudeDriverError('claude_timeout'));
+    const runner = controller(context, fakeDriver(execute), [
+      'run-initial',
+      'run-failed-continuation',
+    ]);
+    const event = {
+      taskId: 'task-runner-default',
+      decisionRequestId: 'decision-failed-continuation-001',
+      responseEventId: 'dingtalk-message-failed-continuation-001',
+      senderUserId: 'trusted-user-001',
+      conversationId: 'trusted-conversation-001',
+      selectedOptionId: 'option-a',
+      responseText: 'Use option A.',
+    };
+    await runner.runAndWait({ mode: 'automatic' });
+
+    await expect(runner.continueAfterDecision(event)).resolves.toMatchObject({
+      status: 'blocked',
+      runId: 'run-failed-continuation',
+    });
+    await expect(runner.continueAfterDecision(event)).resolves.toEqual({
+      status: 'duplicate_decision',
+      taskId: 'task-runner-default',
+      decisionRequestId: 'decision-failed-continuation-001',
+    });
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it('resumes a recorded decision on the next automatic cycle without an event replay', async () => {
+    const context = await setup();
+    const execute = vi.fn<ResearchDriver['execute']>()
+      .mockResolvedValueOnce({
+        kind: 'decision_request',
+        decisionRequestId: 'decision-scheduled-recovery-001',
+        question: 'Which direction should continue?',
+        options: [{ id: 'option-a', label: 'Option A' }],
+      })
+      .mockResolvedValueOnce(result());
+    const initialRunner = controller(context, fakeDriver(execute), ['run-initial']);
+    await initialRunner.runAndWait({ mode: 'automatic' });
+    await recordDecision(context.ctx, 'task-runner-default', {
+      decisionRequestId: 'decision-scheduled-recovery-001',
+      responseEventId: 'dingtalk-message-scheduled-recovery-001',
+      senderUserId: 'trusted-user-001',
+      conversationId: 'trusted-conversation-001',
+      selectedOptionId: 'option-a',
+      responseText: 'Use option A.',
+    });
+
+    await expect(controller(
+      context,
+      fakeDriver(execute),
+      ['run-scheduled-recovery'],
+    ).runAndWait({ mode: 'automatic' })).resolves.toEqual({
+      status: 'submitted',
+      taskId: 'task-runner-default',
+      runId: 'run-scheduled-recovery',
+      artifactRef: 'Artifacts/task-runner-default/attempt-002.md',
+    });
+    await expect(context.ctx.tasks.get('task-runner-default')).resolves.toMatchObject({
+      status: 'review',
+      attempts: 2,
+      lastDecision: { continuationRunId: 'run-scheduled-recovery' },
+    });
+    const audit = await context.ctx.audit.listForTask('task-runner-default');
+    expect(audit.filter(({ event }) => event === 'task.claimed')).toHaveLength(1);
+    expect(audit).toContainEqual(expect.objectContaining({
+      event: 'decision.continuation_started',
+      runId: 'run-scheduled-recovery',
+      details: expect.objectContaining({ mode: 'automatic' }),
+    }));
+  });
+
+  it('does not rerun a continuation whose expired claim was recovered', async () => {
+    const context = await setup([agentExecutableTask({
+      status: 'in_progress',
+      attempts: 2,
+      claim: {
+        runId: 'run-expired-continuation',
+        agent: 'synthetic-runner',
+        claimedAt: '2026-07-14T22:00:00.000Z',
+        leaseExpiresAt: '2026-07-14T23:00:00.000Z',
+      },
+      lastDecision: {
+        schemaVersion: 1,
+        requestId: 'decision-recovered-continuation-001',
+        selectedOptionId: 'option-a',
+        selectedOptionLabel: 'Option A',
+        responseText: 'Use option A.',
+        responseEventId: 'dingtalk-message-recovered-continuation-001',
+        senderUserId: 'trusted-user-001',
+        conversationId: 'trusted-conversation-001',
+        respondedAt: NOW,
+        continuationRunId: 'run-expired-continuation',
+        continuationOfRunId: 'run-initial',
+        continuationStartedAt: NOW,
+      },
+    })]);
     const execute = vi.fn<ResearchDriver['execute']>();
 
     await expect(controller(context, fakeDriver(execute)).runAndWait({
       mode: 'automatic',
-    })).resolves.toEqual({ status: 'daily_limit' });
+    })).resolves.toEqual({ status: 'no_task' });
     expect(execute).not.toHaveBeenCalled();
     await expect(context.ctx.tasks.get('task-runner-default')).resolves.toMatchObject({
-      status: 'ready',
-      attempts: 0,
+      status: 'blocked',
+      attempts: 2,
       claim: null,
+      lastDecision: { continuationRunId: 'run-expired-continuation' },
     });
   });
 
@@ -233,11 +762,16 @@ describe('bounded run-once orchestration', () => {
       errorCode: 'claude_timeout',
     });
     await expect(context.ctx.tasks.get('task-runner-default')).resolves.toMatchObject({
-      status: 'ready',
+      status: 'agent_executable',
       attempts: 1,
       claim: null,
     });
     const audit = await context.ctx.audit.listForTask('task-runner-default');
+    expect(audit.map(({ event }) => event)).toEqual([
+      'task.claimed',
+      'context_pack.frozen',
+      'runner.failed',
+    ]);
     expect(audit).toContainEqual(expect.objectContaining({
       event: 'runner.failed',
       runId: 'run-runner-001',
@@ -252,7 +786,7 @@ describe('bounded run-once orchestration', () => {
   });
 
   it('blocks the second typed driver failure', async () => {
-    const context = await setup([readyTask({ attempts: 1 })]);
+    const context = await setup([agentExecutableTask({ attempts: 1 })]);
     const execute = vi.fn<ResearchDriver['execute']>()
       .mockRejectedValue(new ClaudeDriverError('claude_timeout'));
 
@@ -272,7 +806,36 @@ describe('bounded run-once orchestration', () => {
     });
   });
 
-  it('lets a named manual run bypass the automatic daily limit', async () => {
+  it.each([
+    'execution_profile_not_supported',
+    'execution_profile_context_missing',
+  ])('blocks deterministic Profile failure %s without retrying', async (code) => {
+    const context = await setup();
+    const execute = vi.fn<ResearchDriver['execute']>().mockRejectedValue(
+      Object.assign(new Error('sanitized deterministic failure'), { code }),
+    );
+
+    await expect(controller(context, fakeDriver(execute)).runAndWait({
+      mode: 'automatic',
+    })).resolves.toEqual({
+      status: 'blocked',
+      taskId: 'task-runner-default',
+      runId: 'run-runner-001',
+      errorCode: code,
+    });
+    await expect(context.ctx.tasks.get('task-runner-default')).resolves.toMatchObject({
+      status: 'blocked',
+      attempts: 1,
+      claim: null,
+    });
+    await expect(context.ctx.audit.listForTask('task-runner-default')).resolves
+      .toContainEqual(expect.objectContaining({
+        event: 'runner.failed',
+        details: expect.objectContaining({ errorCode: code, outcome: 'blocked' }),
+      }));
+  });
+
+  it('lets a named manual run proceed regardless of earlier automatic claims', async () => {
     const context = await setup();
     for (let index = 0; index < 3; index += 1) {
       await context.ctx.audit.append({
@@ -311,7 +874,7 @@ describe('bounded run-once orchestration', () => {
   });
 
   it('recovers an expired claim before selecting and running the task', async () => {
-    const context = await setup([readyTask({
+    const context = await setup([agentExecutableTask({
       status: 'in_progress',
       attempts: 1,
       claim: {
@@ -338,6 +901,7 @@ describe('bounded run-once orchestration', () => {
     expect(audit.map(({ event }) => event)).toEqual([
       'task.claim_expired',
       'task.claimed',
+      'context_pack.frozen',
       'artifact.submitted',
     ]);
   });
@@ -348,8 +912,8 @@ describe('bounded run-once orchestration', () => {
       releaseDriver = resolve;
     });
     const context = await setup([
-      readyTask({ taskId: 'task-running', sourceKey: 'synthetic:running' }),
-      readyTask({ taskId: 'task-waiting', sourceKey: 'synthetic:waiting' }),
+      agentExecutableTask({ taskId: 'task-running', sourceKey: 'synthetic:running' }),
+      agentExecutableTask({ taskId: 'task-waiting', sourceKey: 'synthetic:waiting' }),
     ]);
     const first = controller(
       context,
@@ -372,7 +936,7 @@ describe('bounded run-once orchestration', () => {
       status: 'runner_busy',
     });
     await expect(context.ctx.tasks.get('task-waiting')).resolves.toMatchObject({
-      status: 'ready',
+      status: 'agent_executable',
       attempts: 0,
       claim: null,
     });

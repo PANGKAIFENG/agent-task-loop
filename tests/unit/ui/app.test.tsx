@@ -169,7 +169,7 @@ describe('page data states', () => {
 
     expect(await screen.findByText('整理公开资料')).toBeTruthy();
     expect(screen.getByText(/obsidian_daily/)).toBeTruthy();
-    expect(screen.getByText('缺少 6 项')).toBeTruthy();
+    expect(screen.getByText('缺少 5 项')).toBeTruthy();
     expect(screen.getByText('疑似重复 1')).toBeTruthy();
     expect(screen.getByText('高')).toBeTruthy();
     expect(screen.getByText(/2026\/07\/14/)).toBeTruthy();
@@ -261,13 +261,23 @@ describe('page data states', () => {
     await waitFor(() => expect(window.location.pathname).toBe('/projects/project-alpha'));
     expect(await screen.findByRole('heading', { name: '项目看板' })).toBeTruthy();
 
-    for (const status of ['待规划', '待办', '进行中', '审核中', '已完成', '已阻塞', '已取消']) {
+    for (const status of [
+      '待规划',
+      '待办',
+      'Agent 待执行',
+      '进行中',
+      '审核中',
+      '已完成',
+      '已阻塞',
+      '已取消',
+    ]) {
       expect(screen.getByRole('heading', { name: status })).toBeTruthy();
     }
     expect(screen.getByRole('heading', { name: 'waiting_external' })).toBeTruthy();
     expect(screen.getByText('等待外部团队回复')).toBeTruthy();
-    for (const filter of ['项目筛选', '状态筛选', '来源筛选', '优先级筛选', '自动执行筛选']) {
+    for (const filter of ['项目筛选', '状态筛选', '来源筛选', '优先级筛选']) {
       expect(screen.getByLabelText(filter)).toBeTruthy();
     }
+    expect(screen.queryByLabelText('自动执行筛选')).toBeNull();
   });
 });

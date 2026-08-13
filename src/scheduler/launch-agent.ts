@@ -23,6 +23,7 @@ export const LAUNCH_AGENT_LABEL = 'ai.agent-task-loop.runner';
 export const LAUNCH_AGENT_FILE_NAME = `${LAUNCH_AGENT_LABEL}.plist`;
 const MINIMAL_PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
 const TIME_ZONE = 'Asia/Shanghai';
+const RUNNER_INTERVAL_SECONDS = 15 * 60;
 
 export class LaunchAgentError extends Error {
   readonly code = 'invalid_scheduler_configuration';
@@ -95,7 +96,6 @@ export interface RenderedLaunchAgent {
     ANTHROPIC_BASE_URL?: string;
     ATL_DINGTALK_PROFILE?: string;
     ATL_ALLOWED_LOCAL_ROOTS: string;
-    ATL_DAILY_LIMIT: string;
     HOME: string;
     PATH: string;
   }>;
@@ -288,14 +288,6 @@ async function allowedLocalRoots(value: string | undefined): Promise<string> {
   )))).join(delimiter);
 }
 
-function positiveInteger(value: string | undefined): string {
-  const candidate = value ?? '3';
-  if (!/^[1-9]\d*$/.test(candidate)) {
-    throw new LaunchAgentError('ATL_DAILY_LIMIT must be a positive integer');
-  }
-  return candidate;
-}
-
 function modelName(value: string | undefined): string | undefined {
   if (value === undefined || value === '') return undefined;
   if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(value)) {
@@ -367,17 +359,8 @@ function renderPlist(input: Omit<RenderedLaunchAgent, 'path' | 'plist'>): string
       `    <string>${xml(value)}</string>`,
     ]),
     '  </dict>',
-    '  <key>StartCalendarInterval</key>',
-    '  <array>',
-    ...Array.from({ length: 15 }, (_, index) => index + 8).flatMap((hour) => [
-      '    <dict>',
-      '      <key>Hour</key>',
-      `      <integer>${hour}</integer>`,
-      '      <key>Minute</key>',
-      '      <integer>0</integer>',
-      '    </dict>',
-    ]),
-    '  </array>',
+    '  <key>StartInterval</key>',
+    `  <integer>${RUNNER_INTERVAL_SECONDS}</integer>`,
     '</dict>',
     '</plist>',
     '',
@@ -468,7 +451,6 @@ export async function renderLaunchAgent(
       ATL_ALLOWED_LOCAL_ROOTS: await allowedLocalRoots(
         environment.ATL_ALLOWED_LOCAL_ROOTS,
       ),
-      ATL_DAILY_LIMIT: positiveInteger(environment.ATL_DAILY_LIMIT),
       HOME: homeDirectory,
       PATH: MINIMAL_PATH,
     },

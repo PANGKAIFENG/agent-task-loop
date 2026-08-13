@@ -43,13 +43,13 @@ function errorMessage(error: unknown): string {
       return '所选项目不存在，请重新选择';
     }
     if (coded.code === 'task_confirmation_invalid_state') {
-      return '任务已经不在收件箱，请刷新看板';
+      return '任务已经不在可确认状态，请刷新看板';
     }
     if (coded.code === 'task_conflict') {
       return '任务刚刚被其他操作修改，请刷新后重试';
     }
   }
-  return '确认失败，任务没有被移动。请刷新后重试';
+  return '保存失败，任务没有变更。请刷新后重试';
 }
 
 export class TaskConfirmationModal extends Modal {
@@ -101,17 +101,27 @@ export class TaskConfirmationModal extends Modal {
     this.contentEl.empty();
   }
 
+  private isCompletingReadyTask(): boolean {
+    return this.prepared.task.status === 'ready';
+  }
+
+  private actionLabel(): string {
+    return this.isCompletingReadyTask() ? '完善待办' : '移到待办';
+  }
+
   private render(): void {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl('h2', { text: '移到待办' });
+    contentEl.createEl('h2', { text: this.actionLabel() });
     contentEl.createDiv({
       cls: 'atl-task-title',
       text: this.prepared.task.title,
     });
     contentEl.createEl('p', {
       cls: 'atl-task-subtitle',
-      text: '项目、目标和完成条件都可以稍后补充。',
+      text: this.isCompletingReadyTask()
+        ? '补充任务信息并确认；完整的执行上下文可继续授权给 Agent。'
+        : '项目、目标和完成条件都可以稍后补充。',
     });
 
     if (this.formError !== '') {
@@ -299,7 +309,7 @@ export class TaskConfirmationModal extends Modal {
     actions.addButton((button) => {
       submitButton = button;
       button
-        .setButtonText(this.submitting ? '正在移动...' : '移到待办')
+        .setButtonText(this.submitting ? '正在保存...' : this.actionLabel())
         .setCta()
         .setDisabled(this.submitting)
         .onClick(() => this.submit(submitButton));
@@ -320,7 +330,6 @@ export class TaskConfirmationModal extends Modal {
       objective: this.objective,
       acceptanceCriteria: this.acceptanceCriteria,
       priority: this.priority,
-      autoExecutable: false,
     };
   }
 
@@ -329,11 +338,11 @@ export class TaskConfirmationModal extends Modal {
       return;
     }
     this.submitting = true;
-    button.setDisabled(true).setButtonText('正在移动...');
+    button.setDisabled(true).setButtonText('正在保存...');
     this.formError = '';
     try {
       await this.controller.confirm(this.prepared.task.taskId, this.formInput());
-      new Notice('任务已移到待办');
+      new Notice(this.isCompletingReadyTask() ? '待办信息已完善' : '任务已移到待办');
       this.close();
     } catch (error) {
       if (error instanceof InvalidConfirmationFormError) {
