@@ -11,6 +11,7 @@ import {
   readSafeTextFile,
   type StorageReadBoundary,
 } from './file-io.js';
+import { withCodexArtifactLock } from './codex-artifact-lock.js';
 import { parseTaskDocument } from './frontmatter.js';
 import {
   artifactDirectory,
@@ -225,41 +226,43 @@ export class MarkdownArtifactRepository implements ArtifactRepository {
     const normalizedInput = { ...input, result: parsed.data };
     const inputDigest = artifactInputDigest(normalizedInput);
     const content = renderArtifact(normalizedInput, inputDigest);
-    const created = await atomicCreateTextFile(
-      absolutePath,
-      content,
-      this.readBoundary(directory),
-    );
-    if (!created) {
-      const existing = await readSafeTextFile(
+    return withCodexArtifactLock(this.root, absolutePath, async () => {
+      const created = await atomicCreateTextFile(
         absolutePath,
+        content,
         this.readBoundary(directory),
       );
-      if (existing !== null) {
-        try {
-          const data = parseTaskDocument(existing).data;
-          if (
-            typeof data.created_at === 'string'
-            && Number.isFinite(Date.parse(data.created_at))
-          ) {
-            const expectedInput = {
-              ...normalizedInput,
-              createdAt: data.created_at,
-            };
-            if (existing === renderArtifact(
-              expectedInput,
-              artifactInputDigest(expectedInput),
-            )) {
-              return { ref, absolutePath, sha256: fileSha256(existing) };
+      if (!created) {
+        const existing = await readSafeTextFile(
+          absolutePath,
+          this.readBoundary(directory),
+        );
+        if (existing !== null) {
+          try {
+            const data = parseTaskDocument(existing).data;
+            if (
+              typeof data.created_at === 'string'
+              && Number.isFinite(Date.parse(data.created_at))
+            ) {
+              const expectedInput = {
+                ...normalizedInput,
+                createdAt: data.created_at,
+              };
+              if (existing === renderArtifact(
+                expectedInput,
+                artifactInputDigest(expectedInput),
+              )) {
+                return { ref, absolutePath, sha256: fileSha256(existing) };
+              }
             }
+          } catch {
+            // A malformed create-only Artifact remains a conflict.
           }
-        } catch {
-          // A malformed create-only Artifact remains a conflict.
         }
+        throw new ArtifactAlreadyExistsError();
       }
-      throw new ArtifactAlreadyExistsError();
-    }
-    return { ref, absolutePath, sha256: fileSha256(content) };
+      return { ref, absolutePath, sha256: fileSha256(content) };
+    });
   }
 
   async readSummary(ref: string): ReturnType<ArtifactRepository['readSummary']> {
@@ -309,6 +312,42 @@ export class MarkdownArtifactRepository implements ArtifactRepository {
       evidenceCount: data.evidence_count,
       ...(parsedChecks === undefined ? {} : { checks: parsedChecks }),
       sha256: fileSha256(raw),
+    };
+  }
+
+  async readProductionEvidence(
+    ref: string,
+  ): ReturnType<ArtifactRepository['readProductionEvidence']> {
+    const parts = parseArtifactReference(ref);
+    if (parts === null) throw new InvalidArtifactReferenceError();
+    const directory = artifactDirectory(this.root, parts.taskId);
+    const raw = await readSafeTextFile(
+      join(directory, parts.filename),
+      this.readBoundary(directory),
+    );
+    if (raw === null) throw new ArtifactNotFoundError();
+    const data = parseTaskDocument(raw).data;
+    if (
+      data.type !== 'artifact'
+      || data.schema_version !== 1
+      || data.task_id !== parts.taskId
+      || data.attempt !== parts.attempt
+      || typeof data.run_id !== 'string'
+      || data.run_id.trim() === ''
+      || typeof data.pack_id !== 'string'
+      || !/^pack-[0-9a-f]{24}$/u.test(data.pack_id)
+    ) {
+      throw new InvalidArtifactReferenceError();
+    }
+    return {
+      identity: {
+        taskId: parts.taskId,
+        ref,
+        version: parts.attempt,
+        sha256: fileSha256(raw),
+      },
+      runId: data.run_id,
+      packId: data.pack_id,
     };
   }
 

@@ -17,6 +17,44 @@ const WEEKLY_COACH_SOURCE_SET = new Set<string>(WEEKLY_COACH_SOURCES);
 
 export type WeeklyFocusStatus = '草稿' | '已确认' | '已结束';
 export type WeeklyReviewStatus = '待复盘' | '已复盘';
+export type WeeklyFocusReviewOutcome =
+  | '已完成'
+  | '部分完成'
+  | '未完成'
+  | '已调整'
+  | '已取消';
+export type WeeklyFocusNextWeekAction = '继续' | '调整' | '停止';
+
+export interface WeeklyFocusTaskAttribution {
+  focusIndex: number;
+  taskIds: string[];
+}
+
+export interface WeeklyFocusEvidenceCoverage {
+  focusIndex: number;
+  expectedOutcomeCovered?: boolean;
+  expectedEvidenceCovered?: boolean;
+}
+
+export interface WeeklyFocusEvidenceAttribution {
+  focusIndex: number;
+  sourceKeys: string[];
+}
+
+export interface WeeklyFocusItemReview {
+  focusIndex: number;
+  outcome: WeeklyFocusReviewOutcome;
+  actualResult: string;
+  evidenceGapNote: string;
+}
+
+export interface WeeklyFocusReview {
+  focusReviews: WeeklyFocusItemReview[];
+  overallResult: string;
+  valueJudgment: string;
+  hypothesisOutcome: string;
+  nextWeekAction: WeeklyFocusNextWeekAction;
+}
 
 export interface WeeklyFocusItem {
   focus: string;
@@ -60,6 +98,13 @@ export interface WeeklyFocusRecord {
   createdBy: 'ATL 思考教练';
   confirmedAt: string | null;
   reviewStatus: WeeklyReviewStatus;
+  taskAttributions?: WeeklyFocusTaskAttribution[];
+  ignoredLinkedTasks?: string[];
+  focusEvidenceCoverage?: WeeklyFocusEvidenceCoverage[];
+  weeklyEvidenceAttributions?: WeeklyFocusEvidenceAttribution[];
+  ignoredWeeklyEvidence?: string[];
+  review?: WeeklyFocusReview | null;
+  reviewedAt?: string | null;
   updatedAt: string;
   input: WeeklyFocusInput;
 }
@@ -104,7 +149,7 @@ function localDateParts(date: Date, timeZone: string): {
   };
 }
 
-function localIsoTimestamp(date: Date, timeZone: string): string {
+export function weeklyFocusTimestamp(date: Date, timeZone: string): string {
   const values = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
     calendar: 'iso8601',
     day: '2-digit',
@@ -179,6 +224,181 @@ function sourceList(value: unknown): WeeklyCoachSource[] {
     throw new Error('授权范围包含不支持的来源');
   }
   return [...new Set(sources)] as WeeklyCoachSource[];
+}
+
+function taskAttributionList(
+  value: unknown,
+  focusCount: number,
+  linkedTasks: readonly string[],
+): WeeklyFocusTaskAttribution[] {
+  if (!Array.isArray(value) || value.length > MAX_FOCUSES) {
+    throw new Error('重点任务归属格式无效');
+  }
+  const linkedTaskSet = new Set(linkedTasks);
+  const seenFocuses = new Set<number>();
+  const seenTasks = new Set<string>();
+  return value.map((item) => {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error('重点任务归属格式无效');
+    }
+    const raw = item as Record<string, unknown>;
+    const oneBasedFocusIndex = raw['重点序号'];
+    if (
+      typeof oneBasedFocusIndex !== 'number'
+      || !Number.isInteger(oneBasedFocusIndex)
+      || oneBasedFocusIndex < 1
+      || oneBasedFocusIndex > focusCount
+    ) {
+      throw new Error('重点任务归属包含无效重点序号');
+    }
+    const focusIndex = oneBasedFocusIndex - 1;
+    if (seenFocuses.has(focusIndex)) throw new Error('重点任务归属包含重复重点');
+    seenFocuses.add(focusIndex);
+    const taskIds = [...new Set(stringList(raw['关联任务'] ?? [], '重点关联任务'))];
+    for (const taskId of taskIds) {
+      if (!linkedTaskSet.has(taskId)) throw new Error('重点任务归属包含周级关联任务之外的任务');
+      if (seenTasks.has(taskId)) throw new Error('同一任务不能归属多个重点');
+      seenTasks.add(taskId);
+    }
+    return { focusIndex, taskIds };
+  }).sort((left, right) => left.focusIndex - right.focusIndex);
+}
+
+function evidenceCoverageList(
+  value: unknown,
+  focusCount: number,
+): WeeklyFocusEvidenceCoverage[] {
+  if (!Array.isArray(value) || value.length > MAX_FOCUSES) {
+    throw new Error('重点证据覆盖格式无效');
+  }
+  const seen = new Set<number>();
+  return value.map((item) => {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error('重点证据覆盖格式无效');
+    }
+    const raw = item as Record<string, unknown>;
+    const oneBasedFocusIndex = raw['重点序号'];
+    if (
+      typeof oneBasedFocusIndex !== 'number'
+      || !Number.isInteger(oneBasedFocusIndex)
+      || oneBasedFocusIndex < 1
+      || oneBasedFocusIndex > focusCount
+    ) {
+      throw new Error('重点证据覆盖包含无效重点序号');
+    }
+    const focusIndex = oneBasedFocusIndex - 1;
+    if (seen.has(focusIndex)) throw new Error('重点证据覆盖包含重复重点');
+    seen.add(focusIndex);
+    const expectedOutcomeCovered = raw['预期结果已覆盖'];
+    const expectedEvidenceCovered = raw['完成证据已覆盖'];
+    if (
+      (expectedOutcomeCovered !== undefined && typeof expectedOutcomeCovered !== 'boolean')
+      || (expectedEvidenceCovered !== undefined && typeof expectedEvidenceCovered !== 'boolean')
+      || (expectedOutcomeCovered === undefined && expectedEvidenceCovered === undefined)
+    ) {
+      throw new Error('重点证据覆盖判断无效');
+    }
+    return {
+      focusIndex,
+      ...(expectedOutcomeCovered === undefined ? {} : { expectedOutcomeCovered }),
+      ...(expectedEvidenceCovered === undefined ? {} : { expectedEvidenceCovered }),
+    };
+  }).sort((left, right) => left.focusIndex - right.focusIndex);
+}
+
+function evidenceAttributionList(
+  value: unknown,
+  focusCount: number,
+): WeeklyFocusEvidenceAttribution[] {
+  if (!Array.isArray(value) || value.length > MAX_FOCUSES) {
+    throw new Error('周报证据归属格式无效');
+  }
+  const seenFocuses = new Set<number>();
+  const seenSources = new Set<string>();
+  return value.map((item) => {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error('周报证据归属格式无效');
+    }
+    const raw = item as Record<string, unknown>;
+    const oneBasedFocusIndex = raw['重点序号'];
+    if (
+      typeof oneBasedFocusIndex !== 'number'
+      || !Number.isInteger(oneBasedFocusIndex)
+      || oneBasedFocusIndex < 1
+      || oneBasedFocusIndex > focusCount
+    ) {
+      throw new Error('周报证据归属包含无效重点序号');
+    }
+    const focusIndex = oneBasedFocusIndex - 1;
+    if (seenFocuses.has(focusIndex)) throw new Error('周报证据归属包含重复重点');
+    seenFocuses.add(focusIndex);
+    const sourceKeys = [...new Set(stringList(raw['证据键'] ?? [], '周报证据键'))];
+    for (const sourceKey of sourceKeys) {
+      if (seenSources.has(sourceKey)) throw new Error('同一周报证据不能归属多个重点');
+      seenSources.add(sourceKey);
+    }
+    return { focusIndex, sourceKeys };
+  }).sort((left, right) => left.focusIndex - right.focusIndex);
+}
+
+function reviewFromRaw(value: unknown, focusCount: number): WeeklyFocusReview | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) throw new Error('重点复盘格式无效');
+  const raw = value as Record<string, unknown>;
+  const reviews = raw['逐项结论'];
+  if (!Array.isArray(reviews) || reviews.length !== focusCount) {
+    throw new Error('重点复盘逐项结论不完整');
+  }
+  const seen = new Set<number>();
+  const focusReviews = reviews.map((item): WeeklyFocusItemReview => {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error('重点复盘逐项结论格式无效');
+    }
+    const review = item as Record<string, unknown>;
+    const oneBasedFocusIndex = review['重点序号'];
+    if (
+      typeof oneBasedFocusIndex !== 'number'
+      || !Number.isInteger(oneBasedFocusIndex)
+      || oneBasedFocusIndex < 1
+      || oneBasedFocusIndex > focusCount
+    ) {
+      throw new Error('重点复盘包含无效重点序号');
+    }
+    const focusIndex = oneBasedFocusIndex - 1;
+    if (seen.has(focusIndex)) throw new Error('重点复盘包含重复重点');
+    seen.add(focusIndex);
+    const outcome = review['用户判断'];
+    if (
+      outcome !== '已完成'
+      && outcome !== '部分完成'
+      && outcome !== '未完成'
+      && outcome !== '已调整'
+      && outcome !== '已取消'
+    ) {
+      throw new Error('重点复盘用户判断无效');
+    }
+    return {
+      focusIndex,
+      outcome,
+      actualResult: boundedString(review['实际结果'], '重点实际结果', false),
+      evidenceGapNote: boundedString(review['证据不足说明'] ?? '', '证据不足说明'),
+    };
+  }).sort((left, right) => left.focusIndex - right.focusIndex);
+  const nextWeekAction = raw['下周动作'];
+  if (nextWeekAction !== '继续' && nextWeekAction !== '调整' && nextWeekAction !== '停止') {
+    throw new Error('下周动作无效');
+  }
+  return {
+    focusReviews,
+    overallResult: boundedString(raw['本周总体结果'], '本周总体结果', false),
+    valueJudgment: boundedString(raw['价值判断'], '价值判断', false),
+    hypothesisOutcome: boundedString(
+      raw['被验证或推翻的假设'],
+      '被验证或推翻的假设',
+      false,
+    ),
+    nextWeekAction,
+  };
 }
 
 function firstString(raw: Record<string, unknown>, keys: string[]): unknown {
@@ -284,6 +504,53 @@ function visibleBackground(background: WeeklyFocusBackground): Record<string, st
   };
 }
 
+function visibleTaskAttribution(
+  attribution: WeeklyFocusTaskAttribution,
+): Record<string, unknown> {
+  return {
+    重点序号: attribution.focusIndex + 1,
+    关联任务: attribution.taskIds,
+  };
+}
+
+function visibleEvidenceCoverage(
+  coverage: WeeklyFocusEvidenceCoverage,
+): Record<string, unknown> {
+  return {
+    重点序号: coverage.focusIndex + 1,
+    ...(coverage.expectedOutcomeCovered === undefined
+      ? {}
+      : { 预期结果已覆盖: coverage.expectedOutcomeCovered }),
+    ...(coverage.expectedEvidenceCovered === undefined
+      ? {}
+      : { 完成证据已覆盖: coverage.expectedEvidenceCovered }),
+  };
+}
+
+function visibleEvidenceAttribution(
+  attribution: WeeklyFocusEvidenceAttribution,
+): Record<string, unknown> {
+  return {
+    重点序号: attribution.focusIndex + 1,
+    证据键: attribution.sourceKeys,
+  };
+}
+
+function visibleReview(review: WeeklyFocusReview): Record<string, unknown> {
+  return {
+    逐项结论: review.focusReviews.map((item) => ({
+      重点序号: item.focusIndex + 1,
+      用户判断: item.outcome,
+      实际结果: item.actualResult,
+      证据不足说明: item.evidenceGapNote,
+    })),
+    本周总体结果: review.overallResult,
+    价值判断: review.valueJudgment,
+    被验证或推翻的假设: review.hypothesisOutcome,
+    下周动作: review.nextWeekAction,
+  };
+}
+
 function bulletList(values: readonly string[], emptyText = '暂无'): string {
   return values.length === 0 ? emptyText : values.map((value) => `- ${value}`).join('\n');
 }
@@ -316,6 +583,73 @@ function renderFocuses(input: WeeklyFocusInput): string {
   }).join('\n\n');
 }
 
+function renderTaskAttributions(record: WeeklyFocusRecord): string[] {
+  if (record.linkedTasks.length === 0) return [];
+  const attributionByFocus = new Map(
+    (record.taskAttributions ?? []).map((item) => [item.focusIndex, item.taskIds]),
+  );
+  const assigned = new Set([...attributionByFocus.values()].flat());
+  const ignored = new Set(record.ignoredLinkedTasks ?? []);
+  const unassigned = record.linkedTasks.filter((taskId) => (
+    !assigned.has(taskId) && !ignored.has(taskId)
+  ));
+  const lines = ['', '## 逐项任务归属', ''];
+  record.input.focuses.forEach((focus, index) => {
+    lines.push(
+      `- 重点 ${index + 1}「${focus.focus}」：${attributionByFocus.get(index)?.join('、') || '尚未逐项归属'}`,
+    );
+  });
+  lines.push('', '### 尚未逐项归属', '', bulletList(unassigned));
+  if (ignored.size > 0) {
+    lines.push('', '### 已忽略的周级关联任务', '', bulletList([...ignored]));
+  }
+  return lines;
+}
+
+function renderWeeklyEvidenceAttributions(record: WeeklyFocusRecord): string[] {
+  const attributions = record.weeklyEvidenceAttributions ?? [];
+  const ignored = record.ignoredWeeklyEvidence ?? [];
+  if (attributions.length === 0 && ignored.length === 0) return [];
+  const lines = ['', '## 周报证据归属', ''];
+  for (const attribution of attributions) {
+    const focus = record.input.focuses[attribution.focusIndex];
+    lines.push(
+      `- 重点 ${attribution.focusIndex + 1}「${focus?.focus ?? '未知重点'}」：${attribution.sourceKeys.join('、') || '暂无'}`,
+    );
+  }
+  if (ignored.length > 0) {
+    lines.push('', '### 已忽略的周报证据', '', bulletList(ignored));
+  }
+  return lines;
+}
+
+function renderStructuredReview(record: WeeklyFocusRecord): string[] {
+  const review = record.review ?? null;
+  if (review === null) return [];
+  const lines = ['', '## 结构化周末复盘', ''];
+  for (const item of review.focusReviews) {
+    const focus = record.input.focuses[item.focusIndex];
+    lines.push(
+      `### 重点 ${item.focusIndex + 1}：${focus?.focus ?? '未知重点'}`,
+      '',
+      `- 用户判断：${item.outcome}`,
+      `- 实际结果：${item.actualResult}`,
+      `- 证据不足说明：${item.evidenceGapNote || '无'}`,
+      '',
+    );
+  }
+  lines.push(
+    '### 总体判断',
+    '',
+    `- 本周总体结果：${review.overallResult}`,
+    `- 价值判断：${review.valueJudgment}`,
+    `- 被验证或推翻的假设：${review.hypothesisOutcome}`,
+    `- 下周动作：${review.nextWeekAction}`,
+    `- 复盘时间：${record.reviewedAt ?? '未记录'}`,
+  );
+  return lines;
+}
+
 function renderManagedBody(record: WeeklyFocusRecord): string {
   const { input } = record;
   return [
@@ -327,6 +661,8 @@ function renderManagedBody(record: WeeklyFocusRecord): string {
     '## 本周重点',
     '',
     renderFocuses(input),
+    ...renderTaskAttributions(record),
+    ...renderWeeklyEvidenceAttributions(record),
     ...(input.unassignedDeferredTaskQuestions.length === 0 ? [] : [
       '',
       '## 其他进入任务后待思考的问题',
@@ -374,6 +710,7 @@ function renderManagedBody(record: WeeklyFocusRecord): string {
     '## 调整说明',
     '',
     input.adjustmentNote || '暂无',
+    ...renderStructuredReview(record),
   ].join('\n');
 }
 
@@ -404,9 +741,30 @@ function serialize(record: WeeklyFocusRecord, previousRaw: string | null): strin
     状态: record.status,
     关联目标: record.linkedGoals,
     关联任务: record.linkedTasks,
+    ...((record.taskAttributions ?? []).length === 0 ? {} : {
+      重点任务归属: (record.taskAttributions ?? []).map(visibleTaskAttribution),
+    }),
+    ...((record.ignoredLinkedTasks ?? []).length === 0 ? {} : {
+      已忽略周级关联任务: record.ignoredLinkedTasks,
+    }),
+    ...((record.focusEvidenceCoverage ?? []).length === 0 ? {} : {
+      重点证据覆盖: (record.focusEvidenceCoverage ?? []).map(visibleEvidenceCoverage),
+    }),
+    ...((record.weeklyEvidenceAttributions ?? []).length === 0 ? {} : {
+      周报证据归属: (record.weeklyEvidenceAttributions ?? []).map(visibleEvidenceAttribution),
+    }),
+    ...((record.ignoredWeeklyEvidence ?? []).length === 0 ? {} : {
+      已忽略周报证据: record.ignoredWeeklyEvidence,
+    }),
     创建方式: record.createdBy,
     确认时间: record.confirmedAt,
     复盘状态: record.reviewStatus,
+    ...(record.reviewedAt === undefined || record.reviewedAt === null
+      ? {}
+      : { 复盘时间: record.reviewedAt }),
+    ...(record.review === undefined || record.review === null
+      ? {}
+      : { 结构化复盘: visibleReview(record.review) }),
     更新时间: record.updatedAt,
     本周判断: record.input.focuses.map(visibleFocus),
     其他进入任务后待思考的问题: record.input.unassignedDeferredTaskQuestions,
@@ -483,6 +841,47 @@ function recordFromRaw(raw: string, expectedWeek: string): WeeklyFocusRecord {
       '其他进入任务后待思考的问题',
     ),
   }, status === '已确认');
+  const taskAttributions = taskAttributionList(
+    data['重点任务归属'] ?? [],
+    input.focuses.length,
+    input.linkedTasks,
+  );
+  const ignoredLinkedTasks = [...new Set(stringList(
+    data['已忽略周级关联任务'] ?? [],
+    '已忽略周级关联任务',
+  ))];
+  const assignedTasks = new Set(taskAttributions.flatMap(({ taskIds }) => taskIds));
+  if (ignoredLinkedTasks.some((taskId) => (
+    !input.linkedTasks.includes(taskId) || assignedTasks.has(taskId)
+  ))) {
+    throw new Error('已忽略周级关联任务格式无效');
+  }
+  const focusEvidenceCoverage = evidenceCoverageList(
+    data['重点证据覆盖'] ?? [],
+    input.focuses.length,
+  );
+  const weeklyEvidenceAttributions = evidenceAttributionList(
+    data['周报证据归属'] ?? [],
+    input.focuses.length,
+  );
+  const ignoredWeeklyEvidence = [...new Set(stringList(
+    data['已忽略周报证据'] ?? [],
+    '已忽略周报证据',
+  ))];
+  const assignedEvidence = new Set(
+    weeklyEvidenceAttributions.flatMap(({ sourceKeys }) => sourceKeys),
+  );
+  if (ignoredWeeklyEvidence.some((sourceKey) => assignedEvidence.has(sourceKey))) {
+    throw new Error('已忽略周报证据不能同时归属重点');
+  }
+  const reviewedAtValue = data['复盘时间'];
+  if (
+    reviewedAtValue !== undefined
+    && (typeof reviewedAtValue !== 'string' || !Number.isFinite(Date.parse(reviewedAtValue)))
+  ) {
+    throw new Error('复盘时间格式无效');
+  }
+  const review = reviewFromRaw(data['结构化复盘'], input.focuses.length);
   return {
     type: '周度重点',
     week: expectedWeek,
@@ -492,9 +891,26 @@ function recordFromRaw(raw: string, expectedWeek: string): WeeklyFocusRecord {
     createdBy: 'ATL 思考教练',
     confirmedAt,
     reviewStatus,
+    taskAttributions,
+    ignoredLinkedTasks,
+    focusEvidenceCoverage,
+    weeklyEvidenceAttributions,
+    ignoredWeeklyEvidence,
+    review,
+    reviewedAt: reviewedAtValue ?? null,
     updatedAt: boundedString(data['更新时间'], '更新时间', false),
     input,
   };
+}
+
+export async function loadWeeklyFocus(
+  gateway: Pick<WeeklyFocusGateway, 'read'>,
+  week: string,
+): Promise<WeeklyFocusDocument | null> {
+  const path = weeklyFocusPath(week);
+  const raw = await gateway.read(path);
+  if (raw === null) return null;
+  return { path, record: recordFromRaw(raw, week), raw };
 }
 
 export async function loadCurrentWeeklyFocus(
@@ -503,10 +919,22 @@ export async function loadCurrentWeeklyFocus(
   timeZone = 'Asia/Shanghai',
 ): Promise<WeeklyFocusDocument | null> {
   const week = currentIsoWeek(clock(), timeZone);
-  const path = weeklyFocusPath(week);
-  const raw = await gateway.read(path);
-  if (raw === null) return null;
-  return { path, record: recordFromRaw(raw, week), raw };
+  return loadWeeklyFocus(gateway, week);
+}
+
+export async function persistWeeklyFocusRecord(
+  gateway: WeeklyFocusGateway,
+  document: WeeklyFocusDocument,
+  record: WeeklyFocusRecord,
+): Promise<WeeklyFocusDocument> {
+  if (record.week !== document.record.week || document.path !== weeklyFocusPath(record.week)) {
+    throw new Error('周度重点更新目标不匹配');
+  }
+  const raw = serialize(record, document.raw);
+  if (!await gateway.write(document.path, raw, document.raw)) {
+    throw new WeeklyFocusConflictError();
+  }
+  return { path: document.path, record, raw };
 }
 
 async function persist(
@@ -533,9 +961,16 @@ async function persist(
     linkedGoals: normalized.linkedGoals,
     linkedTasks: normalized.linkedTasks,
     createdBy: 'ATL 思考教练',
-    confirmedAt: status === '已确认' ? localIsoTimestamp(now, timeZone) : null,
+    confirmedAt: status === '已确认' ? weeklyFocusTimestamp(now, timeZone) : null,
     reviewStatus: '待复盘',
-    updatedAt: localIsoTimestamp(now, timeZone),
+    taskAttributions: [],
+    ignoredLinkedTasks: [],
+    focusEvidenceCoverage: [],
+    weeklyEvidenceAttributions: [],
+    ignoredWeeklyEvidence: [],
+    review: null,
+    reviewedAt: null,
+    updatedAt: weeklyFocusTimestamp(now, timeZone),
     input: normalized,
   };
   const raw = serialize(record, expectedContent);

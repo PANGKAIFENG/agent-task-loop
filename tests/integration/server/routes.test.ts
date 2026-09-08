@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Task } from '../../../src/domain/task.js';
 import { RunnerBusyError, type RunnerController } from '../../../src/runner/runner-controller.js';
-import { authorizeAgentExecution } from '../../../src/services/authorize-agent-execution.js';
+import { authorizeLegacyResearchExecution } from '../../../src/services/authorize-agent-execution.js';
 import { captureTask } from '../../../src/services/capture-task.js';
 import { confirmTask } from '../../../src/services/confirm-task.js';
 import { createProject } from '../../../src/services/create-project.js';
@@ -45,15 +45,24 @@ async function setup(options: { runner?: RunnerController; token?: string } = {}
   });
   contexts.push(context);
   const controller = options.runner ?? runner();
+  const authorizeResearch = vi.fn(async (taskId: string) => ({
+    task: await authorizeLegacyResearchExecution(context.ctx, taskId),
+    dispatch: {
+      status: 'failed' as const,
+      taskId,
+      reason: 'synthetic_dispatch_boundary',
+    },
+  }));
   const app = await createApp({
     ctx: context.ctx,
     runner: controller,
+    authorizeResearch,
     boardOrigin: BOARD_ORIGIN,
     environment: options.token === undefined
       ? { ATL_BOARD_TOKEN: BOARD_TOKEN }
       : { ATL_BOARD_TOKEN: options.token },
   });
-  return { app, context, runner: controller };
+  return { app, context, runner: controller, authorizeResearch };
 }
 
 function writeHeaders(overrides: Record<string, string> = {}) {
@@ -97,7 +106,7 @@ async function createReadyTask(context: TestServiceContext) {
 
 async function createAgentExecutableTask(context: TestServiceContext) {
   const ready = await createReadyTask(context);
-  return authorizeAgentExecution(context.ctx, ready.taskId);
+  return authorizeLegacyResearchExecution(context.ctx, ready.taskId);
 }
 
 afterEach(async () => {
@@ -168,18 +177,87 @@ describe('local task board routes', () => {
     await app.close();
   });
 
+  it('exposes the dynamic dashboard through one read-only sanitized endpoint', async () => {
+    const { app, context } = await setup();
+    await captureTask(context.ctx, {
+      title: 'Synthetic candidate for dashboard',
+      body: 'PRIVATE_DASHBOARD_BODY_SENTINEL',
+      origin: 'synthetic_dashboard_test',
+      sourceDate: '2026-07-14',
+      sourceNote: '/private/dashboard-source.md',
+      sourceQuote: 'PRIVATE_DASHBOARD_QUOTE_SENTINEL',
+      sourceKey: 'private:dashboard-source-key',
+      priority: 'normal',
+    });
+    const executable = await createAgentExecutableTask(context);
+    const completed = await captureTask(context.ctx, {
+      title: 'Synthetic completed dashboard result',
+      body: 'PRIVATE_COMPLETED_DASHBOARD_BODY_SENTINEL',
+      origin: 'synthetic_dashboard_test',
+      sourceDate: '2026-07-14',
+      sourceNote: '/private/completed-dashboard-source.md',
+      sourceQuote: 'PRIVATE_COMPLETED_DASHBOARD_QUOTE_SENTINEL',
+      sourceKey: 'private:completed-dashboard-source-key',
+      priority: 'normal',
+    });
+    await context.ctx.tasks.save({
+      ...completed,
+      status: 'done',
+      reviewState: 'confirmed',
+    });
+    await context.ctx.audit.append({
+      event: 'task.reviewed',
+      at: context.ctx.clock().toISOString(),
+      taskId: completed.taskId,
+      details: { decision: 'approve' },
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/api/dashboard' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(expect.objectContaining({
+      summary: expect.objectContaining({
+        weeklyResults: 1,
+        candidateTasks: 1,
+        agentQueue: { raw: 1, admitted: 1, quarantined: 0 },
+      }),
+      views: expect.arrayContaining([
+        expect.objectContaining({ id: 'intake' }),
+        expect.objectContaining({
+          id: 'important_not_urgent',
+          cards: [expect.objectContaining({ taskId: executable.taskId })],
+        }),
+        expect.objectContaining({
+          id: 'weekly_insights',
+          cards: [expect.objectContaining({ taskId: completed.taskId })],
+        }),
+      ]),
+    }));
+    expect(response.body).not.toContain('PRIVATE_DASHBOARD_BODY_SENTINEL');
+    expect(response.body).not.toContain('PRIVATE_DASHBOARD_QUOTE_SENTINEL');
+    expect(response.body).not.toContain('/private/dashboard-source.md');
+    expect(response.body).not.toContain('private:dashboard-source-key');
+    expect(response.body).not.toContain('PRIVATE_COMPLETED_DASHBOARD_BODY_SENTINEL');
+    expect(response.body).not.toContain('PRIVATE_COMPLETED_DASHBOARD_QUOTE_SENTINEL');
+    expect(response.body).not.toContain('/private/completed-dashboard-source.md');
+    expect(response.body).not.toContain('private:completed-dashboard-source-key');
+    await app.close();
+  });
+
   it('exposes only the per-app token and same-origin API base in runtime config', async () => {
     const first = await setup();
     const second = await setup();
     const generatedFirst = await createApp({
       ctx: first.context.ctx,
       runner: runner(),
+      authorizeResearch: first.authorizeResearch,
       boardOrigin: BOARD_ORIGIN,
       environment: { PRIVATE_VALUE: 'must-not-leak' },
     });
     const generatedSecond = await createApp({
       ctx: second.context.ctx,
       runner: runner(),
+      authorizeResearch: second.authorizeResearch,
       boardOrigin: BOARD_ORIGIN,
       environment: { PRIVATE_VALUE: 'must-not-leak' },
     });
@@ -216,12 +294,15 @@ describe('local task board routes', () => {
     const app = await createApp({
       ctx: context.ctx,
       runner: runner(),
+      authorizeResearch: async () => {
+        throw new Error('Research authorization is outside this static route test');
+      },
       boardOrigin: BOARD_ORIGIN,
       environment: { ATL_BOARD_TOKEN: BOARD_TOKEN },
       staticRoot,
     });
 
-    for (const url of ['/inbox', '/review', '/projects', '/projects/project-alpha']) {
+    for (const url of ['/', '/inbox', '/review', '/projects', '/projects/project-alpha']) {
       const response = await app.inject({ method: 'GET', url });
       expect(response.statusCode).toBe(200);
       expect(response.headers['content-type']).toContain('text/html');
@@ -560,10 +641,19 @@ describe('local task board routes', () => {
       details: null,
     });
     expect(authorized.statusCode).toBe(200);
-    expect(authorized.json()).toEqual(expect.objectContaining({
-      status: 'agent_executable',
-      autoExecutable: true,
-    }));
+    expect(first.authorizeResearch).toHaveBeenCalledOnce();
+    expect(first.authorizeResearch).toHaveBeenCalledWith(ready.taskId);
+    expect(authorized.json()).toEqual({
+      task: expect.objectContaining({
+        status: 'agent_executable',
+        autoExecutable: true,
+      }),
+      dispatch: {
+        status: 'failed',
+        taskId: ready.taskId,
+        reason: 'synthetic_dispatch_boundary',
+      },
+    });
     expect(accepted.statusCode).toBe(202);
     expect(accepted.json()).toEqual({ taskId: ready.taskId, runId: 'run-board-001' });
     expect(start).toHaveBeenCalledWith({ taskId: ready.taskId, mode: 'manual' });

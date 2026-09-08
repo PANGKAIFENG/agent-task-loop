@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -9,6 +9,30 @@ import { App } from '../../../src/ui/App.js';
 type JsonBody = Record<string, unknown>;
 
 const emptyBodies: Record<string, JsonBody> = {
+  '/api/dashboard': {
+    observedAt: '2026-08-22T02:00:00.000Z',
+    dataState: 'empty',
+    stateReasons: [],
+    summary: {
+      weeklyResults: 0,
+      candidateTasks: 0,
+      agentQueue: { raw: 0, admitted: 0, quarantined: 0 },
+      needsUser: 0,
+      activeTasks: 0,
+    },
+    integrity: {
+      unknownStatusTaskIds: [],
+      invalidClaimLeaseTaskIds: [],
+      expiredClaimTaskIds: [],
+    },
+    views: [
+      { id: 'requires_user', label: '需要我决策', description: 'Synthetic empty view', cards: [] },
+      { id: 'agent_attention', label: 'AI 阻塞与异常', description: 'Synthetic empty view', cards: [] },
+      { id: 'intake', label: '等待摄入与梳理', description: 'Synthetic empty view', cards: [] },
+      { id: 'important_not_urgent', label: '重要不紧急', description: 'Synthetic empty view', cards: [] },
+      { id: 'weekly_insights', label: '本周结果与近期洞察', description: 'Synthetic empty view', cards: [] },
+    ],
+  },
   '/api/inbox': { tasks: [] },
   '/api/review': { tasks: [] },
   '/api/projects': { projects: [] },
@@ -49,6 +73,141 @@ afterEach(() => {
 });
 
 describe('local task board shell', () => {
+  it('opens the dynamic dashboard at the web root without removing existing navigation', async () => {
+    window.history.replaceState({}, '', '/');
+    mockApi();
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: '决策驾驶舱' })).toBeTruthy();
+    const navigation = screen.getByRole('navigation', { name: '主导航' });
+    for (const label of ['驾驶舱', '收件箱', '待验收', '项目']) {
+      expect(navigation.textContent).toContain(label);
+    }
+  });
+
+  it('keeps candidate tasks distinct from the shared Agent queue summary', async () => {
+    window.history.replaceState({}, '', '/');
+    mockApi({
+      '/api/dashboard': {
+        ...emptyBodies['/api/dashboard']!,
+        dataState: 'complete',
+        summary: {
+          weeklyResults: 2,
+          candidateTasks: 3,
+          agentQueue: { raw: 4, admitted: 2, quarantined: 2 },
+          needsUser: 1,
+          activeTasks: 5,
+        },
+      },
+    });
+    render(<App />);
+
+    expect(await screen.findByText('候选任务')).toBeTruthy();
+    expect(screen.getByText('3 项待人工确认')).toBeTruthy();
+    expect(screen.getByText('Agent 队列')).toBeTruthy();
+    expect(screen.getByText('原始 4 · 准入 2 · 隔离 2')).toBeTruthy();
+  });
+
+  it('keeps all five decision views visible when the dashboard is empty', async () => {
+    window.history.replaceState({}, '', '/');
+    mockApi();
+    render(<App />);
+
+    expect(await screen.findByText('当前没有需要显示的决策事项')).toBeTruthy();
+    expect(screen.getAllByText('当前无事项')).toHaveLength(5);
+    for (const label of ['需要我决策', 'AI 阻塞与异常', '等待摄入与梳理', '重要不紧急', '本周结果与近期洞察']) {
+      expect(screen.getByRole('heading', { name: label })).toBeTruthy();
+    }
+  });
+
+  it.each([
+    ['partial', '数据部分缺失'],
+    ['stale', '数据可能过期'],
+    ['integrity', '数据完整性异常'],
+  ])('surfaces the %s dashboard quality state with its reasons', async (dataState, label) => {
+    window.history.replaceState({}, '', '/');
+    mockApi({
+      '/api/dashboard': {
+        ...emptyBodies['/api/dashboard']!,
+        dataState,
+        stateReasons: [`Synthetic ${dataState} reason`],
+      },
+    });
+    render(<App />);
+
+    const state = await screen.findByLabelText('驾驶舱数据状态');
+    expect(state.textContent).toContain(label);
+    expect(state.textContent).toContain(`Synthetic ${dataState} reason`);
+  });
+
+  it('renders five stable decision views with explainable cards and a fact-entry action', async () => {
+    window.history.replaceState({}, '', '/');
+    const card = {
+      cardId: 'requires_user:decision-1',
+      taskId: 'decision-1',
+      title: '确认合成研究结论',
+      reason: { kind: 'human_confirmation', label: '候选结果等待验收' },
+      source: { kind: 'fact', label: 'synthetic_fixture · 2026-08-22' },
+      goalImpact: { kind: 'inference', label: 'Synthetic workstream' },
+      timeliness: { observedAt: '2026-08-22T01:30:00.000Z', state: 'current', label: '24 小时内更新' },
+      status: { code: 'review', label: '待验收' },
+      ruleRef: 'dashboard.requires-user.review@v001',
+      traceRef: 'event:synthetic-event-001',
+      action: { label: '查看项目事实', href: '/projects/project-alpha' },
+    };
+    const views = (emptyBodies['/api/dashboard']!.views as Array<Record<string, unknown>>)
+      .map((view, index) => ({ ...view, cards: index === 0 ? [card] : [] }));
+    mockApi({
+      '/api/dashboard': {
+        ...emptyBodies['/api/dashboard']!,
+        dataState: 'complete',
+        views,
+      },
+      '/api/projects': {
+        projects: [{
+          projectId: 'project-alpha',
+          name: 'Alpha',
+          description: 'Synthetic project',
+          resources: [],
+          createdAt: '2026-08-22T00:00:00.000Z',
+          updatedAt: '2026-08-22T01:00:00.000Z',
+        }],
+      },
+    });
+    render(<App />);
+
+    for (const label of ['需要我决策', 'AI 阻塞与异常', '等待摄入与梳理', '重要不紧急', '本周结果与近期洞察']) {
+      expect(await screen.findByRole('heading', { name: label })).toBeTruthy();
+    }
+    const decisionCard = screen.getByText('确认合成研究结论').closest('article');
+    expect(decisionCard).not.toBeNull();
+    const cardContent = within(decisionCard!);
+    // 首屏紧凑态：只保留标题与一行轻摘要，审计元信息不可见
+    const summaryButton = cardContent.getByRole('button', { name: /含待人工确认项/ });
+    expect(summaryButton.getAttribute('aria-expanded')).toBe('false');
+    expect(cardContent.getByText('待验收 · synthetic_fixture · 2026-08-22 · 24 小时内更新')).toBeTruthy();
+    for (const hidden of ['候选结果等待验收', 'Synthetic workstream', 'dashboard.requires-user.review@v001', 'event:synthetic-event-001']) {
+      expect(cardContent.queryByText(hidden)).toBeNull();
+    }
+    await userEvent.setup().click(summaryButton);
+    expect(summaryButton.getAttribute('aria-expanded')).toBe('true');
+    for (const value of [
+      '候选结果等待验收',
+      'synthetic_fixture · 2026-08-22',
+      'Synthetic workstream',
+      'dashboard.requires-user.review@v001',
+      'event:synthetic-event-001',
+      '待人工确认',
+      '事实',
+      '推断',
+    ]) {
+      expect(cardContent.getByText(value)).toBeTruthy();
+    }
+    await userEvent.setup().click(screen.getByRole('link', { name: '查看项目事实' }));
+    expect(window.location.pathname).toBe('/projects/project-alpha');
+    expect(await screen.findByRole('heading', { name: '项目看板' })).toBeTruthy();
+  });
+
   it('shows only the task-loop primary navigation', async () => {
     mockApi();
     render(<App />);
@@ -109,6 +268,27 @@ describe('local task board shell', () => {
 });
 
 describe('page data states', () => {
+  it('shows a retryable dashboard error without leaving the page', async () => {
+    window.history.replaceState({}, '', '/');
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockRejectedValueOnce(new Error('synthetic dashboard failure'))
+      .mockResolvedValue(jsonResponse(emptyBodies['/api/dashboard']!));
+    render(<App />);
+
+    expect(await screen.findByText('无法载入决策事实')).toBeTruthy();
+    await userEvent.setup().click(screen.getByRole('button', { name: '重试' }));
+    expect(await screen.findByText('当前没有需要显示的决策事项')).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a named loading state in the dashboard content region', () => {
+    window.history.replaceState({}, '', '/');
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise<Response>(() => undefined));
+    render(<App />);
+
+    expect(screen.getByRole('status').textContent).toContain('正在汇总决策事实');
+  });
+
   it('keeps a named loading state in the inbox content region', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise<Response>(() => undefined));
     render(<App />);
@@ -169,10 +349,85 @@ describe('page data states', () => {
 
     expect(await screen.findByText('整理公开资料')).toBeTruthy();
     expect(screen.getByText(/obsidian_daily/)).toBeTruthy();
-    expect(screen.getByText('缺少 5 项')).toBeTruthy();
+    expect(screen.getByText('待理解')).toBeTruthy();
     expect(screen.getByText('疑似重复 1')).toBeTruthy();
     expect(screen.getByText('高')).toBeTruthy();
     expect(screen.getByText(/2026\/07\/14/)).toBeTruthy();
+  });
+
+  it('opens the shared candidate inspector from a selectable inbox row', async () => {
+    mockApi({
+      '/api/inbox': {
+        tasks: [{
+          taskId: 'task-inbox-inspector',
+          title: '打开候选 inspector',
+          status: 'inbox',
+          reviewState: 'candidate',
+          projectId: null,
+          taskType: null,
+          objective: null,
+          acceptanceCriteria: [],
+          autoExecutable: false,
+          permissionProfile: null,
+          origin: 'synthetic_fixture',
+          sourceDate: null,
+          sourceExcerpt: null,
+          possibleDuplicateIds: [],
+          priority: 'normal',
+          attempts: 0,
+          claim: null,
+          artifactSummaries: [],
+          reviewFeedback: null,
+          readyAt: null,
+          createdAt: '2026-08-22T03:00:00.000Z',
+          updatedAt: '2026-08-22T03:00:00.000Z',
+        }],
+      },
+      '/api/tasks/task-inbox-inspector/candidate-inspector': {
+        taskIdentity: {
+          taskId: 'task-inbox-inspector',
+          title: '打开候选 inspector',
+          status: 'inbox',
+          reviewState: 'candidate',
+          updatedAt: '2026-08-22T03:00:00.000Z',
+          candidateRevision: 0,
+          candidateConfirmed: false,
+          autoExecutable: false,
+        },
+        currentTaskBrief: null,
+        suggestions: [],
+        sourceRefs: [],
+        gaps: [],
+        admission: {
+          verdict: 'needs_completion',
+          evaluated_at: '2026-08-22T03:00:00.000Z',
+          rule_version: 'agent-admission-v1',
+          input_fingerprint: 'a'.repeat(64),
+          reasons: [],
+          permission_gate: {
+            mode: null,
+            external_writes: [],
+            requires_authorization: false,
+            authorized: false,
+          },
+        },
+        permissionGate: {
+          mode: null,
+          external_writes: [],
+          requires_authorization: false,
+          authorized: false,
+        },
+      },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole('button', { name: /打开候选 inspector/ }));
+
+    expect(await screen.findByRole('heading', { name: '打开候选 inspector' })).toBeTruthy();
+    expect(screen.getByText(/确认任务理解不等于 Agent 授权/)).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: '返回候选列表' }));
+    expect(screen.queryByText('准入与权限')).toBeNull();
   });
 
   it('shows review summaries, acceptance mapping, evidence count, and attempt', async () => {

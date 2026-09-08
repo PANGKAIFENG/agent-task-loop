@@ -147,6 +147,30 @@ afterEach(async () => {
 });
 
 describe('artifact review loop', () => {
+  it('reconstructs Artifact production evidence from the persisted file', async () => {
+    const context = await makeContext();
+    const task = inProgressTask();
+    const written = await context.ctx.artifacts.write({
+      task,
+      runId: 'run-artifact-production-evidence',
+      agent: 'synthetic-agent',
+      result: artifactResult(),
+      createdAt: NOW,
+      packId: `pack-${'a'.repeat(24)}`,
+    });
+
+    await expect(context.ctx.artifacts.readProductionEvidence(written.ref)).resolves.toEqual({
+      identity: {
+        taskId: task.taskId,
+        ref: written.ref,
+        version: task.attempts,
+        sha256: written.sha256,
+      },
+      runId: 'run-artifact-production-evidence',
+      packId: `pack-${'a'.repeat(24)}`,
+    });
+  });
+
   it('submits a deterministic Artifact to Review and archives it only after approval', async () => {
     const context = await makeContext();
     const task = inProgressTask();

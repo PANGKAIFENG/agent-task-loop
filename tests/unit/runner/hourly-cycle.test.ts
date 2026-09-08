@@ -24,6 +24,7 @@ describe('hourly runner cycle', () => {
     expect(order).toEqual(['notification', 'qianwen', 'task']);
     expect(result).toEqual({
       notifications: { attempted: 1, sent: 1 },
+      multica: { status: 'skipped' },
       qianwen: { status: 'completed' },
       task: { status: 'no_task' },
     });
@@ -45,6 +46,7 @@ describe('hourly runner cycle', () => {
     expect(runTask).toHaveBeenCalledOnce();
     expect(result).toEqual({
       notifications: { attempted: 0, sent: 0 },
+      multica: { status: 'skipped' },
       qianwen: {
         status: 'failed',
         errorCode: 'qianwen_repository_failed',
@@ -74,6 +76,7 @@ describe('hourly runner cycle', () => {
         status: 'failed',
         errorCode: 'acceptance_ledger_lock_timeout',
       },
+      multica: { status: 'skipped' },
       qianwen: { status: 'completed' },
       task: { status: 'no_task' },
     });

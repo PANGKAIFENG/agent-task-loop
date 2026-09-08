@@ -49,6 +49,7 @@ function settings(paths: Awaited<ReturnType<typeof fixture>>): BackgroundSetting
     model: 'claude-sonnet-4-5',
     baseUrl: '',
     dingtalkProfile: 'synthetic-current-profile',
+    dingtalkRobotCode: 'ding-synthetic-atl-bot',
   };
 }
 
@@ -192,6 +193,7 @@ describe('BackgroundRuntimeController', () => {
           await realpath(paths.sourceRoot),
         ].join(delimiter),
         ATL_DINGTALK_PROFILE: 'synthetic-current-profile',
+        ATL_DINGTALK_ROBOT_CODE: 'ding-synthetic-atl-bot',
       }),
     }));
     const environment = vi.mocked(deps.installScheduler).mock.calls[0]?.[0].environment;

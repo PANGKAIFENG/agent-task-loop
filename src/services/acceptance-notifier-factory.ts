@@ -29,6 +29,7 @@ export interface AcceptanceNotifier {
 interface AcceptanceNotifierOptions {
   vaultRoot: string;
   profile: string | null;
+  robotCode?: string | null;
   clock?: () => Date;
   dwsRunner?: DwsCommandRunner;
 }
@@ -37,7 +38,7 @@ export function createAcceptanceNotifier(
   options: AcceptanceNotifierOptions & { profile: null },
 ): undefined;
 export function createAcceptanceNotifier(
-  options: AcceptanceNotifierOptions & { profile: string },
+  options: AcceptanceNotifierOptions & { profile: string; robotCode: string },
 ): AcceptanceNotifier;
 export function createAcceptanceNotifier(
   options: AcceptanceNotifierOptions,
@@ -45,7 +46,7 @@ export function createAcceptanceNotifier(
 export function createAcceptanceNotifier(
   options: AcceptanceNotifierOptions,
 ): AcceptanceNotifier | undefined {
-  if (options.profile === null) return undefined;
+  if (options.profile === null || options.robotCode == null) return undefined;
 
   const tasks = new MarkdownTaskRepository(options.vaultRoot);
   const artifacts = new MarkdownArtifactRepository(options.vaultRoot);
@@ -57,6 +58,7 @@ export function createAcceptanceNotifier(
   ));
   const delivery = new DwsSelfAcceptanceDelivery({
     profile: options.profile,
+    robotCode: options.robotCode,
     ...(options.dwsRunner === undefined ? {} : { runner: options.dwsRunner }),
   });
 

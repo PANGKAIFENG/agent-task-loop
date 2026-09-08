@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { readinessErrors, type Task } from '../domain/task.js';
+import { isExternalExecutionTask, readinessErrors, type Task } from '../domain/task.js';
 import { assertTransition } from '../domain/transitions.js';
 import { TaskSavedIndexStaleError } from '../storage/markdown-task-repository.js';
 import type { ServiceContext } from './service-context.js';
@@ -38,6 +38,33 @@ export class ClaimTaskNotEligibleError extends Error {
   constructor() {
     super('Task is not eligible for claim');
     this.name = 'ClaimTaskNotEligibleError';
+  }
+}
+
+// PAW-GOAL-003 T1 (PRD §6 rule 3): a task dispatched to Multica belongs to
+// the remote execution loop. The local claim path (manual run included) must
+// refuse it explicitly instead of folding the rejection into the generic
+// research eligibility rule.
+export class ClaimTaskExternalExecutionError extends Error {
+  readonly code = 'task_claim_external_execution';
+
+  constructor() {
+    super('Task is executed externally via Multica and cannot be claimed locally');
+    this.name = 'ClaimTaskExternalExecutionError';
+  }
+}
+
+// Issue #3 / CR P1-3: an agent_executable task must be claim-free. A task
+// that is otherwise admittable but still carries a claim is a contradiction
+// (a stale claim was never released); claiming it would silently overwrite
+// another run's claim, so the manual claim path surfaces this explicitly
+// instead of folding it into the generic not-eligible error.
+export class ClaimTaskUnexpectedClaimError extends Error {
+  readonly code = 'unexpected_claim';
+
+  constructor() {
+    super('Task is agent_executable but still carries a claim');
+    this.name = 'ClaimTaskUnexpectedClaimError';
   }
 }
 
@@ -85,11 +112,33 @@ export function resolveClaimTaskOptions(
   };
 }
 
-export function isClaimEligible(task: Task): boolean {
-  return task.status === 'agent_executable'
+// The single agent-queue admission predicate (Issue #3): the runner's claim
+// flow, the manual-run route, peeks and every statistics surface (home page,
+// task index counts) must read this same rule. Tasks flagged as possible
+// duplicates stay out of the queue until a human resolves the deduplication;
+// tasks without a registered project (orphan/unknown) and tasks carrying an
+// unparseable claim lease are rejected too — each with an explicit
+// task-statistics quarantine reason, never silently admitted.
+export type KnownProjectIds = ReadonlySet<string>;
+
+export function hasInvalidClaimLease(task: Task): boolean {
+  return task.claim !== null && !Number.isFinite(Date.parse(task.claim.leaseExpiresAt));
+}
+
+export function isClaimEligible(task: Task, knownProjectIds: KnownProjectIds): boolean {
+  return !isExternalExecutionTask(task)
+    && task.status === 'agent_executable'
     && task.reviewState === 'confirmed'
     && task.lastDecision?.continuationRunId !== null
-    && readinessErrors(task).length === 0;
+    && readinessErrors(task).length === 0
+    && task.possibleDuplicateIds.length === 0
+    && task.claim === null
+    && task.projectId !== null
+    && knownProjectIds.has(task.projectId);
+}
+
+export async function loadKnownProjectIds(ctx: ServiceContext): Promise<KnownProjectIds> {
+  return new Set((await ctx.projects.list()).map((project) => project.projectId));
 }
 
 export function localBusinessDate(now: Date): string {
@@ -125,7 +174,13 @@ export async function claimTaskWithoutQuotaCheck(
 
   return ctx.tasks.withTaskLock(taskId, async () => {
     const task = await ctx.tasks.get(taskId);
-    if (!isClaimEligible(task)) {
+    if (isExternalExecutionTask(task)) {
+      throw new ClaimTaskExternalExecutionError();
+    }
+    if (task.status === 'agent_executable' && task.claim !== null) {
+      throw new ClaimTaskUnexpectedClaimError();
+    }
+    if (!isClaimEligible(task, await loadKnownProjectIds(ctx))) {
       throw new ClaimTaskNotEligibleError();
     }
     assertTransition(task.status, 'in_progress');

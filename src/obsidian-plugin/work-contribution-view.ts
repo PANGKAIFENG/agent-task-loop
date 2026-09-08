@@ -274,7 +274,6 @@ export class WorkContributionView extends ItemView {
   private activeTab: HomeTab = 'overview';
   private pulseMode: PulseMode = 'ai';
   private weeklyFocus: WeeklyFocusDocument | null = null;
-  private weeklyCoachDraft: WeeklyCoachSessionDraft | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -316,7 +315,6 @@ export class WorkContributionView extends ItemView {
     this.controller = null;
     this.state = null;
     this.weeklyFocus = null;
-    this.weeklyCoachDraft = null;
     this.contentEl.replaceChildren();
   }
 
@@ -325,12 +323,7 @@ export class WorkContributionView extends ItemView {
   }
 
   async refreshWeeklyCoachState(): Promise<void> {
-    const [weeklyFocus, weeklyCoachDraft] = await Promise.all([
-      this.dependencies.loadWeeklyFocus().catch(() => null),
-      this.dependencies.loadWeeklyCoachDraft().catch(() => null),
-    ]);
-    this.weeklyFocus = weeklyFocus;
-    this.weeklyCoachDraft = weeklyCoachDraft;
+    this.weeklyFocus = await this.dependencies.loadWeeklyFocus().catch(() => null);
     this.rerender();
   }
 
@@ -708,16 +701,6 @@ export class WorkContributionView extends ItemView {
       confirmed === null ? 'CURRENT FOCUS · 系统候选' : 'CURRENT FOCUS · 用户确认',
       '当前最值得推进的三件事',
       'atl-home-focus',
-      this.weeklyFocus?.record.status === '已确认'
-        ? '查看本周判断'
-        : this.weeklyCoachDraft !== null || this.weeklyFocus?.record.status === '草稿'
-          ? '继续本周思考'
-          : '梳理本周重点',
-      () => {
-        void this.dependencies.openWeeklyCoach(() => {
-          void this.refreshWeeklyCoachState();
-        });
-      },
     );
     if (confirmed !== null) {
       this.renderConfirmedFocus(area.body, confirmed);
@@ -827,7 +810,10 @@ export class WorkContributionView extends ItemView {
     )).length;
     const activeCount = counts === undefined
       ? null
-      : counts.ready + counts.agentExecutable + counts.inProgress + counts.review;
+      : counts.ready
+        + (state.home.snapshot?.agentQueue.admittedCount ?? 0)
+        + counts.inProgress
+        + counts.review;
     const health = [
       state.contribution.status === 'ready',
       state.home.status === 'ready',
@@ -856,7 +842,7 @@ export class WorkContributionView extends ItemView {
         tone: 'is-green',
         detail: counts === undefined
           ? '正在读取任务状态'
-          : `${formatNumber(counts.ready)} 待办 · ${formatNumber(counts.agentExecutable)} Agent 待执行 · ${formatNumber(counts.review)} 待验收`,
+          : `${formatNumber(counts.ready)} 待办 · ${formatNumber(state.home.snapshot?.agentQueue.admittedCount ?? 0)} Agent 待执行 · ${formatNumber(counts.review)} 待验收`,
         action: '查看推进任务',
         tab: 'today' as const,
       },
@@ -910,7 +896,7 @@ export class WorkContributionView extends ItemView {
     const values: Array<[string, number | null]> = [
       ['收件箱', counts?.inbox ?? null],
       ['待办', counts?.ready ?? null],
-      ['Agent 待执行', counts?.agentExecutable ?? null],
+      ['Agent 待执行', counts === undefined ? null : (state.home.snapshot?.agentQueue.admittedCount ?? null)],
       ['执行中', counts?.inProgress ?? null],
       ['待验收', counts?.review ?? null],
       ['已阻塞', counts?.blocked ?? null],

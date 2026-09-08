@@ -14,7 +14,7 @@ Agent Task Loop（ATL）是一套运行在 Obsidian 里的个人待办工作流�
 2. **决定**：在 Inbox 中保留、忽略，或点击“移到待办”。普通任务只需要标题。
 3. **安排**：在 TaskNotes 看板中拖动状态，再从“ATL：统一日历”的“待排期任务”安排日期和时间。
 4. **推进**：自己把任务从“待办”移到“进行中”，完成后移到“已完成”。
-5. **需要 AI 时再用**：在任意 TaskNotes 任务上选择“智能完善任务”，共同补全目标、下一步和完成条件；也可以让思考教练启发你确认本周重点，或授权 ATL Runner 做只读调研。
+5. **需要 AI 时再用**：在任意 TaskNotes 任务上选择“智能完善任务”，共同补全目标、下一步和完成条件；本周重点在 Claudian 中讨论，也可以授权 ATL Runner 做只读调研。
 
 默认看板有五个主要状态：
 
@@ -60,7 +60,7 @@ ATL 可以为 `10_Tasks/Views/任务总看板.base` 应用默认四列布局，�
 
 看板状态和日历时间是两套独立信息。把任务拖到“待办”只表示决定要做，不会擅自把它安排到今天；为任务设置 `scheduled` 后，它才会出现在日历对应的日期和时间。统一日历文件首次打开时由 ATL 创建；旧版本升级只补充必要的布局选项，并保留你的其他视图配置。
 
-### 4. 个人首页与本周思考教练
+### 4. 个人首页与本周重点
 
 点击 Obsidian 左侧“ATL：个人首页”，或在命令面板运行“打开个人首页”。这里汇总工作贡献、任务推进与输入积压，不替代 TaskNotes 看板：
 
@@ -72,13 +72,9 @@ ATL 可以为 `10_Tasks/Views/任务总看板.base` 应用默认四列布局，�
 - **趋势**：同时查看每日完成任务和每日 Normalized Token 的变化。
 - **当前最值得推进的三件事**：默认显示现有任务候选；确认本周判断后，只把这里替换为你确认的 0 至 3 项判断。
 
-标题右侧的按钮会按本周状态显示“梳理本周重点”“继续本周思考”或“查看本周判断”。点击后在 Obsidian 内打开思考教练：
+本周重点的职责分为三层：Claudian 负责目标取舍、上下文分析和多轮讨论；`05_Reviews/Weekly/<周次> 周度重点.md` 负责沉淀用户已确认的 0 至 3 项结果或“本周暂不新增重点”；个人首页只负责只读展示与回看。确认前，首页继续显示明确标记为“系统候选”的任务，并打开原任务；确认后，点击重点卡片打开原周度记录。
 
-- 你决定本次允许读取哪些目标、项目、任务、日历和复盘资料；“笔记同步助手”和“每日所思”每次会话默认不授权；
-- AI 每轮只追问一个可能改变判断的问题，区分事实、推测和信息缺口，不替你决定 Top 3；
-- 可随时绕过 AI 人工整理，保存草稿后继续，或确认 0 至 3 项本周判断；
-- 确认后写入 `05_Reviews/Weekly/<周次> 周度重点.md`，字段和状态均为中文，并预留人工复盘区；
-- 这个过程不会创建任务、修改任务状态或执行工作。
+个人首页不依赖 Claudian 已安装、正在运行或可用，也不提供 Claudian 会话深链。Claudian 到周度记录的结构化回流尚无稳定契约，当前不会自动同步对话、写入周度记录或确认本周重点。ATL 已有思考教练、历史草稿和周度记录继续保留，不会因首页入口收敛被删除、改写或迁移。
 
 任务贡献只使用 ATL Audit 中的“确认通过”或“生命周期进入已完成”事件，不用 `updated_at` 猜测完成日期。历史已完成任务如果没有可核对事件，会在首页显示提示，不会悄悄计入。OpenToken 暂时不可用时，任务贡献、热力图和任务产出仍然可用，Token 区显示恢复提示。
 
@@ -170,7 +166,7 @@ Runner 在实质执行前会冻结本次 Runtime Pack，记录任务与运行 ID
 ATL 尚未进入 Obsidian 社区插件市场。安装插件本身不需要终端：
 
 1. 打开 [GitHub Releases](https://github.com/PANGKAIFENG/agent-task-loop/releases)，下载最新的插件压缩包。
-2. 解压并确认包含 `main.js`、`manifest.json`、`styles.css`、`atl-runner.mjs`、`atl-dingtalk-bridge.mjs` 和 `qianwen-accessibility-helper`。
+2. 解压并确认包含 `main.js`、`manifest.json`、`styles.css`、`atl-runner.mjs`、`atl-dingtalk-bridge.mjs`、`atl-dingtalk-stream.mjs` 和 `qianwen-accessibility-helper`。
 3. 在 Finder 中打开 Vault，按 `Command + Shift + .` 显示隐藏文件。
 4. 进入 `.obsidian/plugins/`，创建 `agent-task-loop` 文件夹并放入上述文件。
 5. 重启 Obsidian，在“设置 → 第三方插件”中启用 `Agent Task Loop`。
@@ -185,7 +181,7 @@ ATL 尚未进入 Obsidian 社区插件市场。安装插件本身不需要终端
 | 钉钉日历只读同步 | Obsidian 1.11.4+、TaskNotes、钉钉 CalDAV 地址/账号/密码 |
 | 保存会议听记 | 已同步到本地的钉钉日程、允许 ATL 管理此 Vault |
 | 会议 AI 分析与待办提取 | 已登录的 Claude Code；可沿用 CC-Switch 配置 |
-| 本周思考教练 | 允许 ATL 管理此 Vault；使用 AI 时需已登录 Claude Code，也可沿用 CC-Switch 配置 |
+| 本周重点讨论 | Claudian；个人首页和已有周度记录不依赖 Claudian 可用性 |
 | 从同步助手提取、AI 帮我整理 | 已登录的 Claude Code；可沿用 CC-Switch 配置 |
 | 定时自动调研 | Node.js 24+、Claude Code、启用 ATL 后台执行 |
 

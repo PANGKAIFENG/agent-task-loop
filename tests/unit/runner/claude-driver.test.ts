@@ -18,7 +18,7 @@ import {
   type ProcessExecutor,
   type ProcessResult,
 } from '../../../src/runner/claude-driver.js';
-import type { ContextBundle } from '../../../src/runner/context-bundle.js';
+import type { ContextBlock, ContextBundle } from '../../../src/runner/context-bundle.js';
 import { resolveExecutionProfile } from '../../../src/runner/execution-profile.js';
 import type {
   ResearchDriver,
@@ -32,6 +32,17 @@ const CLAUDE_BIN = '/opt/testing/bin/claude';
 const RUN_DIRECTORY = '/tmp/atl-claude-test/run-001';
 const CLAUDE_CONFIG_DIR = '/Users/synthetic/.claude-atl';
 const CLAUDE_MODEL = 'glm-4-flash';
+
+function fixtureContextIdentity(
+  label: 'task' | 'project',
+): Pick<ContextBlock, 'category' | 'sourceRef' | 'version' | 'readRef'> {
+  return {
+    category: label,
+    sourceRef: `${label}://synthetic/driver`,
+    version: NOW,
+    readRef: `memory://${label}`,
+  };
+}
 const REQUIRED_HELP = [
   '--print',
   '--safe-mode',
@@ -104,6 +115,7 @@ function makeContext(): ContextBundle {
       {
         label: 'task',
         kind: 'task',
+        ...fixtureContextIdentity('task'),
         content: [
           'Objective:',
           'Compare the documented public product limits.',
@@ -116,6 +128,7 @@ function makeContext(): ContextBundle {
       {
         label: 'project',
         kind: 'project',
+        ...fixtureContextIdentity('project'),
         content: 'Only use the official public documentation.',
         sha256: 'b'.repeat(64),
       },
@@ -384,9 +397,10 @@ describe('createClaudeStructuredExecutor', () => {
         timeoutMs: 30_000,
         signal: controller.signal,
       });
+      void operation.catch(() => undefined);
       await vi.waitFor(async () => {
         expect(Number(await readFile(pidPath, 'utf8'))).toBeGreaterThan(0);
-      });
+      }, { timeout: 5_000 });
 
       controller.abort();
 
@@ -642,12 +656,14 @@ describe('ClaudeResearchDriver.execute', () => {
             {
               label: 'task',
               kind: 'task',
+              ...fixtureContextIdentity('task'),
               content: 'x'.repeat(2 * 1024 * 1024),
               sha256: 'd'.repeat(64),
             },
             {
               label: 'project',
               kind: 'project',
+              ...fixtureContextIdentity('project'),
               content: 'Synthetic project.',
               sha256: 'e'.repeat(64),
             },
@@ -889,7 +905,11 @@ describe('ClaudeResearchDriver.execute', () => {
     expect(prompt).toContain('Do not change configuration');
     expect(prompt).toContain('Do not create or modify calendar events');
     expect(prompt).toContain('return a decision_request');
+    expect(prompt).toContain('Latest User Decision');
+    expect(prompt).toContain('Do not request another decision merely');
     expect(prompt).toContain('Output contract');
+    expect(prompt).toContain('exactly one valid JSON object');
+    expect(prompt).toContain('Do not include Markdown');
     expect(prompt).not.toContain('TITLE_SENTINEL_MUST_NOT_ENTER_PROMPT');
     expect(prompt).not.toContain('BODY_SENTINEL_MUST_NOT_ENTER_PROMPT');
     expect(prompt).not.toContain('SOURCE_QUOTE_SENTINEL_MUST_NOT_ENTER_PROMPT');
@@ -922,7 +942,9 @@ describe('ClaudeResearchDriver.execute', () => {
         return processResult({ stdout: REQUIRED_HELP });
       }
       return processResult({
-        stdout: JSON.stringify({ structured_output: decisionRequest }),
+        stdout: JSON.stringify({
+          result: `\`\`\`json\n${JSON.stringify(decisionRequest, null, 2)}\n\`\`\``,
+        }),
       });
     });
     const driver = await createDriver({ executor });
@@ -960,6 +982,7 @@ describe('ClaudeResearchDriver.execute', () => {
           {
             label: 'task',
             kind: 'task',
+            ...fixtureContextIdentity('task'),
             content: [
               'Objective:',
               'Research [REDACTED]',
@@ -972,6 +995,7 @@ describe('ClaudeResearchDriver.execute', () => {
           {
             label: 'project',
             kind: 'project',
+            ...fixtureContextIdentity('project'),
             content: 'Synthetic project.',
             sha256: 'd'.repeat(64),
           },
@@ -994,6 +1018,16 @@ describe('ClaudeResearchDriver.execute', () => {
     ['JSON string result', { result: JSON.stringify(validResult) }],
     ['JSON string structured output', {
       result: JSON.stringify({ structured_output: validResult }),
+    }],
+    ['fenced JSON string result', {
+      result: `\`\`\`json\n${JSON.stringify(validResult, null, 2)}\n\`\`\``,
+    }],
+    ['prose-wrapped fenced JSON string result', {
+      result: [
+        'Here is the structured result:',
+        `\`\`\`json\n${JSON.stringify(validResult, null, 2)}\n\`\`\``,
+        'This result is ready for review.',
+      ].join('\n'),
     }],
     ['direct result', validResult],
   ])('extracts and validates %s from the Claude JSON envelope', async (

@@ -51,12 +51,23 @@ function claimedResearchTask(overrides: Partial<Task> = {}): Task {
 function context(kinds: ContextBundle['blocks'][number]['kind'][]): ContextBundle {
   return {
     taskId: 'task-profile-001',
-    blocks: kinds.map((kind, index) => ({
-      label: `${kind}-${index}`,
-      kind,
-      content: `${kind} content`,
-      sha256: String(index).padStart(64, '0'),
-    })),
+    blocks: kinds.map((kind, index) => {
+      const category = kind === 'local_file' || kind === 'url_reference'
+        ? 'source'
+        : kind === 'artifact_review'
+          ? 'artifact'
+          : kind;
+      return {
+        label: `${kind}-${index}`,
+        kind,
+        category,
+        sourceRef: `${category}://synthetic/${index}`,
+        version: 'v1',
+        readRef: `memory://${kind}-${index}`,
+        content: `${kind} content`,
+        sha256: String(index).padStart(64, '0'),
+      };
+    }),
   };
 }
 

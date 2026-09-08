@@ -452,6 +452,119 @@
   white-space: pre-wrap;
 }
 
+.atl-candidate-field {
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding: 2px 0 8px;
+}
+
+.atl-candidate-field-meta,
+.atl-candidate-source-heading {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.atl-candidate-field-meta {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  min-width: 0;
+}
+
+.atl-candidate-field-meta span,
+.atl-candidate-source-heading strong,
+.atl-candidate-source p,
+.atl-candidate-source blockquote,
+.atl-candidate-gap-list span,
+.atl-candidate-reason-list span,
+.atl-candidate-reason-list small {
+  overflow-wrap: anywhere;
+}
+
+.atl-candidate-attribution {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  color: var(--text-normal);
+  padding: 2px 5px;
+}
+
+.atl-candidate-attribution.is-source_fact { border-color: var(--color-green); }
+.atl-candidate-attribution.is-ai_inference { border-color: var(--color-blue); }
+.atl-candidate-attribution.is-missing { border-color: var(--color-orange); }
+
+.atl-candidate-section {
+  border-top: 1px solid var(--background-modifier-border);
+  margin-top: 16px;
+  padding-top: 14px;
+}
+
+.atl-candidate-section h3 {
+  font-size: var(--font-ui-medium);
+  letter-spacing: 0;
+  margin: 0 0 10px;
+}
+
+.atl-candidate-empty,
+.atl-candidate-source-verified,
+.atl-candidate-permission-summary {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.atl-candidate-source {
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding: 10px 0;
+}
+
+.atl-candidate-source-heading {
+  justify-content: space-between;
+}
+
+.atl-candidate-source blockquote {
+  border-inline-start: 2px solid var(--background-modifier-border-hover);
+  margin: 8px 0;
+  padding-inline-start: 10px;
+  white-space: pre-wrap;
+}
+
+.atl-candidate-source-failure,
+.atl-candidate-authorization-boundary {
+  color: var(--text-error);
+}
+
+.atl-candidate-source-action {
+  margin-top: 8px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.atl-candidate-gap-list,
+.atl-candidate-reason-list {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.atl-candidate-gap-list li,
+.atl-candidate-reason-list li {
+  display: grid;
+  gap: 4px;
+  grid-template-columns: minmax(58px, auto) minmax(0, 1fr);
+}
+
+.atl-candidate-gap-list code,
+.atl-candidate-reason-list code {
+  grid-column: 2;
+  white-space: normal;
+}
+
+.atl-candidate-reason-list small {
+  color: var(--text-muted);
+  grid-column: 2;
+}
+
 .atl-task-details {
   margin: 14px 0 4px;
 }
@@ -504,6 +617,211 @@
 .atl-add-criterion-button svg {
   height: 15px;
   width: 15px;
+}
+
+/* PAW-GOAL-003-V0.5 D1: development-branch confirmation form + Contract
+   preview. All colors and font sizes reference Obsidian CSS variables. */
+
+.atl-task-confirmation-modal--wide {
+  width: min(720px, calc(100vw - 32px));
+}
+
+.atl-task-kind-section {
+  margin-bottom: 4px;
+}
+
+.atl-task-kind-segment {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  display: inline-flex;
+  overflow: hidden;
+}
+
+.atl-task-kind-option {
+  background: var(--background-primary);
+  border: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  padding: 5px 14px;
+}
+
+.atl-task-kind-option.is-active {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  font-weight: var(--font-semibold);
+}
+
+.atl-context-refs-section {
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding: 12px 0 16px;
+}
+
+.atl-context-ref-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.atl-context-ref-row {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 32px;
+}
+
+.atl-context-ref-input {
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  min-width: 0;
+  width: 100%;
+}
+
+.atl-permission-section {
+  padding: 12px 0 14px;
+}
+
+.atl-permission-label {
+  align-items: flex-start;
+  cursor: pointer;
+  display: flex;
+  gap: 8px;
+  max-width: min(420px, 100%);
+  text-align: left;
+}
+
+.atl-permission-label input[type='checkbox'] {
+  margin-top: 3px;
+}
+
+.atl-permission-text {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.55;
+}
+
+.atl-permission-text strong {
+  color: var(--text-normal);
+  font-weight: var(--font-semibold);
+}
+
+.atl-contract-summary {
+  border-top: 1px solid var(--background-modifier-border);
+  margin: 14px 0 0;
+}
+
+.atl-task-confirmation-modal .atl-contract-summary .atl-task-brief-summary-row {
+  grid-template-columns: 96px minmax(0, 1fr);
+  padding: 10px 0;
+}
+
+.atl-contract-summary dd {
+  margin: 0;
+}
+
+.atl-contract-summary dd ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.atl-contract-summary dd li {
+  padding: 1px 0;
+}
+
+.atl-contract-summary dd code {
+  background: var(--background-secondary);
+  border-radius: 3px;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  padding: 1px 5px;
+}
+
+.atl-contract-permission {
+  border-bottom: 0;
+  padding: 12px 0 4px;
+}
+
+.atl-banner-title {
+  color: var(--text-normal);
+  display: block;
+  font-weight: var(--font-semibold);
+  margin-bottom: 2px;
+}
+
+.atl-task-brief-banner.is-error .atl-banner-title {
+  color: var(--text-error);
+}
+
+.atl-banner-body {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.atl-gap-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0 2px;
+}
+
+.atl-gap-item {
+  color: var(--text-error);
+  font-size: var(--font-ui-small);
+  line-height: 1.5;
+}
+
+.atl-gap-item::before {
+  content: '•';
+  font-weight: 700;
+  margin-right: 8px;
+}
+
+/* PAW-GOAL-003-V0.5 D2: dispatch-in-progress lock + result projections. */
+
+.atl-task-confirmation-modal.atl-modal-locked .modal-close-button {
+  display: none;
+}
+
+.atl-progress-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 8px 0 4px;
+}
+
+.atl-progress-head {
+  align-items: center;
+  display: flex;
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-semibold);
+  gap: 10px;
+}
+
+.atl-progress-spinner {
+  animation: atl-spin 0.9s linear infinite;
+  border: 2.5px solid var(--background-modifier-border);
+  border-radius: 50%;
+  border-top-color: var(--interactive-accent);
+  flex: none;
+  height: 18px;
+  width: 18px;
+}
+
+@keyframes atl-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.atl-progress-meta {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.atl-progress-meta strong {
+  color: var(--text-normal);
+  font-variant-numeric: tabular-nums;
 }
 
 .atl-form-error {
@@ -574,6 +892,17 @@
 
   .atl-task-brief-summary-row {
     grid-template-columns: 1fr;
+  }
+
+  .atl-candidate-gap-list li,
+  .atl-candidate-reason-list li {
+    grid-template-columns: 1fr;
+  }
+
+  .atl-candidate-gap-list code,
+  .atl-candidate-reason-list code,
+  .atl-candidate-reason-list small {
+    grid-column: 1;
   }
 
   .atl-completion-backfill-row {
@@ -3466,6 +3795,339 @@ body.atl-task-card-theme .tasknotes-plugin .task-card.task-card--layout-compact 
   }
 
   .atl-weekly-coach-footer-actions button {
+    width: 100%;
+  }
+}
+
+.atl-weekly-focus-review-home {
+  border-top: 1px solid var(--background-modifier-border);
+  display: grid;
+  gap: 12px;
+  padding-top: 16px;
+}
+
+.atl-weekly-focus-review-home-header {
+  align-items: end;
+  display: flex;
+  justify-content: space-between;
+}
+
+.atl-weekly-focus-review-home-header small {
+  color: var(--text-faint);
+  display: block;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.atl-weekly-focus-review-home-header h2 {
+  font-size: 15px;
+  margin: 3px 0 0;
+}
+
+.atl-weekly-focus-review-home-states {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.atl-weekly-focus-review-home-state {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  color: var(--text-normal);
+  display: grid;
+  gap: 4px;
+  min-height: 76px;
+  min-width: 0;
+  padding: 10px 12px;
+  text-align: left;
+  width: 100%;
+}
+
+button.atl-weekly-focus-review-home-state {
+  cursor: pointer;
+}
+
+button.atl-weekly-focus-review-home-state:hover {
+  border-color: var(--interactive-accent);
+}
+
+.atl-weekly-focus-review-home-state small {
+  color: var(--text-faint);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.atl-weekly-focus-review-home-state strong {
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.atl-weekly-focus-review-home-state span {
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.atl-weekly-focus-review-home-warning {
+  color: var(--text-warning);
+  font-size: 10px;
+  margin: 0;
+}
+
+.atl-weekly-focus-review-modal {
+  height: min(780px, calc(100vh - 48px));
+  max-height: calc(100vh - 48px);
+  max-width: 960px;
+  width: min(960px, calc(100vw - 48px));
+}
+
+.atl-weekly-focus-review-modal .modal-content {
+  box-sizing: border-box;
+  max-width: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 20px 22px 24px;
+}
+
+.atl-weekly-focus-review-modal h2 {
+  font-size: 20px;
+  margin: 0;
+}
+
+.atl-weekly-focus-review-modal h3 {
+  font-size: 13px;
+  margin: 0 0 9px;
+}
+
+.atl-weekly-focus-review-intro,
+.atl-weekly-focus-review-help {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.atl-weekly-focus-review-integrity,
+.atl-weekly-focus-review-assignments,
+.atl-weekly-focus-review-focuses,
+.atl-weekly-focus-review-record {
+  border-top: 1px solid var(--background-modifier-border);
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 14px;
+}
+
+.atl-weekly-focus-review-integrity > span,
+.atl-weekly-focus-review-integrity > small {
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.atl-weekly-focus-review-assignment-row {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, .7fr) minmax(180px, 1.3fr);
+}
+
+.atl-weekly-focus-review-assignment-id {
+  font-family: var(--font-monospace);
+  font-size: 10px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.atl-weekly-focus-review-assignment-row select,
+.atl-weekly-focus-review-judgment select,
+.atl-weekly-focus-review-field select {
+  max-width: 100%;
+  min-width: 0;
+  width: 100%;
+}
+
+.atl-weekly-focus-review-focus-card {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 14px;
+}
+
+.atl-weekly-focus-review-focus-heading {
+  display: grid;
+  gap: 4px;
+  grid-column: 1 / -1;
+}
+
+.atl-weekly-focus-review-focus-heading span {
+  color: var(--text-faint);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.atl-weekly-focus-review-focus-heading strong {
+  font-size: 14px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.atl-weekly-focus-review-expectations {
+  color: var(--text-muted);
+  display: grid;
+  font-size: 10px;
+  gap: 4px;
+  grid-column: 1 / -1;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.atl-weekly-focus-review-facts,
+.atl-weekly-focus-review-gaps,
+.atl-weekly-focus-review-suggestion,
+.atl-weekly-focus-review-judgment {
+  align-content: start;
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.atl-weekly-focus-review-facts > strong,
+.atl-weekly-focus-review-gaps > strong,
+.atl-weekly-focus-review-suggestion > strong,
+.atl-weekly-focus-review-judgment > strong {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.atl-weekly-focus-review-facts > span,
+.atl-weekly-focus-review-facts > small,
+.atl-weekly-focus-review-gaps > span,
+.atl-weekly-focus-review-suggestion > span,
+.atl-weekly-focus-review-suggestion > small {
+  font-size: 10px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.atl-weekly-focus-review-gaps {
+  border-left: 2px solid var(--color-orange);
+  padding-left: 10px;
+}
+
+.atl-weekly-focus-review-suggestion {
+  border-left: 2px solid var(--color-cyan);
+  padding-left: 10px;
+}
+
+.atl-weekly-focus-review-judgment {
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(150px, .5fr) repeat(2, minmax(0, 1fr));
+}
+
+.atl-weekly-focus-review-judgment > strong {
+  grid-column: 1 / -1;
+}
+
+.atl-weekly-focus-review-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.atl-weekly-focus-review-field > span {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.atl-weekly-focus-review-field input {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+}
+
+.atl-weekly-focus-review-record {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.atl-weekly-focus-review-record h3 {
+  grid-column: 1 / -1;
+}
+
+.atl-weekly-focus-review-actions {
+  align-items: center;
+  border-top: 1px solid var(--background-modifier-border);
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 18px;
+  padding-top: 14px;
+}
+
+.atl-weekly-focus-review-actions button {
+  min-height: 34px;
+}
+
+.atl-weekly-focus-review-saved {
+  color: var(--color-green);
+  font-size: 11px;
+  margin-top: 10px;
+}
+
+.atl-weekly-focus-review-empty,
+.atl-weekly-focus-review-error {
+  font-size: 11px;
+  margin-top: 12px;
+}
+
+@media (max-width: 720px) {
+  .atl-weekly-focus-review-home-states,
+  .atl-weekly-focus-review-focus-card,
+  .atl-weekly-focus-review-record {
+    grid-template-columns: 1fr;
+  }
+
+  .atl-weekly-focus-review-record h3 {
+    grid-column: 1;
+  }
+
+  .atl-weekly-focus-review-judgment {
+    grid-template-columns: 1fr;
+  }
+
+  .atl-weekly-focus-review-judgment > strong {
+    grid-column: 1;
+  }
+}
+
+@media (max-width: 520px) {
+  .atl-weekly-focus-review-modal {
+    height: calc(100vh - 16px);
+    max-height: calc(100vh - 16px);
+    width: calc(100vw - 16px);
+  }
+
+  .atl-weekly-focus-review-modal .modal-content {
+    padding: 16px 14px 18px;
+  }
+
+  .atl-weekly-focus-review-focus-card,
+  .atl-weekly-focus-review-assignment-row,
+  .atl-weekly-focus-review-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .atl-weekly-focus-review-assignment-row,
+  .atl-weekly-focus-review-actions {
+    align-items: stretch;
+    display: grid;
+  }
+
+  .atl-weekly-focus-review-actions button {
     width: 100%;
   }
 }

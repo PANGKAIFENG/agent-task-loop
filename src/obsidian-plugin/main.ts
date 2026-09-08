@@ -22,7 +22,11 @@ import './styles.css';
 
 import { QianwenDesktopConnector } from '../connectors/qianwen-desktop-connector.js';
 import { DwsMaterialSearchConnector } from '../connectors/dws-material-search.js';
-import { optionalDingTalkProfile } from '../dingtalk-profile.js';
+import { loadConfig } from '../config.js';
+import {
+  optionalDingTalkProfile,
+  optionalDingTalkRobotCode,
+} from '../dingtalk-profile.js';
 import type { ProgressDraft } from '../domain/progress.js';
 import {
   currentIsoWeekPeriod,
@@ -30,7 +34,16 @@ import {
 } from '../domain/week-period.js';
 import { createClaudeStructuredExecutor } from '../runner/claude-driver.js';
 import { createAcceptanceNotifier } from '../services/acceptance-notifier-factory.js';
-import { authorizeAgentExecution } from '../services/authorize-agent-execution.js';
+import {
+  authorizeDevelopmentTask,
+  type AuthorizeDevelopmentTaskResult,
+} from '../services/authorize-development-task.js';
+import {
+  buildMulticaDispatchDependencies,
+} from '../services/build-multica-dispatch-dependencies.js';
+import {
+  dispatchDevelopmentTask,
+} from '../services/dispatch-development-task.js';
 import { captureTask } from '../services/capture-task.js';
 import { createMaterialGap } from '../services/create-material-gap.js';
 import { createProgressVersion } from '../services/create-progress-version.js';
@@ -52,6 +65,16 @@ import {
 import { revokeMeetingMatchDecision } from '../services/decide-meeting-match.js';
 import { ensureWorkProgressEntry } from '../services/ensure-work-progress-entry.js';
 import { generateWeeklyReport } from '../services/generate-weekly-report.js';
+import {
+  queryWeeklyFocusProgress,
+  queryWeeklyFocusReviewIndex,
+  type WeeklyFocusIndexGateway,
+} from '../services/query-weekly-focus-review.js';
+import {
+  saveWeeklyFocusAttribution,
+  saveWeeklyFocusReview,
+} from '../services/weekly-focus-review.js';
+import { generateCandidateUnderstanding } from '../services/generate-candidate-understanding.js';
 import { syncQianwenSource } from '../services/sync-qianwen-source.js';
 import type { ServiceContext } from '../services/service-context.js';
 import { MarkdownMaterialGapRepository } from '../storage/markdown-material-gap-repository.js';
@@ -61,6 +84,7 @@ import { FileMeetingMatchDecisionRepository } from '../storage/meeting-match-dec
 import { FileQianwenSourceStateRepository } from '../storage/qianwen-source-state-repository.js';
 import { FileAcceptanceNotificationLedger } from '../storage/file-acceptance-notification-ledger.js';
 import { qianwenRuntimeRoot } from '../qianwen-runtime-root.js';
+import { createResearchTaskDispatcher } from './research-dispatcher.js';
 import { FileWeeklyReviewDecisionRepository } from '../storage/weekly-review-decision-repository.js';
 import { MarkdownTaskRepository } from '../storage/markdown-task-repository.js';
 import { MarkdownProjectRepository } from '../storage/markdown-project-repository.js';
@@ -97,7 +121,12 @@ import {
   BoardAppearanceController,
   type BoardPresetStatus,
 } from './board-appearance-controller.js';
+import {
+  DevelopmentDispatchPluginLifecycle,
+  isDevelopmentDispatchEligibleMetadata,
+} from './development-dispatch-plugin-lifecycle.js';
 import { extractTaskCandidates } from './candidate-extractor.js';
+import { locateMovedCandidateSource } from './candidate-source-locator.js';
 import { CaptureCandidatesModal } from './capture-candidates-modal.js';
 import { CaptureController } from './capture-controller.js';
 import {
@@ -200,6 +229,8 @@ import { LegacyTaskTitleRepairController } from './legacy-task-title-repair-cont
 import { LegacyTaskTitleRepairModal } from './legacy-task-title-repair-modal.js';
 import { WeeklyThinkingCoachModal } from './weekly-thinking-coach-modal.js';
 import { runWeeklyThinkingCoach } from './weekly-thinking-coach.js';
+import { WeeklyFocusReviewContributionView } from './weekly-focus-review-contribution-view.js';
+import { WeeklyFocusReviewModal } from './weekly-focus-review-modal.js';
 import {
   ensureWeeklyFocusParentDirectories,
   runAuthorizedWeeklyFocusWrite,
@@ -461,6 +492,33 @@ export default class AgentTaskLoopPlugin extends Plugin {
       },
     }).start();
 
+    // PAW-GOAL-003-V0.5 D2 (PRD 4.5): the development补投入口, symmetric to
+    // the research authorization entry above.
+    new DevelopmentDispatchPluginLifecycle({
+      addCommand: (command) => {
+        this.addCommand(command);
+      },
+      registerFileMenu: (handler) => {
+        this.registerEvent(this.app.workspace.on(
+          'file-menu',
+          (menu: Menu, file: TAbstractFile) => {
+            if (file instanceof TFile) handler(menu, file.path);
+          },
+        ));
+      },
+      getActiveFilePath: () => this.app.workspace.getActiveFile()?.path ?? null,
+      isEligible: (path) => {
+        if (!isAtlTaskPath(path)) return false;
+        const file = this.app.vault.getAbstractFileByPath(path);
+        return file instanceof TFile && isDevelopmentDispatchEligibleMetadata(
+          this.app.metadataCache.getFileCache(file)?.frontmatter,
+        );
+      },
+      open: (path) => {
+        void this.openDevelopmentDispatch(path);
+      },
+    }).start();
+
     new ConfirmationPluginLifecycle({
       addCommand: (command) => {
         this.addCommand(command);
@@ -601,19 +659,30 @@ export default class AgentTaskLoopPlugin extends Plugin {
   }
 
   private createContributionView(leaf: WorkspaceLeaf): WorkContributionView {
-    return new WorkContributionView(leaf, {
-      createController: () => this.createContributionController(),
-      openTask: (taskId) => this.openContributionTask(taskId),
-      openArtifact: (artifactRef, taskId) => this.openContributionArtifact(artifactRef, taskId),
-      openCompletionDateBackfill: (tasks) => this.openCompletionDateBackfill(tasks),
-      openSettings: () => this.openPluginSettings(),
-      loadWeeklyFocus: () => this.loadWeeklyFocus(),
-      loadWeeklyCoachDraft: async () => this.loadWeeklyCoachSessionDraft(
-        currentIsoWeek(new Date(), resolveSystemTimeZone()),
-      ),
-      openWeeklyCoach: (onChanged) => this.openWeeklyCoach(onChanged),
-      openWeeklyFocus: (path) => this.openWeeklyFocus(path),
-    });
+    return new WeeklyFocusReviewContributionView(
+      leaf,
+      {
+        createController: () => this.createContributionController(),
+        openTask: (taskId) => this.openContributionTask(taskId),
+        openArtifact: (artifactRef, taskId) => this.openContributionArtifact(artifactRef, taskId),
+        openCompletionDateBackfill: (tasks) => this.openCompletionDateBackfill(tasks),
+        openSettings: () => this.openPluginSettings(),
+        loadWeeklyFocus: () => this.loadWeeklyFocus(),
+        loadWeeklyCoachDraft: async () => this.loadWeeklyCoachSessionDraft(
+          currentIsoWeek(new Date(), resolveSystemTimeZone()),
+        ),
+        openWeeklyCoach: (onChanged) => this.openWeeklyCoach(onChanged),
+        openWeeklyFocus: (path) => this.openWeeklyFocus(path),
+      },
+      {
+        loadIndex: () => queryWeeklyFocusReviewIndex({
+          gateway: this.createWeeklyFocusGateway(),
+          clock: () => new Date(),
+          timeZone: resolveSystemTimeZone(),
+        }),
+        openReview: (week) => this.openWeeklyFocusReview(week),
+      },
+    );
   }
 
   private createWorkProgressView(leaf: WorkspaceLeaf): WorkProgressView {
@@ -746,6 +815,9 @@ export default class AgentTaskLoopPlugin extends Plugin {
         const notifyAcceptance = createAcceptanceNotifier({
           vaultRoot: root,
           profile: optionalDingTalkProfile(this.settings.background.dingtalkProfile),
+          robotCode: optionalDingTalkRobotCode(
+            this.settings.background.dingtalkRobotCode,
+          ),
         });
         return generateWeeklyReport({
           progressRepository,
@@ -828,12 +900,13 @@ export default class AgentTaskLoopPlugin extends Plugin {
     });
   }
 
-  private createWeeklyFocusGateway(): WeeklyFocusGateway {
+  private createWeeklyFocusGateway(): WeeklyFocusGateway & WeeklyFocusIndexGateway {
     const adapter = this.app.vault.adapter;
     return {
       read: async (path) => (
         await adapter.exists(path) ? adapter.read(path) : null
       ),
+      listPaths: async () => this.app.vault.getMarkdownFiles().map((file) => file.path),
       write: async (path, content, expectedContent) => {
         if (!this.settings.allowVaultManagement) {
           throw new Error('vault_management_disabled');
@@ -890,6 +963,68 @@ export default class AgentTaskLoopPlugin extends Plugin {
       this.createWeeklyFocusGateway(),
       () => new Date(),
       resolveSystemTimeZone(),
+    );
+  }
+
+  private openWeeklyFocusReview(week: string): void {
+    const gateway = this.createWeeklyFocusGateway();
+    const clock = () => new Date();
+    const timeZone = resolveSystemTimeZone();
+    const weeklyReports = {
+      listCurrent: async () => {
+        const paths = this.localPluginPaths();
+        if (paths === null) throw new Error('local_vault_unavailable');
+        return new MarkdownWeeklyReportRepository(paths.root).listCurrent();
+      },
+    };
+    new WeeklyFocusReviewModal(this.app, {
+      week,
+      load: async () => {
+        const paths = this.localPluginPaths();
+        if (paths === null) {
+          throw new Error('local_vault_unavailable');
+        }
+        const context = createObsidianReadServiceContext(paths.root, { timeZone });
+        const result = await queryWeeklyFocusProgress({
+          gateway,
+          week,
+          tasks: context.tasks,
+          audit: context.audit,
+          artifacts: context.artifacts,
+          weeklyReports,
+        });
+        if (result === null) throw new Error('weekly_focus_not_found');
+        return result;
+      },
+      saveAttribution: (input) => saveWeeklyFocusAttribution(
+        gateway,
+        weeklyReports,
+        clock,
+        input,
+        timeZone,
+      ),
+      saveReview: (input) => saveWeeklyFocusReview(
+        gateway,
+        weeklyReports,
+        clock,
+        input,
+        timeZone,
+      ),
+      canManageVault: () => this.settings.allowVaultManagement,
+      onChanged: () => {
+        void this.refreshWeeklyFocusReviewViews();
+      },
+    }).open();
+  }
+
+  private async refreshWeeklyFocusReviewViews(): Promise<void> {
+    await Promise.all(
+      this.app.workspace.getLeavesOfType(WORK_CONTRIBUTION_VIEW_TYPE)
+        .map(async (leaf) => {
+          if (leaf.view instanceof WeeklyFocusReviewContributionView) {
+            await leaf.view.refreshWeeklyFocusReview();
+          }
+        }),
     );
   }
 
@@ -1132,10 +1267,14 @@ export default class AgentTaskLoopPlugin extends Plugin {
       for (const leaf of this.app.workspace.getLeavesOfType(WORK_CONTRIBUTION_VIEW_TYPE)) {
         const view = leaf.view;
         if (view instanceof WorkContributionView) {
-          void Promise.all([
+          const refreshes = [
             view.refreshContribution(),
             view.refreshWeeklyCoachState(),
-          ]);
+          ];
+          if (view instanceof WeeklyFocusReviewContributionView) {
+            refreshes.push(view.refreshWeeklyFocusReview());
+          }
+          void Promise.all(refreshes);
         }
       }
     }, 250);
@@ -1874,10 +2013,8 @@ export default class AgentTaskLoopPlugin extends Plugin {
 
     const root = adapter.getBasePath();
     const authorization = createVaultWriteAuthorization(root);
-    const controller = new ConfirmationController(createObsidianServiceContext(
-      root,
-      authorization,
-    ));
+    const context = createObsidianServiceContext(root, authorization);
+    const controller = new ConfirmationController(context);
     try {
       const prepared = await controller.prepare(taskId);
       new TaskConfirmationModal(
@@ -1885,6 +2022,11 @@ export default class AgentTaskLoopPlugin extends Plugin {
         controller,
         prepared,
         async (input) => enrichTask(await this.createStructuredExecutor(), input),
+        {
+          // PAW-GOAL-003-V0.5 D2: the development branch of this Modal can
+          // dispatch in one click once the Contract is acknowledged.
+          dispatch: this.createDevelopmentDispatcher(context, root),
+        },
       ).open();
     } catch {
       new Notice('无法读取这项任务，请刷新看板后重试');
@@ -1914,8 +2056,21 @@ export default class AgentTaskLoopPlugin extends Plugin {
     }
 
     try {
-      await authorizeAgentExecution(authorized.context, taskId);
-      new Notice('已授权 Agent 执行，系统将在下一轮领取');
+      const root = authorized.adapter.getBasePath();
+      const config = loadConfig({ ...process.env, ATL_VAULT_ROOT: root });
+      const dispatch = createResearchTaskDispatcher(
+        authorized.context,
+        config,
+        this.settings.background.allowedLocalRoots,
+      );
+      const result = await dispatch(taskId);
+      if (result.dispatch.status === 'linked') {
+        new Notice(`已授权并开始执行：${result.dispatch.runId}`);
+      } else if (result.dispatch.status === 'context_blocked') {
+        new Notice('已授权，但上下文证据不完整，请补齐后重新投递');
+      } else {
+        new Notice('已授权，但 Multica 投递未确认，请检查后重试');
+      }
     } catch (error) {
       const code = error instanceof Error && 'code' in error
         ? (error as Error & { code?: string }).code
@@ -1930,6 +2085,81 @@ export default class AgentTaskLoopPlugin extends Plugin {
       }
       new Notice('Agent 执行授权失败，请刷新任务后重试');
     }
+  }
+
+  // PAW-GOAL-003-V0.5 D2 (PRD 4.3–4.5): the补投入口 opens the Contract step
+  // of the same confirmation Modal; one click on「确认并交给 Multica」then
+  // authorizes and dispatches through the existing services.
+  private async openDevelopmentDispatch(path: string): Promise<void> {
+    const authorized = this.authorizedServiceContext();
+    if (authorized === null) return;
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile) || !isAtlTaskPath(path)) {
+      new Notice('请选择有效的 ATL 任务');
+      return;
+    }
+    let taskId = taskIdFromPath(path);
+    if (taskId === null) {
+      try {
+        taskId = taskIdFromMetadata(path, await this.app.vault.cachedRead(file));
+      } catch {
+        taskId = null;
+      }
+    }
+    if (taskId === null) {
+      new Notice('无法识别这项 ATL 任务');
+      return;
+    }
+
+    const controller = new ConfirmationController(authorized.context);
+    try {
+      const prepared = await controller.prepare(taskId);
+      new TaskConfirmationModal(
+        this.app,
+        controller,
+        prepared,
+        undefined,
+        {
+          initialStep: 'contract',
+          dispatch: this.createDevelopmentDispatcher(
+            authorized.context,
+            authorized.adapter.getBasePath(),
+          ),
+        },
+      ).open();
+    } catch (error) {
+      const code = error instanceof Error && 'code' in error
+        ? (error as Error & { code?: string }).code
+        : undefined;
+      if (code === 'task_confirmation_invalid_state') {
+        new Notice('任务不在可投递状态（可能已投递或对账中），请刷新看板');
+        return;
+      }
+      new Notice('无法读取这项任务，请刷新看板后重试');
+    }
+  }
+
+  // ready → agent_executable goes through authorizeDevelopmentTask (intent
+  // persisted before the remote write); an already-authorized task whose
+  // dispatch failed re-dispatches directly, exactly like the CLI manual
+  // dispatch — both reuse the single-flight lease and idempotency key.
+  private createDevelopmentDispatcher(
+    context: ServiceContext,
+    vaultRoot: string,
+  ): (taskId: string) => Promise<AuthorizeDevelopmentTaskResult> {
+    return async (taskId: string) => {
+      const config = loadConfig({ ...process.env, ATL_VAULT_ROOT: vaultRoot });
+      // The plugin process has no allowlisted local roots, so absolute
+      // context refs are out of bounds by definition (PRD 6 rule 6).
+      const dependencies = buildMulticaDispatchDependencies(config, []);
+      const task = await context.tasks.get(taskId);
+      if (task.status === 'ready') {
+        return authorizeDevelopmentTask(context, dependencies, taskId);
+      }
+      const dispatch = await dispatchDevelopmentTask(context, dependencies, taskId);
+      const refreshed = await context.tasks.get(taskId);
+      return { task: refreshed, dispatch };
+    };
   }
 
   private async openTaskBrief(path: string): Promise<void> {
@@ -2001,17 +2231,59 @@ export default class AgentTaskLoopPlugin extends Plugin {
       return;
     }
 
-    const controller = new TaskBriefController(authorized.context);
+    const controller = new TaskBriefController(authorized.context, {
+      sourceRoot: authorized.adapter.getBasePath(),
+      locateMoved: (sourceKey) => locateMovedCandidateSource({
+        sourceKey,
+        files: this.app.vault.getMarkdownFiles(),
+        metadataFor: (candidate) => (
+          this.app.metadataCache.getFileCache(candidate)?.frontmatter
+        ) as Record<string, unknown> | undefined,
+      }),
+      openResolvedSource: async ({ sourceNote, anchor }) => {
+        const source = this.app.vault.getAbstractFileByPath(sourceNote);
+        if (!(source instanceof TFile)) throw new Error('candidate_source_not_found');
+        const leaf = this.app.workspace.getLeaf(false);
+        await leaf.openFile(source);
+        const lineMatch = anchor?.match(/^line:(\d{1,7})$/u);
+        const editor = (leaf.view as {
+          editor?: { setCursor(position: { line: number; ch: number }): void };
+        }).editor;
+        if (lineMatch !== null && lineMatch !== undefined && editor !== undefined) {
+          editor.setCursor({ line: Math.max(0, Number(lineMatch[1]) - 1), ch: 0 });
+        }
+      },
+    });
     try {
       const prepared = await controller.prepare(taskId);
       new TaskBriefModal(
         this.app,
         controller,
         prepared,
-        async (input) => generateTaskBrief(
-          await this.createStructuredExecutor(),
-          input,
-        ),
+        async () => {
+          const understanding = prepared.candidateUnderstanding;
+          if (understanding === undefined) throw new Error('candidate_understanding_unavailable');
+          return generateCandidateUnderstanding(
+            await this.createStructuredExecutor(),
+            {
+              task: {
+                taskId: prepared.task.taskId,
+                title: prepared.task.title,
+                body: prepared.task.body,
+                taskType: understanding.taskType === 'research'
+                  ? 'research'
+                  : understanding.taskType === 'code_change' ? 'development' : null,
+                contextRefs: prepared.task.contextRefs,
+                possibleDuplicateIds: prepared.task.possibleDuplicateIds,
+              },
+              sourceRefs: understanding.sourceRefs,
+              project: prepared.project === null ? null : {
+                name: prepared.project.name,
+                description: prepared.project.description,
+              },
+            },
+          );
+        },
       ).open();
     } catch {
       new Notice('无法读取这项任务，请刷新看板后重试');
@@ -2261,7 +2533,7 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
 
     const notificationSetting = new Setting(containerEl)
       .setName('待验收通知')
-      .setDesc('填写 DingTalk profile 后，新的 Artifact 和周报会通知你本人；留空则关闭钉钉通知。');
+      .setDesc('填写 DingTalk profile 和机器人 Code 后，新的 Artifact 和周报会通知你本人；留空则关闭钉钉通知。');
     notificationSetting.addText((input) => input
       .setPlaceholder('例如 default')
       .setValue(background.dingtalkProfile)
@@ -2274,8 +2546,28 @@ class AgentTaskLoopSettingTab extends PluginSettingTab {
         background.dingtalkProfile = normalized;
         await this.atlPlugin.saveSettings();
         notificationSetting.setDesc(
-          '填写 DingTalk profile 后，新的 Artifact 和周报会通知你本人；留空则关闭钉钉通知。',
+          '填写 DingTalk profile 和机器人 Code 后，新的 Artifact 和周报会通知你本人；留空则关闭钉钉通知。',
         );
+      }));
+
+    const robotCodeSetting = new Setting(containerEl)
+      .setName('钉钉机器人 Code')
+      .setDesc('填写应用机器人的 robotCode；它不是 AppSecret。');
+    robotCodeSetting.addText((input) => input
+      .setPlaceholder('例如 dingxxxxxxxx')
+      .setValue(background.dingtalkRobotCode)
+      .onChange(async (value) => {
+        const normalized = value.trim();
+        if (
+          normalized !== ''
+          && optionalDingTalkRobotCode(normalized) === null
+        ) {
+          robotCodeSetting.setDesc('机器人 Code 格式无效。');
+          return;
+        }
+        background.dingtalkRobotCode = normalized;
+        await this.atlPlugin.saveSettings();
+        robotCodeSetting.setDesc('填写应用机器人的 robotCode；它不是 AppSecret。');
       }));
 
     const modelFields = modelServiceFieldState(background);

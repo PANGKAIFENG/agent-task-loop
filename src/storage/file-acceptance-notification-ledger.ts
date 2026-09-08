@@ -26,7 +26,7 @@ const recordSchema = z.object({
   uuid: z.string().regex(
     /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
   ),
-  status: z.enum(['sent', 'failed', 'conflict']),
+  status: z.enum(['sent', 'failed', 'conflict', 'unknown']),
   attemptedAt: z.string().refine((value) => Number.isFinite(Date.parse(value))),
   errorCode: z.string().regex(/^[a-z][a-z0-9_]{0,99}$/u).nullable(),
   taskId: z.string().min(1).max(256).nullable(),

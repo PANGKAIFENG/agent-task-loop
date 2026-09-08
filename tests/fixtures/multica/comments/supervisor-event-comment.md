@@ -1,0 +1,24 @@
+Supervisor 结构化事件评论示例（含一个 fenced JSON 事件块）：
+
+```json
+{
+  "schema_version": 1,
+  "event_id": "evt-fixture-0001",
+  "atl_task_id": "task-20260820-fixture01",
+  "state": "needs_decision",
+  "summary": "真实 Vault 写入前需要选择恢复策略",
+  "decision": {
+    "question": "选择 synthetic canary 的恢复策略",
+    "options": [
+      { "id": "retry_with_fixture", "label": "使用合成数据重试" },
+      { "id": "pause_goal", "label": "暂停本 Goal" }
+    ]
+  },
+  "recoverability": null,
+  "artifact_refs": [],
+  "release": null,
+  "occurred_at": "2026-08-20T10:00:00.000Z"
+}
+```
+
+请通过钉钉回复 select:<option_id> task-20260820-fixture01。

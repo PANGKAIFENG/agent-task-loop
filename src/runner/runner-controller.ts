@@ -13,6 +13,7 @@ import {
   executeClaimedRun,
   executeRun,
   runOnce,
+  type RunInput,
   type RunOnceDependencies,
 } from './run-once.js';
 
@@ -39,10 +40,7 @@ export type DecisionContinuationOutcome = RunOutcome | {
 };
 
 export interface RunnerController {
-  runAndWait(input: {
-    taskId?: string;
-    mode: 'automatic' | 'manual';
-  }): Promise<RunOutcome>;
+  runAndWait(input: RunInput): Promise<RunOutcome>;
   start(input: {
     taskId: string;
     mode: 'manual';
@@ -108,7 +106,11 @@ async function recordTerminalFailure(
 
 export function createRunnerController(
   dependencies: CreateRunnerControllerOptions,
+  options: { production?: boolean } = {},
 ): RunnerController {
+  if (options.production === true && dependencies.artifactChainContextPlanner === undefined) {
+    throw new Error('Production Runner requires an Artifact Chain context planner');
+  }
   return {
     runAndWait: (input) => runOnce(dependencies, input),
     async continueAfterDecision(input) {

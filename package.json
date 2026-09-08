@@ -1,6 +1,6 @@
 {
   "name": "agent-task-loop",
-  "version": "0.9.0",
+  "version": "0.12.0",
   "private": true,
   "type": "module",
   "bin": {
@@ -9,7 +9,8 @@
   "scripts": {
     "build": "pnpm build:server && pnpm build:ui && pnpm build:obsidian && pnpm build:runner",
     "build:obsidian": "vite build --config vite.obsidian.config.ts",
-    "build:runner": "pnpm build:native:qianwen && vite build --config vite.runner.config.ts",
+    "build:runner": "pnpm build:native:qianwen && vite build --config vite.runner.config.ts && pnpm build:dingtalk-stream",
+    "build:dingtalk-stream": "vite build --config vite.dingtalk-stream.config.ts",
     "build:native:qianwen": "node scripts/build-qianwen-helper.mjs",
     "build:server": "tsc -p tsconfig.build.json",
     "build:ui": "vite build --outDir build/ui",
@@ -17,6 +18,8 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "verify:v0.2-loop": "node scripts/run-v0.2-synthetic-loop.mjs",
+    "verify:codex-feedback-loop": "vitest run tests/integration/cli/codex-feedback-cli.test.ts",
     "atl": "tsx src/cli.ts",
     "board:dev": "vite",
     "board:server": "tsx src/server/start.ts"
@@ -30,6 +33,7 @@
     "@tanstack/react-query": "^5.101.2",
     "commander": "^14.0.0",
     "csv-parse": "^7.0.2",
+    "dingtalk-stream": "2.1.6-beta.1",
     "execa": "^9.6.0",
     "fast-glob": "^3.3.3",
     "fastify": "^5.10.0",
@@ -70,7 +74,7 @@
       "fast-uri@>=3.0.0 <3.1.5": "3.1.5",
       "fast-uri@>=4.0.0 <4.1.2": "4.1.2",
       "js-yaml@>=4.0.0 <4.3.1": "4.3.1",
-      "nanoid@>=3.0.0 <3.3.17": "3.3.17",
+      "nanoid@>=3.0.0 <3.3.18": "3.3.18",
       "postcss@<=8.5.22": "8.5.23",
       "undici@>=7.0.0 <7.29.0": "7.29.0"
     }

@@ -161,6 +161,21 @@ describe('OpenTokenAdapter', () => {
     });
   });
 
+  it('accepts a JSON payload preceded by non-JSON diagnostic lines', async () => {
+    const diagnostic = 'codebuddy: projects 源 1 条记录中 1 条缺 conversationRequestId,所在日退回逐日择大\n';
+    const adapter = new OpenTokenAdapter({
+      homeDirectory: '/Users/test',
+      pathExists: async () => true,
+      resolveOnPath: async () => null,
+      execute: executeWith(`${diagnostic}${validOutput()}`),
+      now: () => new Date('2026-07-20T12:00:00Z'),
+    });
+
+    const snapshot = await adapter.preview('2026-07-20');
+    expect(snapshot.days).toHaveLength(1);
+    expect(snapshot.days[0]?.normalized).toBe(180);
+  });
+
   it('maps timeout and process errors without exposing stderr', async () => {
     const privateValue = 'synthetic-private-stderr';
     const timedOut = Object.assign(new Error(privateValue), {

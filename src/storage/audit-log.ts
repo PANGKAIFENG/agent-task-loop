@@ -114,7 +114,15 @@ function validateEvent(value: unknown): AuditEvent {
     throw new InvalidAuditEventError();
   }
   const event = value as Record<string, unknown>;
-  const allowedKeys = new Set(['event', 'at', 'taskId', 'projectId', 'runId', 'details']);
+  const allowedKeys = new Set([
+    'event',
+    'at',
+    'taskId',
+    'admissionInputFingerprint',
+    'projectId',
+    'runId',
+    'details',
+  ]);
   if (
     Object.keys(event).some((key) => !allowedKeys.has(key))
     || typeof event.event !== 'string'
@@ -124,7 +132,7 @@ function validateEvent(value: unknown): AuditEvent {
   ) {
     throw new InvalidAuditEventError();
   }
-  for (const key of ['taskId', 'projectId', 'runId']) {
+  for (const key of ['taskId', 'admissionInputFingerprint', 'projectId', 'runId']) {
     if (event[key] !== undefined && typeof event[key] !== 'string') {
       throw new InvalidAuditEventError();
     }
@@ -135,6 +143,12 @@ function validateEvent(value: unknown): AuditEvent {
   };
   if (typeof event.taskId === 'string') {
     validEvent.taskId = event.taskId;
+  }
+  if (typeof event.admissionInputFingerprint === 'string') {
+    if (!/^[a-f0-9]{64}$/.test(event.admissionInputFingerprint)) {
+      throw new InvalidAuditEventError();
+    }
+    validEvent.admissionInputFingerprint = event.admissionInputFingerprint;
   }
   if (typeof event.projectId === 'string') {
     validEvent.projectId = event.projectId;

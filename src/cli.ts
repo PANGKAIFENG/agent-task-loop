@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { delimiter, isAbsolute, join } from 'node:path';
 
 import { Command, CommanderError } from 'commander';
 
 import { QianwenDesktopConnector } from './connectors/qianwen-desktop-connector.js';
+import { MulticaCliConnector } from './connectors/multica-cli-connector.js';
 import { loadConfig, assertWriteEnabled, type AtlConfig } from './config.js';
 import {
   PRIORITIES,
@@ -17,14 +19,18 @@ import {
   CLAUDE_RESEARCH_TIMEOUT_MS,
   createClaudeResearchDriver,
 } from './runner/claude-driver.js';
+import { createArtifactChainContextPlanner } from './runner/artifact-chain-runtime.js';
 import { runHourlyCycle } from './runner/hourly-cycle.js';
 import {
   createRunnerController,
   getRunnerStatus,
 } from './runner/runner-controller.js';
 import {
+  inspectDingTalkStreamLaunchAgent,
   inspectLaunchAgent,
+  installDingTalkStreamLaunchAgent,
   installLaunchAgent,
+  uninstallDingTalkStreamLaunchAgent,
   uninstallLaunchAgent,
 } from './scheduler/launch-agent.js';
 import {
@@ -32,12 +38,69 @@ import {
   type CaptureTaskInput,
 } from './services/capture-task.js';
 import { createAcceptanceNotifier } from './services/acceptance-notifier-factory.js';
-import { authorizeAgentExecution } from './services/authorize-agent-execution.js';
+import { createDecisionNotifier } from './services/decision-notifier-factory.js';
+import { registerDecisionCommands } from './services/decision-commands.js';
+import { registerCodexFeedbackCommands } from './services/codex-feedback-commands.js';
+import { authorizeDevelopmentTask } from './services/authorize-development-task.js';
+import { authorizeLegacyResearchExecution } from './services/authorize-agent-execution.js';
+import { authorizeResearchTask } from './services/authorize-research-task.js';
 import { claimTask } from './services/claim-task.js';
 import { confirmTask } from './services/confirm-task.js';
 import { createProject } from './services/create-project.js';
 import { generateWeeklyReport } from './services/generate-weekly-report.js';
+import { rebuildArtifactLineage } from './services/rebuild-artifact-lineage.js';
+import { bindArtifactDecision } from './services/bind-artifact-decision.js';
+import { startPersistedArtifactContinuation } from './services/start-persisted-artifact-continuation.js';
+import { executeArtifactSettlement } from './services/execute-artifact-settlement.js';
 import { queryEvalSamples } from './services/query-eval-samples.js';
+import {
+  buildMulticaDispatchDependencies,
+  buildResearchMulticaContinuationConnector,
+  buildResearchMulticaDispatchDependencies,
+} from './services/build-multica-dispatch-dependencies.js';
+import type { DispatchDevelopmentTaskDependencies } from './services/dispatch-development-task.js';
+import { dispatchMulticaTask } from './services/dispatch-multica-task.js';
+import {
+  readResearchArtifacts,
+  readResearchArtifactsIfCompleted,
+} from './services/read-research-artifacts.js';
+import {
+  MULTICA_RECONCILE_MAX_TASKS,
+  parseReconcileMaxTasks,
+  reconcileMulticaDispatch,
+  type ReconcileMulticaDependencies,
+} from './services/reconcile-multica-dispatch.js';
+import { ingestMulticaEvents } from './services/ingest-multica-events.js';
+import {
+  continueMulticaResponses,
+  processMulticaReply,
+} from './services/process-multica-reply.js';
+import { notifyMulticaAction } from './services/notify-multica-action.js';
+import { recoverMulticaActionNotification } from './services/recover-multica-action-notification.js';
+import {
+  completeRelease,
+  parsePostDeploymentCompletionEvidence,
+} from './services/complete-release.js';
+import { runReleaseOperator } from './services/release-operator.js';
+import {
+  createSpawnVerificationRunner,
+} from './services/release-verification.js';
+import {
+  liveVerificationReceiptSchema,
+  mergeReadBackSchema,
+} from './domain/release-receipt.js';
+import { parseMulticaEventComment } from './domain/multica-event.js';
+import { FileMulticaActionNotificationLedger } from './storage/file-multica-action-notification-ledger.js';
+import { FileMulticaResponseLedger } from './storage/file-multica-response-ledger.js';
+import {
+  FileReleaseCompletionIntentLedger,
+  FileReleasePhaseEvidenceLedger,
+  FileReleaseReceiptLedger,
+} from './storage/file-release-receipt-ledger.js';
+import {
+  dingTalkDeliveryReceiptId,
+  DwsSelfAcceptanceDelivery,
+} from './connectors/dws-self-acceptance-delivery.js';
 import { listTasks, peekNextTask } from './services/query-tasks.js';
 import { reopenTask } from './services/reopen-task.js';
 import { reviewTask, type ReviewTaskInput } from './services/review-task.js';
@@ -58,7 +121,19 @@ import { MarkdownProgressRepository } from './storage/markdown-progress-reposito
 import { MarkdownTaskRepository } from './storage/markdown-task-repository.js';
 import { MarkdownWeeklyReportRepository } from './storage/markdown-weekly-report-repository.js';
 import { FileQianwenSourceStateRepository } from './storage/qianwen-source-state-repository.js';
-import { createVaultWriteAuthorization } from './storage/task-paths.js';
+import { FileBackedArtifactLineageEvidenceRepository } from './storage/file-backed-artifact-lineage-evidence-repository.js';
+import { FileArtifactDecisionRepository } from './storage/file-artifact-decision-repository.js';
+import { FileArtifactTriggerRepository } from './storage/file-artifact-trigger-repository.js';
+import { FileArtifactSettlementRepository } from './storage/file-artifact-settlement-repository.js';
+import { FileArtifactProductionEvidenceRepository } from './storage/file-artifact-production-evidence-repository.js';
+import { AuthorizedVaultArtifactSettlementWriter } from './storage/authorized-vault-artifact-settlement-writer.js';
+import { RemoteArtifactSettlementSourceResolver } from './storage/remote-artifact-settlement-source-resolver.js';
+import { MarkdownDecisionTraceRepository } from './storage/markdown-decision-trace-repository.js';
+import {
+  createVaultWriteAuthorization,
+  lifecycleDirectory,
+  taskStorageRoot,
+} from './storage/task-paths.js';
 import { qianwenRuntimeRoot } from './qianwen-runtime-root.js';
 import { ATL_VERSION } from './version.js';
 
@@ -191,6 +266,31 @@ async function readBoundedJsonInput(
   }
 }
 
+async function privateJsonString(options: {
+  enabled: boolean | undefined;
+  publicValue: string | undefined;
+  field: string;
+  publicFlag: string;
+}): Promise<string | undefined> {
+  if (options.enabled !== true) return options.publicValue;
+  if (options.publicValue !== undefined) {
+    throw new CliUsageError(
+      `--private-input-stdin-json cannot be combined with ${options.publicFlag}`,
+    );
+  }
+  const record = jsonRecord(await readBoundedJsonInput(
+    process.stdin,
+    MAX_STDIN_JSON_BYTES,
+  ));
+  if (
+    Object.keys(record).length !== 1
+    || !(options.field in record)
+  ) {
+    throw new CliUsageError('private stdin JSON contains unsupported fields');
+  }
+  return requiredJsonString(record, options.field);
+}
+
 function collect(value: string, previous: string[]): string[] {
   return [...previous, value];
 }
@@ -199,6 +299,12 @@ function createContext(config: AtlConfig): ServiceContext {
   const notifyAcceptance = createAcceptanceNotifier({
     vaultRoot: config.vaultRoot,
     profile: config.dingtalkProfile,
+    robotCode: config.dingtalkRobotCode,
+  });
+  const notifyDecision = createDecisionNotifier({
+    vaultRoot: config.vaultRoot,
+    profile: config.dingtalkProfile,
+    robotCode: config.dingtalkRobotCode,
   });
   return {
     tasks: new MarkdownTaskRepository(config.vaultRoot),
@@ -208,6 +314,7 @@ function createContext(config: AtlConfig): ServiceContext {
     clock: () => new Date(),
     id: () => createTaskId(),
     ...(notifyAcceptance === undefined ? {} : { notifyAcceptance }),
+    ...(notifyDecision === undefined ? {} : { notifyDecision }),
   };
 }
 
@@ -236,6 +343,178 @@ function allowedLocalRoots(
   return roots;
 }
 
+function multicaDependencies(config: AtlConfig): DispatchDevelopmentTaskDependencies {
+  // PAW-GOAL-003-V0.5 D2: shared with the Obsidian plugin so both entry
+  // points dispatch through an identical connector + target surface.
+  return buildMulticaDispatchDependencies(config, allowedLocalRoots());
+}
+
+function researchMulticaDependencies(config: AtlConfig) {
+  return buildResearchMulticaDispatchDependencies(config, allowedLocalRoots());
+}
+
+// PAW-GOAL-003 T2: the full action-roundtrip surface — dispatch connector plus
+// the comment/run roundtrip, the stable-key DingTalk notifier and the
+// response-ledger continuation. The DingTalk side is wired only when the
+// self-bot profile and trusted-reply identities are configured; notifications
+// then go to that bot alone.
+function multicaRoundtripConnector(config: AtlConfig): MulticaCliConnector {
+  return new MulticaCliConnector({
+    binaryPath: config.multicaDispatch.binaryPath,
+    profile: config.multicaDispatch.profile,
+    workspaceId: config.multicaDispatch.workspaceId,
+    projectId: config.multicaDispatch.projectId,
+    squadId: config.multicaDispatch.squadId,
+    callTimeoutMs: config.multicaDispatch.callTimeoutMs,
+  });
+}
+
+function multicaRoundtripDependencies(
+  config: AtlConfig,
+  ctx: ServiceContext,
+): ReconcileMulticaDependencies {
+  const connector = multicaRoundtripConnector(config);
+  const research = researchMulticaDependencies(config);
+  const runtimeRoot = join(config.vaultRoot, '.atl-runtime');
+  const notificationLedger = new FileMulticaActionNotificationLedger(runtimeRoot);
+  const responseLedger = new FileMulticaResponseLedger(runtimeRoot);
+  const delivery = config.dingtalkProfile !== null && config.dingtalkRobotCode !== null
+    ? new DwsSelfAcceptanceDelivery({
+      profile: config.dingtalkProfile,
+      robotCode: config.dingtalkRobotCode,
+    })
+    : undefined;
+  const notify = delivery === undefined
+    ? undefined
+    : (input: Parameters<typeof notifyMulticaAction>[1]) => notifyMulticaAction({
+      ledger: notificationLedger,
+      delivery,
+      clock: () => new Date(),
+    }, input).then((record) => ({ messageId: record.messageId }));
+  const trustedSenderUserId = trustedDingTalkSenderUserId();
+  const trustedConversationId = optionalEnvironment('ATL_DINGTALK_TRUSTED_CONVERSATION_ID');
+  const responseContinuation = trustedSenderUserId !== null && trustedConversationId !== null
+    ? () => continueMulticaResponses(ctx, {
+      ledger: responseLedger,
+      connector,
+      trustPolicy: { trustedSenderUserId, trustedConversationId },
+    })
+    : undefined;
+  return {
+    connector,
+    target: {
+      workspaceId: config.multicaDispatch.workspaceId,
+      projectId: config.multicaDispatch.projectId,
+    },
+    allowedContextRoots: allowedLocalRoots(),
+    roundtrip: connector,
+    readResearchArtifacts: (taskId, options) => readResearchArtifactsIfCompleted(ctx, {
+      connector: research.connector,
+      runtimeRoot: research.runtimeRoot,
+    }, taskId, options),
+    ...(notify === undefined ? {} : { notify }),
+    ...(responseContinuation === undefined ? {} : { continueResponses: responseContinuation }),
+  };
+}
+
+function optionalEnvironment(key: string): string | null {
+  const value = process.env[key];
+  return value === undefined || value.trim() === '' ? null : value.trim();
+}
+
+function trustedDingTalkSenderUserId(): string | null {
+  const cliName = optionalEnvironment('ATL_DINGTALK_TRUSTED_SENDER_ID');
+  const streamName = optionalEnvironment('ATL_DINGTALK_TRUSTED_SENDER_USER_ID');
+  if (cliName !== null && streamName !== null && cliName !== streamName) {
+    throw new CliUsageError('DingTalk trusted sender environment values conflict');
+  }
+  return cliName ?? streamName;
+}
+
+// PAW-GOAL-003 T3 helpers for `multica release`: the CURRENT release event is
+// re-read from the remote as a wire JSON file and parsed through the same
+// versioned event schema ingestion uses, so a hand-edited or stale-schema
+// payload can never reach the release operator.
+async function parseCurrentEventFile(path: string) {
+  const raw = await readFile(path, 'utf8');
+  const parsed = parseMulticaEventComment(
+    'release-current-event',
+    `\`\`\`json\n${raw}\n\`\`\``,
+  );
+  if (parsed.rejections.length > 0 || parsed.events.length !== 1) {
+    throw new CliUsageError(
+      `current event file must contain exactly one valid versioned event (${parsed.rejections.map((rejection) => rejection.reason).join(', ')})`,
+    );
+  }
+  return parsed.events[0]!;
+}
+
+// Merge and live-canary evidence from the authorized release step — read-back
+// files only; this command performs no GitHub/Multica discovery of its own.
+async function parseReleaseEvidenceFile(path: string) {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(path, 'utf8')) as unknown;
+  } catch {
+    throw new CliUsageError('evidence file must be a single JSON object');
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new CliUsageError('evidence file must be a single JSON object');
+  }
+  const record = parsed as Record<string, unknown>;
+  const github = mergeReadBackSchema.safeParse(record.github);
+  const live = liveVerificationReceiptSchema.safeParse(record.live);
+  if (!github.success || !live.success) {
+    throw new CliUsageError('evidence file requires github and live read-back blocks');
+  }
+  return { github: github.data, live: live.data };
+}
+
+async function parsePostDeploymentEvidenceFile(path: string) {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(path, 'utf8')) as unknown;
+  } catch {
+    throw new CliUsageError('post-deployment evidence file must be a single JSON object');
+  }
+  try {
+    return parsePostDeploymentCompletionEvidence(parsed);
+  } catch {
+    throw new CliUsageError('post-deployment evidence file is invalid or incomplete');
+  }
+}
+
+// DingTalk release-notice boundary: synthetic runs stub the delivery with a
+// deterministic message id; real runs go to the configured self-bot; nothing
+// else may send.
+function releaseNoticeDelivery(config: AtlConfig) {
+  return async (input: { message: string }): Promise<{ messageId: string }> => {
+    if (process.env.ATL_RELEASE_DINGTALK_STUB === '1') {
+      const digest = createHash('sha256').update(input.message, 'utf8').digest('hex');
+      return { messageId: `release-notice-stub-${digest.slice(0, 16)}` };
+    }
+    if (config.dingtalkProfile !== null && config.dingtalkRobotCode !== null) {
+      const delivery = new DwsSelfAcceptanceDelivery({
+        profile: config.dingtalkProfile,
+        robotCode: config.dingtalkRobotCode,
+      });
+      const sent = await delivery.send({
+        uuid: `release-${Date.now()}`,
+        title: 'ATL 发布完成',
+        text: input.message,
+      });
+      const receiptId = dingTalkDeliveryReceiptId(sent);
+      if (receiptId === null) {
+        throw new CliUsageError('DingTalk release notice returned no message id');
+      }
+      return { messageId: receiptId };
+    }
+    throw new CliUsageError(
+      'release notice requires ATL_RELEASE_DINGTALK_STUB=1 or a configured DingTalk profile',
+    );
+  };
+}
+
 async function runnerController(driverName: string) {
   if (driverName !== 'claude') {
     throw new CliUsageError('--driver must be claude');
@@ -245,13 +524,16 @@ async function runnerController(driverName: string) {
   const controller = createRunnerController({
     ctx,
     driver,
-    runtimeRoot: join(process.cwd(), '.atl-runtime'),
+    runtimeRoot: join(config.vaultRoot, '.atl-runtime'),
     allowedLocalRoots: allowedLocalRoots(),
     leaseMinutes: config.leaseMinutes,
     timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
     agent: driver.name,
     runId: () => `run-${createTaskId()}`,
-  });
+    artifactChainContextPlanner: createArtifactChainContextPlanner({
+      vaultRoot: config.vaultRoot,
+    }),
+  }, { production: true });
   return {
     controller,
     retryAcceptanceNotifications: async () => {
@@ -485,6 +767,141 @@ function buildProgram(): Command {
       ), options);
     });
 
+  const artifact = program.command('artifact');
+  const artifactDecision = artifact.command('decision');
+  artifactDecision
+    .command('bind')
+    .description('Persist an immutable link from a DecisionTrace to the current Artifact')
+    .requiredOption('--task-id <id>')
+    .requiredOption('--artifact-ref <ref>')
+    .requiredOption('--trace-id <id>')
+    .option('--json')
+    .action(async (options: {
+      taskId: string;
+      artifactRef: string;
+      traceId: string;
+      json?: boolean;
+    }) => {
+      const { config, ctx } = contextForWrite();
+      const runtimeRoot = join(config.vaultRoot, '.atl-runtime');
+      const result = await bindArtifactDecision({
+        tasks: ctx.tasks,
+        artifacts: new FileArtifactProductionEvidenceRepository(config.vaultRoot, runtimeRoot),
+        traces: new MarkdownDecisionTraceRepository(config.vaultRoot),
+        decisions: new FileArtifactDecisionRepository(runtimeRoot),
+        clock: ctx.clock,
+      }, {
+        taskId: required(options.taskId, '--task-id'),
+        artifactRef: required(options.artifactRef, '--artifact-ref'),
+        traceId: required(options.traceId, '--trace-id'),
+      });
+      output({
+        ...result.binding,
+        created: result.created,
+      }, options);
+    });
+
+  artifact
+    .command('lineage')
+    .description('Rebuild one Artifact lineage from persisted Phase 0 evidence')
+    .requiredOption('--task-id <id>')
+    .requiredOption('--artifact-ref <ref>')
+    .requiredOption('--decision-id <id>', 'Artifact-bound DecisionTrace id')
+    .option('--json')
+    .action(async (options: {
+      taskId: string;
+      artifactRef: string;
+      decisionId: string;
+      json?: boolean;
+    }) => {
+      const { config } = contextForRead();
+      output(await rebuildArtifactLineage({
+        repository: new FileBackedArtifactLineageEvidenceRepository(
+          config.vaultRoot,
+          join(config.vaultRoot, '.atl-runtime'),
+        ),
+      }, {
+        taskId: required(options.taskId, '--task-id'),
+        artifactRef: required(options.artifactRef, '--artifact-ref'),
+        decisionId: required(options.decisionId, '--decision-id'),
+      }), options);
+    });
+
+  const artifactTrigger = artifact.command('trigger');
+  artifactTrigger
+    .command('start')
+    .description('Start one evidence-bound continuation from a persisted Artifact')
+    .requiredOption('--task-id <id>')
+    .requiredOption('--artifact-ref <ref>')
+    .requiredOption('--decision-id <id>')
+    .requiredOption('--driver <driver>')
+    .option('--json')
+    .action(async (options: {
+      taskId: string;
+      artifactRef: string;
+      decisionId: string;
+      driver: string;
+      json?: boolean;
+    }) => {
+      if (options.driver !== 'claude') {
+        throw new CliUsageError('--driver must be claude');
+      }
+      const { config, ctx } = contextForWrite();
+      const runtimeRoot = join(config.vaultRoot, '.atl-runtime');
+      output(await startPersistedArtifactContinuation({
+        ctx,
+        runtimeRoot,
+        triggers: new FileArtifactTriggerRepository(runtimeRoot),
+        traces: new MarkdownDecisionTraceRepository(config.vaultRoot),
+        connector: buildResearchMulticaContinuationConnector(config),
+        createRunner: async (runId) => {
+          const driver = await createClaudeResearchDriver();
+          return createRunnerController({
+            ctx,
+            driver,
+            runtimeRoot,
+            allowedLocalRoots: allowedLocalRoots(),
+            leaseMinutes: config.leaseMinutes,
+            timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
+            agent: driver.name,
+            runId: () => runId,
+            artifactChainContextPlanner: createArtifactChainContextPlanner({
+              vaultRoot: config.vaultRoot,
+            }),
+          }, { production: true });
+        },
+      }, {
+        taskId: required(options.taskId, '--task-id'),
+        artifactRef: required(options.artifactRef, '--artifact-ref'),
+        decisionId: required(options.decisionId, '--decision-id'),
+      }), options);
+    });
+
+  const artifactSettlement = artifact.command('settlement');
+  artifactSettlement
+    .command('execute')
+    .description('Execute one previously authorized Artifact settlement plan')
+    .requiredOption('--plan-id <id>')
+    .option('--json')
+    .action(async (options: { planId: string; json?: boolean }) => {
+      const { config } = contextForWrite();
+      const runtimeRoot = join(config.vaultRoot, '.atl-runtime');
+      const writer = new AuthorizedVaultArtifactSettlementWriter(
+        config.vaultRoot,
+        new RemoteArtifactSettlementSourceResolver(runtimeRoot),
+      );
+      output(await executeArtifactSettlement(
+        required(options.planId, '--plan-id'),
+        {
+          repository: new FileArtifactSettlementRepository(runtimeRoot),
+          writer: (plan, authorization) => writer.write(plan, authorization),
+          recoverUnknown: (plan, receipt, authorization) => (
+            writer.recoverUnknown(plan, receipt, authorization)
+          ),
+        },
+      ), options);
+    });
+
   task
     .command('confirm')
     .option('--task-id <id>')
@@ -497,6 +914,7 @@ function buildProgram(): Command {
       [],
     )
     .option('--priority <priority>', 'Task priority', 'normal')
+    .option('--legacy-local', 'Use the legacy local synthetic execution path')
     .option('--json')
     .action(async (options: {
       taskId?: string;
@@ -504,6 +922,7 @@ function buildProgram(): Command {
       objective?: string;
       acceptanceCriterion: string[];
       priority: 'urgent' | 'high' | 'normal' | 'low';
+      legacyLocal?: boolean;
       json?: boolean;
     }) => {
       const { ctx } = contextForWrite();
@@ -513,6 +932,7 @@ function buildProgram(): Command {
         objective: required(options.objective, '--objective'),
         acceptanceCriteria: options.acceptanceCriterion,
         permissionProfile: 'read_only_research',
+        ...(options.legacyLocal === true ? {} : { executionTarget: 'multica' as const }),
         priority: options.priority,
       });
       output(result, options);
@@ -553,13 +973,40 @@ function buildProgram(): Command {
   task
     .command('authorize-agent')
     .option('--task-id <id>')
+    .option('--legacy-local', 'Use the legacy local synthetic execution path')
+    .option('--json')
+    .action(async (options: { taskId?: string; legacyLocal?: boolean; json?: boolean }) => {
+      const { ctx, config } = contextForWrite();
+      const taskId = required(options.taskId, '--task-id');
+      output(options.legacyLocal === true
+        ? await authorizeLegacyResearchExecution(ctx, taskId)
+        : await authorizeResearchTask(ctx, researchMulticaDependencies(config), taskId), options);
+    });
+
+  task
+    .command('authorize-development')
+    .option('--task-id <id>')
+    .option('--json')
+    .action(async (options: { taskId?: string; json?: boolean }) => {
+      const { ctx, config } = contextForWrite();
+      output(await authorizeDevelopmentTask(
+        ctx,
+        multicaDependencies(config),
+        required(options.taskId, '--task-id'),
+      ), options);
+    });
+
+  task
+    .command('notify-decision')
+    .option('--task-id <id>')
     .option('--json')
     .action(async (options: { taskId?: string; json?: boolean }) => {
       const { ctx } = contextForWrite();
-      output(await authorizeAgentExecution(
-        ctx,
-        required(options.taskId, '--task-id'),
-      ), options);
+      if (ctx.notifyDecision === undefined) {
+        throw new CliUsageError('DingTalk decision notifications are not configured');
+      }
+      const taskId = required(options.taskId, '--task-id');
+      output(await ctx.notifyDecision(await ctx.tasks.get(taskId)), options);
     });
 
   task
@@ -632,6 +1079,7 @@ function buildProgram(): Command {
     .option('--block')
     .option('--cancel')
     .option('--feedback <text>')
+    .option('--private-input-stdin-json')
     .option('--json')
     .action(async (options: {
       taskId?: string;
@@ -644,9 +1092,9 @@ function buildProgram(): Command {
       block?: boolean;
       cancel?: boolean;
       feedback?: string;
+      privateInputStdinJson?: boolean;
       json?: boolean;
     }) => {
-      const { ctx } = contextForWrite();
       const decisions = [
         options.approve ? 'approve' : null,
         options.requestChanges ? 'request_changes' : null,
@@ -660,13 +1108,20 @@ function buildProgram(): Command {
       if (decision === undefined) {
         throw new CliUsageError('exactly one external review decision is required');
       }
-      if (decision === 'approve' && options.feedback !== undefined) {
+      const feedback = await privateJsonString({
+        enabled: options.privateInputStdinJson,
+        publicValue: options.feedback,
+        field: 'feedback',
+        publicFlag: '--feedback',
+      });
+      if (decision === 'approve' && feedback !== undefined) {
         throw new CliUsageError('--feedback is not allowed with --approve');
       }
       const version = Number(options.artifactVersion);
       if (!Number.isInteger(version) || version <= 0) {
         throw new CliUsageError('--artifact-version must be a positive integer');
       }
+      const { ctx } = contextForWrite();
       const input: ExternalArtifactReviewInput = decision === 'approve'
         ? {
             artifactVersion: version,
@@ -681,7 +1136,7 @@ function buildProgram(): Command {
             senderUserId: required(options.senderUserId, '--sender-user-id'),
             conversationId: required(options.conversationId, '--conversation-id'),
             decision,
-            feedback: required(options.feedback, '--feedback'),
+            feedback: required(feedback, '--feedback'),
           };
       output(await reviewArtifactFromExternalReply(
         ctx,
@@ -731,6 +1186,254 @@ function buildProgram(): Command {
       }), options);
     });
 
+  const multica = program.command('multica');
+  multica
+    .command('dispatch')
+    .requiredOption('--task-id <id>')
+    .option('--json')
+    .action(async (options: { taskId: string; json?: boolean }) => {
+      const { ctx, config } = contextForWrite();
+      output(await dispatchMulticaTask(ctx, {
+        development: multicaDependencies(config),
+        research: researchMulticaDependencies(config),
+      }, required(options.taskId, '--task-id')), options);
+    });
+
+  multica
+    .command('read-artifacts')
+    .description('Read and persist the Artifact receipt for one bound Research run')
+    .requiredOption('--task-id <id>')
+    .option('--json')
+    .action(async (options: { taskId: string; json?: boolean }) => {
+      const { ctx, config } = contextForWrite();
+      const dependencies = researchMulticaDependencies(config);
+      output(await readResearchArtifacts(ctx, {
+        connector: dependencies.connector,
+        runtimeRoot: dependencies.runtimeRoot,
+      }, required(options.taskId, '--task-id')), options);
+    });
+
+  multica
+    .command('reconcile')
+    .option('--max-tasks <count>', `Maximum tasks per cycle (1-${MULTICA_RECONCILE_MAX_TASKS})`)
+    .option('--json')
+    .action(async (options: { maxTasks?: string; json?: boolean }) => {
+      const { ctx, config } = contextForWrite();
+      output(await reconcileMulticaDispatch(
+        ctx,
+        multicaRoundtripDependencies(config, ctx),
+        options.maxTasks === undefined ? {} : { maxTasks: parseReconcileMaxTasks(options.maxTasks) },
+      ), options);
+    });
+
+  // PAW-GOAL-003 T2: manual ingestion of one task's comment events — the same
+  // path the 15-minute reconciliation runs for every linked task.
+  multica
+    .command('ingest')
+    .requiredOption('--task-id <id>')
+    .option('--full', 'Re-read the complete comment history for parser-upgrade recovery')
+    .option('--json')
+    .action(async (options: { taskId: string; full?: boolean; json?: boolean }) => {
+      const { ctx, config } = contextForWrite();
+      const roundtripDependencies = multicaRoundtripDependencies(config, ctx);
+      output(await ingestMulticaEvents(ctx, {
+        connector: multicaRoundtripConnector(config),
+        ...(roundtripDependencies.notify === undefined
+          ? {}
+          : { notify: roundtripDependencies.notify }),
+      }, required(options.taskId, '--task-id'), { fullScan: options.full === true }), options);
+    });
+
+  // PAW-GOAL-003 T2: DingTalk reply entry for the stream bridge. Input is the
+  // trusted stream event JSON on stdin (eventId/senderStaffId/conversationId/
+  // text); the four-step response ledger drives everything after admission.
+  multica
+    .command('reply')
+    .requiredOption('--stdin-json')
+    .option('--json')
+    .action(async (options: { stdinJson?: boolean; json?: boolean }) => {
+      if (!options.stdinJson) {
+        throw new CliUsageError('--stdin-json is required');
+      }
+      const raw = await readFile('/dev/stdin', 'utf8').catch(() => '');
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw) as unknown;
+      } catch {
+        throw new CliUsageError('reply input must be a single JSON object on stdin');
+      }
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        throw new CliUsageError('reply input must be a single JSON object on stdin');
+      }
+      const event = parsed as Record<string, unknown>;
+      const streamEventId = typeof event.eventId === 'string' ? event.eventId : '';
+      const senderUserId = typeof event.senderUserId === 'string' ? event.senderUserId : '';
+      const conversationId = typeof event.conversationId === 'string' ? event.conversationId : '';
+      const message = typeof event.message === 'string' ? event.message : '';
+      if (
+        streamEventId.trim() === '' || senderUserId.trim() === ''
+        || conversationId.trim() === '' || message.trim() === ''
+      ) {
+        throw new CliUsageError('reply input requires eventId, senderUserId, conversationId and message');
+      }
+      const trustedSenderUserId = trustedDingTalkSenderUserId();
+      const trustedConversationId = optionalEnvironment('ATL_DINGTALK_TRUSTED_CONVERSATION_ID');
+      if (trustedSenderUserId === null || trustedConversationId === null) {
+        throw new CliUsageError(
+          'ATL_DINGTALK_TRUSTED_SENDER_ID (or ATL_DINGTALK_TRUSTED_SENDER_USER_ID) '
+          + 'and ATL_DINGTALK_TRUSTED_CONVERSATION_ID are required',
+        );
+      }
+      const { ctx, config } = contextForWrite();
+      output(await processMulticaReply(ctx, {
+        ledger: new FileMulticaResponseLedger(join(config.vaultRoot, '.atl-runtime')),
+        connector: multicaRoundtripConnector(config),
+        trustPolicy: { trustedSenderUserId, trustedConversationId },
+      }, {
+        streamEventId,
+        senderUserId,
+        conversationId,
+        message,
+      }), options);
+    });
+
+  multica
+    .command('responses')
+    .option('--json')
+    .action(async (options: { json?: boolean }) => {
+      const { ctx, config } = contextForWrite();
+      const trustedSenderUserId = trustedDingTalkSenderUserId();
+      const trustedConversationId = optionalEnvironment('ATL_DINGTALK_TRUSTED_CONVERSATION_ID');
+      if (trustedSenderUserId === null || trustedConversationId === null) {
+        throw new CliUsageError(
+          'ATL_DINGTALK_TRUSTED_SENDER_ID (or ATL_DINGTALK_TRUSTED_SENDER_USER_ID) '
+          + 'and ATL_DINGTALK_TRUSTED_CONVERSATION_ID are required',
+        );
+      }
+      output(await continueMulticaResponses(ctx, {
+        ledger: new FileMulticaResponseLedger(join(config.vaultRoot, '.atl-runtime')),
+        connector: multicaRoundtripConnector(config),
+        trustPolicy: { trustedSenderUserId, trustedConversationId },
+      }), options);
+    });
+
+  multica
+    .command('recover-notification')
+    .requiredOption('--stdin-json')
+    .option('--json')
+    .action(async (options: { stdinJson?: boolean; json?: boolean }) => {
+      if (!options.stdinJson) {
+        throw new CliUsageError('--stdin-json is required');
+      }
+      const input = jsonRecord(await readBoundedJsonInput(process.stdin, MAX_STDIN_JSON_BYTES));
+      const allowed = new Set(['taskId', 'eventId', 'receiptId']);
+      if (Object.keys(input).some((field) => !allowed.has(field))) {
+        throw new CliUsageError('notification recovery input contains unsupported fields');
+      }
+      const { ctx, config } = contextForWrite();
+      output(await recoverMulticaActionNotification(ctx, {
+        ledger: new FileMulticaActionNotificationLedger(join(config.vaultRoot, '.atl-runtime')),
+      }, {
+        taskId: requiredJsonString(input, 'taskId'),
+        eventId: requiredJsonString(input, 'eventId'),
+        receiptId: requiredJsonString(input, 'receiptId'),
+      }), options);
+    });
+
+  // PAW-GOAL-003 T3: the Release Operator entry. It consumes one handled RC
+  // approve, re-validates the acceptance against the CURRENT event/head SHA,
+  // runs the fixed verification from the immutable candidate worktree, then
+  // executes the four fixed release actions behind the controlled boundary.
+  // External evidence (merge read-back, live canary) arrives as files from
+  // the authorized release step — this command performs no GitHub or
+  // DingTalk-side discovery of its own.
+  multica
+    .command('complete-release')
+    .description('Complete an already-published release from immutable read-back evidence')
+    .requiredOption('--task-id <id>')
+    .requiredOption('--evidence-file <path>')
+    .option('--json')
+    .action(async (options: {
+      taskId: string;
+      evidenceFile: string;
+      json?: boolean;
+    }) => {
+      const taskId = required(options.taskId, '--task-id');
+      const evidence = await parsePostDeploymentEvidenceFile(options.evidenceFile);
+      if (evidence.acceptance.atlTaskId !== taskId) {
+        throw new CliUsageError('--task-id differs from the post-deployment evidence binding');
+      }
+      const { ctx, config } = contextForWrite();
+      const outcome = await completeRelease(ctx, {
+        ledger: new FileReleaseReceiptLedger(join(config.vaultRoot, '.atl-runtime')),
+        completionIntents: new FileReleaseCompletionIntentLedger(join(config.vaultRoot, '.atl-runtime')),
+        phaseEvidence: new FileReleasePhaseEvidenceLedger(join(config.vaultRoot, '.atl-runtime')),
+        notifications: new FileMulticaActionNotificationLedger(join(config.vaultRoot, '.atl-runtime')),
+        responses: new FileMulticaResponseLedger(join(config.vaultRoot, '.atl-runtime')),
+        atlReadBack: (task) => ({
+          taskId: task.taskId,
+          taskStatus: task.status,
+          frontmatterPath: join(
+            lifecycleDirectory(taskStorageRoot(config.vaultRoot), task),
+            `${task.taskId}.md`,
+          ),
+          finalSummary: evidence.receipt.readBack?.atl.finalSummary
+            ?? evidence.completedEvent.summary,
+        }),
+      }, evidence);
+      output(outcome, options);
+      if (outcome.status === 'rejected') process.exitCode = 1;
+    });
+
+  multica
+    .command('release')
+    .requiredOption('--task-id <id>')
+    .requiredOption('--current-event-file <path>')
+    .requiredOption('--fresh-review-ref <ref>')
+    .requiredOption('--evidence-file <path>')
+    .requiredOption('--workdir <path>')
+    .option('--plugin-dir <path>')
+    .option('--backup-root <path>')
+    .option('--json')
+    .action(async (options: {
+      taskId: string;
+      currentEventFile: string;
+      freshReviewRef: string;
+      evidenceFile: string;
+      workdir: string;
+      pluginDir?: string;
+      backupRoot?: string;
+      json?: boolean;
+    }) => {
+      const { ctx, config } = contextForWrite();
+      const currentEvent = await parseCurrentEventFile(options.currentEventFile);
+      const evidence = await parseReleaseEvidenceFile(options.evidenceFile);
+      const pluginDir = options.pluginDir
+        ?? optionalEnvironment('ATL_PLUGIN_DIR')
+        ?? join(config.vaultRoot, '.obsidian', 'plugins', 'agent-task-loop');
+      const backupRoot = options.backupRoot
+        ?? optionalEnvironment('ATL_PLUGIN_BACKUP_ROOT')
+        ?? join(config.vaultRoot, '.obsidian', 'plugins', '.atl-backups');
+      output(await runReleaseOperator(ctx, {
+        ledger: new FileReleasePhaseEvidenceLedger(join(config.vaultRoot, '.atl-runtime')),
+        connector: multicaRoundtripConnector(config),
+        ports: {
+          verificationRunner: createSpawnVerificationRunner(),
+          nodeVersion: process.version,
+          workDir: options.workdir,
+          mergeAcceptedPr: async () => evidence.github,
+          liveVerification: async () => evidence.live,
+          notifyDingTalk: releaseNoticeDelivery(config),
+        },
+      }, {
+        taskId: required(options.taskId, '--task-id'),
+        currentEvent,
+        freshReviewRef: required(options.freshReviewRef, '--fresh-review-ref'),
+        vaultRoot: config.vaultRoot,
+        plugin: { pluginDir, backupRoot },
+      }), options);
+    });
+
   const runner = program.command('runner');
   runner
     .command('run-once')
@@ -738,8 +1441,14 @@ function buildProgram(): Command {
     .option('--json')
     .action(async (options: { driver: string; json?: boolean }) => {
       const { controller, retryAcceptanceNotifications } = await runnerController(options.driver);
+      const { ctx, config } = contextForWrite();
+      const multicaReconcile = async () => reconcileMulticaDispatch(
+        ctx,
+        multicaRoundtripDependencies(config, ctx),
+      );
       output(await runHourlyCycle({
         retryAcceptanceNotifications,
+        reconcileMultica: multicaReconcile,
         syncQianwen: () => synchronizeQianwen('scheduled'),
         runTask: () => controller.runAndWait({ mode: 'automatic' }),
       }), options);
@@ -771,6 +1480,7 @@ function buildProgram(): Command {
     .requiredOption('--conversation-id <id>')
     .requiredOption('--selected-option-id <id>')
     .option('--response-text <text>')
+    .option('--private-input-stdin-json')
     .requiredOption('--driver <driver>')
     .option('--json')
     .action(async (options: {
@@ -781,9 +1491,16 @@ function buildProgram(): Command {
       conversationId: string;
       selectedOptionId: string;
       responseText?: string;
+      privateInputStdinJson?: boolean;
       driver: string;
       json?: boolean;
     }) => {
+      const responseText = await privateJsonString({
+        enabled: options.privateInputStdinJson,
+        publicValue: options.responseText,
+        field: 'responseText',
+        publicFlag: '--response-text',
+      });
       const { controller } = await runnerController(options.driver);
       output(await controller.continueAfterDecision({
         taskId: required(options.taskId, '--task-id'),
@@ -792,7 +1509,7 @@ function buildProgram(): Command {
         senderUserId: required(options.senderUserId, '--sender-user-id'),
         conversationId: required(options.conversationId, '--conversation-id'),
         selectedOptionId: required(options.selectedOptionId, '--selected-option-id'),
-        ...(options.responseText === undefined ? {} : { responseText: options.responseText }),
+        ...(responseText === undefined ? {} : { responseText }),
       }), options);
     });
 
@@ -847,6 +1564,7 @@ function buildProgram(): Command {
       const notifyAcceptance = createAcceptanceNotifier({
         vaultRoot: config.vaultRoot,
         profile: config.dingtalkProfile,
+        robotCode: config.dingtalkRobotCode,
       });
       output(await generateWeeklyReport({
         progressRepository: new MarkdownProgressRepository(config.vaultRoot),
@@ -883,6 +1601,29 @@ function buildProgram(): Command {
       output(await uninstallLaunchAgent(schedulerHome()), options);
     });
 
+  scheduler
+    .command('install-dingtalk-stream')
+    .option('--json')
+    .action(async (options: { json?: boolean }) => {
+      output(await installDingTalkStreamLaunchAgent({
+        ...schedulerHome(),
+      }), options);
+    });
+
+  scheduler
+    .command('status-dingtalk-stream')
+    .option('--json')
+    .action(async (options: { json?: boolean }) => {
+      output(await inspectDingTalkStreamLaunchAgent(schedulerHome()), options);
+    });
+
+  scheduler
+    .command('uninstall-dingtalk-stream')
+    .option('--json')
+    .action(async (options: { json?: boolean }) => {
+      output(await uninstallDingTalkStreamLaunchAgent(schedulerHome()), options);
+    });
+
   program
     .command('doctor')
     .option('--json')
@@ -894,6 +1635,9 @@ function buildProgram(): Command {
         process.exitCode = 1;
       }
     });
+
+  registerDecisionCommands(program);
+  registerCodexFeedbackCommands(program);
 
   return program;
 }

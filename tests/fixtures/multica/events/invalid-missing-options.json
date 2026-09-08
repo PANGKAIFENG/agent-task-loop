@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "event_id": "evt-fixture-0006",
+  "atl_task_id": "task-20260820-fixture01",
+  "state": "needs_decision",
+  "summary": "决策事件缺少 options，必须被拒绝",
+  "decision": {
+    "question": "缺少可选项",
+    "options": []
+  },
+  "recoverability": null,
+  "artifact_refs": [],
+  "release": null,
+  "occurred_at": "2026-08-20T15:00:00.000Z"
+}

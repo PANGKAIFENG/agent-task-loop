@@ -7,10 +7,17 @@ import type {
 import { PRIORITIES, type Task } from '../domain/task.js';
 import type { RunnerController } from '../runner/runner-controller.js';
 import { RunnerBusyError } from '../runner/runner-controller.js';
-import { authorizeAgentExecution } from '../services/authorize-agent-execution.js';
+import type { AuthorizeResearchTaskResult } from '../services/authorize-research-task.js';
 import { captureTask, InvalidCaptureTaskInputError } from '../services/capture-task.js';
-import { isClaimEligible } from '../services/claim-task.js';
+import { isClaimEligible, loadKnownProjectIds } from '../services/claim-task.js';
+import {
+  confirmCandidateUnderstanding,
+  type ConfirmCandidateUnderstandingInput,
+} from '../services/confirm-candidate-understanding.js';
 import { confirmTask, type ConfirmTaskInput } from '../services/confirm-task.js';
+import { queryWorkbenchDashboard } from '../services/query-workbench-dashboard.js';
+import { readCandidateInspector } from '../services/read-candidate-inspector.js';
+import { openCandidateSource } from '../services/open-candidate-source.js';
 import { reopenTask, type ReopenTaskInput } from '../services/reopen-task.js';
 import {
   ReviewTaskInvalidInputError,
@@ -28,12 +35,19 @@ import {
 interface RegisterRoutesOptions {
   ctx: ServiceContext;
   runner: RunnerController;
+  authorizeResearch: (taskId: string) => Promise<AuthorizeResearchTaskResult>;
   boardOrigin: string;
   token: string;
+  sourceRoot?: string;
+  locateMovedCandidateSource?: (sourceKey: string) => Promise<string | null>;
 }
 
 interface TaskParams {
   id: string;
+}
+
+interface CandidateSourceParams extends TaskParams {
+  sourceRefId: string;
 }
 
 interface ProjectParams {
@@ -138,6 +152,26 @@ const publicServiceErrors: Readonly<Record<string, { code: string; message: stri
     code: 'task_not_eligible_for_run',
     message: 'Task must be Agent Executable to run',
   },
+  invalid_candidate_understanding_input: {
+    code: 'invalid_candidate_understanding_input',
+    message: 'Invalid candidate understanding input',
+  },
+  candidate_understanding_blocked: {
+    code: 'candidate_understanding_blocked',
+    message: 'Blocking candidate gaps must be resolved before confirmation',
+  },
+  candidate_understanding_invalid_state: {
+    code: 'candidate_understanding_invalid_state',
+    message: 'Task must be in Inbox or unconfirmed Ready to confirm candidate understanding',
+  },
+  candidate_understanding_audit_failed: {
+    code: 'candidate_understanding_audit_failed',
+    message: 'Candidate understanding was not saved',
+  },
+  candidate_understanding_recovery_error: {
+    code: 'candidate_understanding_recovery_error',
+    message: 'Candidate understanding recovery is required',
+  },
 };
 
 function fastifyClientError(error: unknown): PublicError | null {
@@ -221,6 +255,17 @@ async function taskDto(ctx: ServiceContext, task: Task) {
     acceptanceCriteria: task.acceptanceCriteria,
     autoExecutable: task.autoExecutable,
     permissionProfile: task.permissionProfile,
+    // PAW-GOAL-003 T2: the pending human action projected from the latest
+    // notifiable Multica event — the board's "needs me" signal (PRD 7.1).
+    actionRequest: task.actionRequest ?? null,
+    executionLink: task.executionLink === null || task.executionLink === undefined
+      ? null
+      : {
+        issueIdentifier: task.executionLink.issueIdentifier,
+        remoteState: task.executionLink.remoteState,
+        dispatchState: task.executionLink.dispatchState,
+        lastSyncedAt: task.executionLink.lastSyncedAt,
+      },
     origin: task.origin,
     sourceDate: task.sourceDate,
     sourceExcerpt: task.sourceQuote,
@@ -234,6 +279,19 @@ async function taskDto(ctx: ServiceContext, task: Task) {
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
   };
+}
+
+async function candidateInspectorDto(
+  ctx: ServiceContext,
+  task: Task,
+  options: Pick<RegisterRoutesOptions, 'sourceRoot' | 'locateMovedCandidateSource'>,
+) {
+  return readCandidateInspector(ctx, task, 'web', {
+    ...(options.sourceRoot === undefined ? {} : { sourceRoot: options.sourceRoot }),
+    ...(options.locateMovedCandidateSource === undefined
+      ? {}
+      : { locateMoved: options.locateMovedCandidateSource }),
+  });
 }
 
 async function requireWriteAccess(
@@ -322,6 +380,8 @@ export async function registerRoutes(
     ),
   }));
 
+  app.get('/api/dashboard', async () => queryWorkbenchDashboard(options.ctx));
+
   app.get('/api/review', async () => ({
     tasks: await Promise.all(
       (await options.ctx.tasks.list())
@@ -329,6 +389,40 @@ export async function registerRoutes(
         .map((task) => taskDto(options.ctx, task)),
     ),
   }));
+
+  app.get<{ Params: TaskParams }>(
+    '/api/tasks/:id/candidate-inspector',
+    async (request) => candidateInspectorDto(
+      options.ctx,
+      await options.ctx.tasks.get(request.params.id),
+      options,
+    ),
+  );
+
+  app.get<{ Params: CandidateSourceParams }>(
+    '/api/tasks/:id/candidate-sources/:sourceRefId/open',
+    async (request, reply) => {
+      const task = await options.ctx.tasks.get(request.params.id);
+      const projection = await candidateInspectorDto(options.ctx, task, options);
+      const source = projection.sourceRefs.find(
+        ({ sourceRefId }) => sourceRefId === request.params.sourceRefId,
+      );
+      if (source === undefined) {
+        return reply.code(404).send(apiError(
+          'candidate_source_not_found',
+          'Candidate source not found',
+        ));
+      }
+      return openCandidateSource({
+        source,
+        ...(options.sourceRoot === undefined ? {} : { root: options.sourceRoot }),
+        now: options.ctx.clock(),
+        ...(options.locateMovedCandidateSource === undefined
+          ? {}
+          : { locateMoved: options.locateMovedCandidateSource }),
+      });
+    },
+  );
 
   app.get('/api/projects', async () => ({ projects: await options.ctx.projects.list() }));
 
@@ -356,19 +450,37 @@ export async function registerRoutes(
     ),
   );
 
+  app.post<{
+    Params: TaskParams;
+    Body: ConfirmCandidateUnderstandingInput;
+  }>(
+    '/api/tasks/:id/candidate-understanding',
+    async (request) => {
+      const saved = await confirmCandidateUnderstanding(
+        options.ctx,
+        request.params.id,
+        request.body,
+      );
+      return candidateInspectorDto(options.ctx, saved, options);
+    },
+  );
+
   app.post<{ Params: TaskParams }>(
     '/api/tasks/:id/authorize-agent',
-    async (request) => taskDto(
-      options.ctx,
-      await authorizeAgentExecution(options.ctx, request.params.id),
-    ),
+    async (request) => {
+      const result = await options.authorizeResearch(request.params.id);
+      return {
+        task: await taskDto(options.ctx, result.task),
+        dispatch: result.dispatch,
+      };
+    },
   );
 
   app.post<{ Params: TaskParams }>(
     '/api/tasks/:id/run',
     async (request, reply) => {
       const task = await options.ctx.tasks.get(request.params.id);
-      if (!isClaimEligible(task)) {
+      if (!isClaimEligible(task, await loadKnownProjectIds(options.ctx))) {
         throw new TaskNotEligibleForRunError();
       }
       const started = await options.runner.start({ taskId: task.taskId, mode: 'manual' });

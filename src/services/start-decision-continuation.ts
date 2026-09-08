@@ -1,4 +1,8 @@
-import { isDecisionContinuationPending, type Task } from '../domain/task.js';
+import {
+  isDecisionContinuationPending,
+  isExternalExecutionTask,
+  type Task,
+} from '../domain/task.js';
 import { assertTransition } from '../domain/transitions.js';
 import { TaskSavedIndexStaleError } from '../storage/markdown-task-repository.js';
 import {
@@ -24,6 +28,17 @@ export class DecisionContinuationInvalidStateError extends Error {
   constructor() {
     super('Task is not eligible for decision continuation');
     this.name = 'DecisionContinuationInvalidStateError';
+  }
+}
+
+// PAW-GOAL-003 T1 (PRD §6 rule 3): decision continuation is a local research
+// runner entry point; a Multica-dispatched task must never be resumed by it.
+export class DecisionContinuationExternalExecutionError extends Error {
+  readonly code = 'decision_continuation_external_execution';
+
+  constructor() {
+    super('Task is executed externally via Multica and cannot continue locally');
+    this.name = 'DecisionContinuationExternalExecutionError';
   }
 }
 
@@ -81,6 +96,9 @@ export async function startDecisionContinuation(
     }
     return ctx.tasks.withTaskLock(taskId, async () => {
       const task = await ctx.tasks.get(taskId);
+      if (isExternalExecutionTask(task)) {
+        throw new DecisionContinuationExternalExecutionError();
+      }
       if (!matchesDecision(task, input)) {
         throw new DecisionContinuationInvalidStateError();
       }

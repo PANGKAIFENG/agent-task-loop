@@ -1,6 +1,9 @@
 import { isIP } from 'node:net';
 
-import { optionalDingTalkProfile } from '../dingtalk-profile.js';
+import {
+  optionalDingTalkProfile,
+  optionalDingTalkRobotCode,
+} from '../dingtalk-profile.js';
 import type {
   BackgroundSettings,
   BackgroundState,
@@ -61,6 +64,7 @@ export const DEFAULT_BACKGROUND_SETTINGS: BackgroundSettings = {
   model: 'claude-sonnet-4-5',
   baseUrl: '',
   dingtalkProfile: '',
+  dingtalkRobotCode: '',
 };
 
 export const DEFAULT_SETTINGS: AtlPluginSettings = {
@@ -542,6 +546,9 @@ export function normalizeSettings(value: unknown): AtlPluginSettings {
       model,
       baseUrl,
       dingtalkProfile: optionalDingTalkProfile(rawBackground.dingtalkProfile) ?? '',
+      dingtalkRobotCode: optionalDingTalkRobotCode(
+        rawBackground.dingtalkRobotCode,
+      ) ?? '',
     },
     dashboard,
     dingtalkCalendar,

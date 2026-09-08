@@ -1,0 +1,37 @@
+{
+  "task": {
+    "taskId": "task-synthetic-research",
+    "title": "核对竞品证据",
+    "body": "仅使用公开资料，核对三条竞品能力声明。",
+    "taskType": "research",
+    "contextRefs": []
+  },
+  "sourceRefs": [
+    {
+      "sourceRefId": "source-synthetic-research",
+      "sourceType": "sync_note",
+      "sourceKey": "synthetic:research",
+      "sourceNote": "Synthetic/2026-08-22.md",
+      "anchor": "record-research-1",
+      "quote": "待办：核对竞品证据。下一步：整理官方页面。输出：证据对照表。完成条件：三条声明均有结论。",
+      "capturedAt": "2026-08-22T08:00:00.000Z",
+      "lastVerifiedAt": "2026-08-22T08:10:00.000Z",
+      "status": "available",
+      "failureReason": null,
+      "parentContext": "共同目标：形成可评审的竞品判断。",
+      "lastVerifiedEvidence": {
+        "resolvedNote": "Synthetic/2026-08-22.md",
+        "checkedCharacters": 120,
+        "quoteMatched": true,
+        "truncated": false
+      }
+    }
+  ],
+  "aiDraft": {
+    "objective": "形成可评审的竞品判断",
+    "nextAction": "整理官方页面",
+    "expectedArtifact": "证据对照表",
+    "completionCriteria": "三条声明均有结论",
+    "taskType": "research"
+  }
+}

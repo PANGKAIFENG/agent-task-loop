@@ -52,6 +52,25 @@ function inProgressTask(): Task {
   };
 }
 
+function waitingDecisionTask(): Task {
+  return {
+    ...inProgressTask(),
+    taskId: 'task-20260814-cli-decision',
+    title: 'Synthetic CLI decision',
+    status: 'waiting_for_decision',
+    sourceKey: 'synthetic:cli-decision-notification',
+    claim: null,
+    pendingDecision: {
+      schemaVersion: 1,
+      requestId: 'decision-cli-001',
+      question: '请选择下一步。',
+      options: [{ id: 'continue', label: '继续验证' }],
+      requestedAt: '2026-08-14T02:00:00.000Z',
+      requestedByRunId: 'run-synthetic-cli-decision',
+    },
+  };
+}
+
 describe('CLI acceptance notification wiring', () => {
   it('notifies the configured DingTalk self after Artifact submission', async () => {
     const context = await createTestServiceContext();
@@ -99,6 +118,7 @@ esac
       env: {
         ATL_VAULT_ROOT: context.root,
         ATL_DINGTALK_PROFILE: 'synthetic-current-profile',
+        ATL_DINGTALK_ROBOT_CODE: 'ding-synthetic-atl-bot',
         PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
       },
       reject: false,
@@ -118,6 +138,59 @@ esac
         idempotencyKey: `artifact:${task.taskId}:1`,
         status: 'sent',
         taskId: 'synthetic-cli-task',
+      }],
+    });
+  }, 30_000);
+
+  it('can safely notify an already waiting decision exactly once', async () => {
+    const context = await createTestServiceContext();
+    contexts.push(context);
+    const task = waitingDecisionTask();
+    await context.ctx.tasks.save(task);
+    const bin = join(context.root, 'synthetic-decision-bin');
+    await mkdir(bin);
+    const dws = join(bin, 'dws');
+    await writeFile(dws, `#!/bin/sh
+case "$*" in
+  *get-self*) printf '%s\\n' '{"success":true,"complete":true,"failures":[],"result":[{"orgEmployeeModel":{"userId":"synthetic-self-user"}}]}' ;;
+  *) printf '%s\\n' '{"success":true,"complete":true,"failures":[],"result":[{"openMessageId":"synthetic-cli-message"}]}' ;;
+esac
+`, 'utf8');
+    await chmod(dws, 0o700);
+    const invoke = () => execa('pnpm', [
+      'exec', 'tsx', cli,
+      'task', 'notify-decision',
+      '--task-id', task.taskId,
+      '--json',
+    ], {
+      cwd: repositoryRoot,
+      env: {
+        ATL_VAULT_ROOT: context.root,
+        ATL_DINGTALK_PROFILE: 'synthetic-current-profile',
+        ATL_DINGTALK_ROBOT_CODE: 'ding-synthetic-atl-bot',
+        PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
+      },
+      reject: false,
+    });
+
+    const first = await invoke();
+    const second = await invoke();
+
+    expect(first.exitCode, first.stderr).toBe(0);
+    expect(second.exitCode, second.stderr).toBe(0);
+    expect(JSON.parse(first.stdout)).toMatchObject({
+      status: 'sent',
+      messageId: 'synthetic-cli-message',
+    });
+    expect(JSON.parse(second.stdout)).toEqual(JSON.parse(first.stdout));
+    expect(JSON.parse(await readFile(join(
+      context.root,
+      '.atl-runtime',
+      'decision-notifications.json',
+    ), 'utf8'))).toMatchObject({
+      records: [{
+        idempotencyKey: `decision:${task.taskId}:decision-cli-001`,
+        status: 'sent',
       }],
     });
   }, 30_000);

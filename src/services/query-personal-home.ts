@@ -1,9 +1,16 @@
 import type { Project } from '../domain/project.js';
 import type { Task } from '../domain/task.js';
+import {
+  computeTaskStatistics,
+  type AgentQueueStatistics,
+  type TaskIntegrityIssues,
+  type TaskStatusCounts,
+} from './task-statistics.js';
 
 export interface QueryPersonalHomeInput {
   tasks: Task[];
   projects: Project[];
+  now: Date;
 }
 
 export interface PersonalHomeTask {
@@ -12,20 +19,23 @@ export interface PersonalHomeTask {
   status: string;
   reviewState: Task['reviewState'];
   projectName: string;
+  origin: string;
   priority: Task['priority'];
   updatedAt: string;
   artifactCount: number;
 }
 
 export interface PersonalHomeSnapshot {
-  counts: {
-    inbox: number;
-    ready: number;
-    agentExecutable: number;
-    inProgress: number;
-    review: number;
-    blocked: number;
-  };
+  total: number;
+  // Raw workflow status counts — identical to what the task index model
+  // reports for the same tasks; always sum to total.
+  counts: TaskStatusCounts;
+  // Agent queue admission counts, derived from the same predicate the
+  // runner uses to claim. The home "Agent 待执行" number is
+  // agentQueue.admittedCount, NOT counts.agentExecutable.
+  agentQueue: AgentQueueStatistics;
+  integrityIssues: TaskIntegrityIssues;
+  expiredClaimTaskIds: string[];
   focusTasks: PersonalHomeTask[];
   inboxTasks: PersonalHomeTask[];
   nextAction: PersonalHomeTask | null;
@@ -69,27 +79,32 @@ function toDto(task: Task, projectNames: Map<string, string>): PersonalHomeTask 
     projectName: task.projectId === null
       ? '未归类'
       : projectNames.get(task.projectId) ?? '未归类',
+    origin: task.origin,
     priority: task.priority,
     updatedAt: task.updatedAt,
     artifactCount: task.artifactRefs.length,
   };
 }
 
+// Issue #3: the home page derives every count from computeTaskStatistics —
+// the same shared rule that backs the task index model (status filtering)
+// and the agent queue model (isClaimEligible admission).
 export function queryPersonalHome(input: QueryPersonalHomeInput): PersonalHomeSnapshot {
   const projectNames = new Map(input.projects.map((project) => [project.projectId, project.name]));
-  const counts = {
-    inbox: input.tasks.filter((task) => task.status === 'inbox').length,
-    ready: input.tasks.filter((task) => task.status === 'ready').length,
-    agentExecutable: input.tasks.filter((task) => task.status === 'agent_executable').length,
-    inProgress: input.tasks.filter((task) => task.status === 'in_progress').length,
-    review: input.tasks.filter((task) => task.status === 'review').length,
-    blocked: input.tasks.filter((task) => task.status === 'blocked').length,
-  };
+  const knownProjectIds = new Set(input.projects.map((project) => project.projectId));
+  const statistics = computeTaskStatistics(input.tasks, {
+    now: input.now,
+    knownProjectIds,
+  });
+  const admitted = new Set(statistics.agentQueue.admittedTaskIds);
+  // Focus work is ACTIONABLE work: quarantined agent tasks (unconfirmed,
+  // flagged duplicates, unexpected claims, …) are not actionable and must
+  // not surface as focus tasks or as the suggested next action.
   const focus = input.tasks
     .filter((task) => (
       task.status === 'in_progress'
-      || task.status === 'agent_executable'
       || task.status === 'ready'
+      || (task.status === 'agent_executable' && admitted.has(task.taskId))
     ))
     .sort(compareFocusTasks);
   const inbox = input.tasks
@@ -98,7 +113,11 @@ export function queryPersonalHome(input: QueryPersonalHomeInput): PersonalHomeSn
   const focusTasks = focus.map((task) => toDto(task, projectNames));
   const inboxTasks = inbox.map((task) => toDto(task, projectNames));
   return {
-    counts,
+    total: statistics.total,
+    counts: statistics.statusCounts,
+    agentQueue: statistics.agentQueue,
+    integrityIssues: statistics.integrityIssues,
+    expiredClaimTaskIds: statistics.expiredClaimTaskIds,
     focusTasks,
     inboxTasks,
     nextAction: focusTasks[0] ?? null,

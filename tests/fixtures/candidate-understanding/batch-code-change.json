@@ -1,0 +1,37 @@
+{
+  "task": {
+    "taskId": "task-synthetic-code",
+    "title": "补齐项目 Alpha 的测试门禁",
+    "body": "从发布前清单提取的单个项目候选。",
+    "taskType": "development",
+    "contextRefs": []
+  },
+  "sourceRefs": [
+    {
+      "sourceRefId": "source-synthetic-code",
+      "sourceType": "sync_note",
+      "sourceKey": "synthetic:batch-code",
+      "sourceNote": "Synthetic/release-checklist.md",
+      "anchor": "project-alpha",
+      "quote": "- 补齐项目 Alpha 的测试门禁",
+      "capturedAt": "2026-08-22T08:00:00.000Z",
+      "lastVerifiedAt": "2026-08-22T08:10:00.000Z",
+      "status": "available",
+      "failureReason": null,
+      "parentContext": "共同意图：本周逐项关闭发布前风险。相邻条目：项目 Beta 核对依赖版本。",
+      "lastVerifiedEvidence": {
+        "resolvedNote": "Synthetic/release-checklist.md",
+        "checkedCharacters": 96,
+        "quoteMatched": true,
+        "truncated": false
+      }
+    }
+  ],
+  "aiDraft": {
+    "objective": "关闭项目 Alpha 的发布前风险",
+    "nextAction": "补齐测试门禁",
+    "expectedArtifact": "",
+    "completionCriteria": "",
+    "taskType": "code_change"
+  }
+}

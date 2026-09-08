@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /* global process */
 
+import { Buffer } from 'node:buffer';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -12,6 +13,7 @@ const configuredRunnerEntry = process.env.ATL_RUNNER_ENTRY?.trim() || '';
 const runnerEntry = configuredRunnerEntry || join(bridgeDirectory, 'atl-runner.mjs');
 const driver = process.env.ATL_AGENT_DRIVER || 'claude';
 const mode = process.argv[2] || 'run-once';
+const MAX_REPLY_INPUT_BYTES = 64 * 1024;
 
 function jsonFromOutput(output) {
   const trimmed = output.trim();
@@ -23,11 +25,11 @@ function jsonFromOutput(output) {
   }
 }
 
-function run(command, args) {
+function run(command, args, input) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
     let stderr = '';
@@ -35,6 +37,10 @@ function run(command, args) {
     child.stderr.on('data', (chunk) => { stderr += chunk; });
     child.on('error', reject);
     child.on('close', (code) => resolve({ code: code ?? 1, stdout, stderr }));
+    if (input !== undefined) {
+      child.stdin.on('error', reject);
+      child.stdin.end(input);
+    }
   });
 }
 
@@ -114,25 +120,90 @@ function artifactReviewArguments(message) {
   return { decision, taskId, version, feedback };
 }
 
-function replyArguments(args) {
-  const read = (flag) => {
-    const index = args.indexOf(flag);
-    if (index < 0 || args[index + 1] === undefined) return null;
-    return args[index + 1].trim();
+function multicaActionArguments(message) {
+  const match = /^(select:[A-Za-z0-9][A-Za-z0-9._-]{0,199}|approve|rework|block|cancel) (task-[A-Za-z0-9][A-Za-z0-9._-]{0,194})$/u
+    .exec(message.trim());
+  if (match === null) return null;
+  const [, action, taskId] = match;
+  return { action, taskId };
+}
+
+function replyInputError() {
+  return new Error('DingTalk reply stdin JSON has invalid fields');
+}
+
+function hasInputControlCharacters(value) {
+  return [...value].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f);
+  });
+}
+
+async function readReplyInput() {
+  let bytes = 0;
+  let input = '';
+  for await (const chunk of process.stdin) {
+    bytes += Buffer.byteLength(chunk);
+    if (bytes > MAX_REPLY_INPUT_BYTES) {
+      throw new Error('DingTalk reply stdin JSON exceeds 64 KiB');
+    }
+    input += chunk;
+  }
+  let value;
+  try {
+    value = JSON.parse(input);
+  } catch {
+    throw new Error('DingTalk reply stdin must contain valid JSON');
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw replyInputError();
+  }
+  const fields = ['eventId', 'senderUserId', 'conversationId', 'message'];
+  if (Object.keys(value).some((field) => !fields.includes(field))) {
+    throw replyInputError();
+  }
+  const identifier = (field) => {
+    const candidate = value[field];
+    if (
+      typeof candidate !== 'string'
+      || !/^[A-Za-z0-9_:+./=-]{1,256}$/u.test(candidate)
+    ) throw replyInputError();
+    return candidate;
   };
-  const eventId = read('--event-id');
-  const senderUserId = read('--sender-user-id');
-  const conversationId = read('--conversation-id');
-  const message = read('--message');
-  const trustedSenderUserId = process.env.ATL_DINGTALK_TRUSTED_SENDER_USER_ID?.trim();
+  const message = value.message;
+  if (
+    typeof message !== 'string'
+    || message.trim() === ''
+    || message.length > 2_000
+    || hasInputControlCharacters(message)
+  ) throw replyInputError();
+  return {
+    eventId: identifier('eventId'),
+    senderUserId: identifier('senderUserId'),
+    conversationId: identifier('conversationId'),
+    message,
+  };
+}
+
+async function replyArguments(args) {
+  if (args.length !== 1 || args[0] !== '--stdin-json') {
+    throw new Error('DingTalk reply must use --stdin-json');
+  }
+  const { eventId, senderUserId, conversationId, message } = await readReplyInput();
+  const trustedSenderId = process.env.ATL_DINGTALK_TRUSTED_SENDER_ID?.trim();
+  const trustedStreamSenderId = process.env.ATL_DINGTALK_TRUSTED_SENDER_USER_ID?.trim();
+  if (
+    trustedSenderId
+    && trustedStreamSenderId
+    && trustedSenderId !== trustedStreamSenderId
+  ) {
+    throw new Error('DingTalk trusted sender environment values conflict');
+  }
+  const trustedSenderUserId = trustedStreamSenderId || trustedSenderId;
   const trustedConversationId = process.env.ATL_DINGTALK_TRUSTED_CONVERSATION_ID?.trim();
   if (!trustedSenderUserId || !trustedConversationId) {
     throw new Error('DingTalk trusted sender and conversation must be configured');
   }
-  if (eventId === null || eventId === '') throw new Error('--event-id is required');
-  if (senderUserId === null || senderUserId === '') throw new Error('--sender-user-id is required');
-  if (conversationId === null || conversationId === '') throw new Error('--conversation-id is required');
-  if (message === null || message === '') throw new Error('--message is required');
   if (senderUserId !== trustedSenderUserId || conversationId !== trustedConversationId) {
     throw new Error('DingTalk reply source is not trusted');
   }
@@ -143,6 +214,12 @@ async function listPendingDecisions() {
   const result = await run(nodeExecutable, runnerArgs(
     'task', 'list', '--status', 'waiting_for_decision', '--json',
   ));
+  const parsed = successfulJson(result, 'Task list failed');
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+async function listTasksForActionRouting() {
+  const result = await run(nodeExecutable, runnerArgs('task', 'list', '--json'));
   const parsed = successfulJson(result, 'Task list failed');
   return Array.isArray(parsed) ? parsed : [];
 }
@@ -182,11 +259,13 @@ async function continueDecision(task, decision) {
     '--conversation-id', decision.conversationId,
     '--selected-option-id', decision.selectedOptionId,
   ];
+  let input;
   if (typeof decision.responseText === 'string') {
-    args.push('--response-text', decision.responseText);
+    args.push('--private-input-stdin-json');
+    input = JSON.stringify({ responseText: decision.responseText });
   }
   args.push('--driver', driver, '--json');
-  const result = await run(nodeExecutable, runnerArgs(...args));
+  const result = await run(nodeExecutable, runnerArgs(...args), input);
   return formatRunnerResult(successfulJson(
     result,
     'Decision continuation returned invalid JSON',
@@ -203,9 +282,12 @@ async function reviewExternalArtifact(review, event) {
     '--conversation-id', event.conversationId,
     `--${review.decision.replace('_', '-')}`,
   ];
-  if (review.decision !== 'approve') args.push('--feedback', review.feedback);
+  const input = review.decision === 'approve'
+    ? undefined
+    : JSON.stringify({ feedback: review.feedback });
+  if (input !== undefined) args.push('--private-input-stdin-json');
   args.push('--json');
-  const result = await run(nodeExecutable, runnerArgs(...args));
+  const result = await run(nodeExecutable, runnerArgs(...args), input);
   const parsed = successfulJson(result, 'External Artifact review returned invalid JSON');
   if (
     review.decision === 'request_changes'
@@ -227,6 +309,17 @@ async function reviewExternalArtifact(review, event) {
   }
   const status = parsed?.task?.status || '未知结果';
   return `Artifact ${review.taskId} v${review.version} 验收结果：${status}。`;
+}
+
+async function processMulticaAction(action, event) {
+  const input = JSON.stringify(event);
+  const result = await run(nodeExecutable, runnerArgs(
+    'multica', 'reply', '--stdin-json', '--json',
+  ), input);
+  const parsed = successfulJson(result, 'Multica reply returned invalid JSON');
+  const taskId = parsed?.record?.taskId || action.taskId;
+  const detail = parsed?.step || parsed?.reason || 'unknown';
+  return `Multica 回复 ${taskId}：${parsed?.status || 'unknown'}（${detail}）。`;
 }
 
 function formatRunnerResult(result) {
@@ -254,7 +347,7 @@ async function handleReply() {
     senderUserId,
     conversationId,
     message,
-  } = replyArguments(process.argv.slice(3));
+  } = await replyArguments(process.argv.slice(3));
   const artifactReview = artifactReviewArguments(message);
   if (artifactReview !== null) {
     return reviewExternalArtifact(artifactReview, {
@@ -266,6 +359,30 @@ async function handleReply() {
   const recordedTask = await findRecordedDecision(eventId, senderUserId, conversationId);
   if (recordedTask !== null) {
     return continueDecision(recordedTask, recordedTask.lastDecision);
+  }
+  const multicaAction = multicaActionArguments(message);
+  if (multicaAction !== null) {
+    const tasks = await listTasksForActionRouting();
+    const task = tasks.find((candidate) => candidate?.taskId === multicaAction.taskId) ?? null;
+    const legacyDecision = task === null ? null : selectOption(task, message);
+    if (legacyDecision !== null) {
+      return continueDecision(task, {
+        requestId: task.pendingDecision.requestId,
+        responseEventId: eventId,
+        senderUserId,
+        conversationId,
+        selectedOptionId: legacyDecision.id,
+        responseText: message.slice(0, 500),
+      });
+    }
+    if (task?.actionRequest !== null && task?.actionRequest !== undefined) {
+      return processMulticaAction(multicaAction, {
+        eventId,
+        senderUserId,
+        conversationId,
+        message,
+      });
+    }
   }
   const tasks = await listPendingDecisions();
   if (tasks.length === 0) return '当前没有等待决策的 ATL 任务。';

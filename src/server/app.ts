@@ -4,15 +4,19 @@ import fastifyStatic from '@fastify/static';
 import Fastify, { type FastifyInstance } from 'fastify';
 
 import type { RunnerController } from '../runner/runner-controller.js';
+import type { AuthorizeResearchTaskResult } from '../services/authorize-research-task.js';
 import type { ServiceContext } from '../services/service-context.js';
 import { registerRoutes } from './routes.js';
 
 export interface CreateAppOptions {
   ctx: ServiceContext;
   runner: RunnerController;
+  authorizeResearch: (taskId: string) => Promise<AuthorizeResearchTaskResult>;
   boardOrigin: string;
   environment?: NodeJS.ProcessEnv;
   staticRoot?: string;
+  sourceRoot?: string;
+  locateMovedCandidateSource?: (sourceKey: string) => Promise<string | null>;
 }
 
 export class InvalidBoardOriginError extends Error {
@@ -52,8 +56,13 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
   await registerRoutes(app, {
     ctx: options.ctx,
     runner: options.runner,
+    authorizeResearch: options.authorizeResearch,
     boardOrigin: origin,
     token,
+    ...(options.sourceRoot === undefined ? {} : { sourceRoot: options.sourceRoot }),
+    ...(options.locateMovedCandidateSource === undefined
+      ? {}
+      : { locateMovedCandidateSource: options.locateMovedCandidateSource }),
   });
   if (options.staticRoot !== undefined) {
     await app.register(fastifyStatic, {

@@ -48,6 +48,14 @@ interface PathIdentity {
   ino: number | bigint;
 }
 
+export interface FileVersionIdentity {
+  dev: number | bigint;
+  ino: number | bigint;
+  size: number | bigint;
+  mtimeMs: number | bigint;
+  ctimeMs: number | bigint;
+}
+
 function isWithin(parent: string, target: string): boolean {
   const difference = relative(parent, target);
   return difference === ''
@@ -63,6 +71,16 @@ function sameIdentity(
   right: { dev: number | bigint; ino: number | bigint },
 ): boolean {
   return left.dev === right.dev && left.ino === right.ino;
+}
+
+export function sameFileVersion(
+  left: FileVersionIdentity,
+  right: FileVersionIdentity,
+): boolean {
+  return sameIdentity(left, right)
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs
+    && left.ctimeMs === right.ctimeMs;
 }
 
 function isUnsafePathError(error: unknown): boolean {
@@ -114,6 +132,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 export async function listSafeRegularFiles(
   boundary: StorageReadBoundary,
   pattern: string,
+  options: { includeDotFiles?: boolean } = {},
 ): Promise<string[]> {
   if (await canonicalStorageSubtree(boundary) === null) {
     return [];
@@ -123,6 +142,7 @@ export async function listSafeRegularFiles(
     followSymbolicLinks: false,
     objectMode: true,
     onlyFiles: true,
+    dot: options.includeDotFiles ?? false,
   });
   // Relative object-mode paths preserve literal POSIX backslashes. Absolute
   // fast-glob output normalizes them into separators.
@@ -225,6 +245,9 @@ export async function atomicReplaceSafeTextFile(
   expectedContent: string,
   content: string,
   boundary: StorageReadBoundary,
+  options: {
+    beforeRename?: () => Promise<void>;
+  } = {},
 ): Promise<boolean> {
   const temporaryPath = `${targetPath}.${randomUUID()}.tmp`;
   let targetHandle: FileHandle | undefined;
@@ -295,6 +318,7 @@ export async function atomicReplaceSafeTextFile(
       throw new InvalidStorageEntryError();
     }
 
+    await options.beforeRename?.();
     await rename(temporaryPath, targetPath);
     createdIdentity = undefined;
     return true;

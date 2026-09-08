@@ -97,6 +97,7 @@ describe('createAcceptanceNotifier', () => {
     const notify = createAcceptanceNotifier({
       vaultRoot: context.root,
       profile: 'synthetic-current-profile',
+      robotCode: 'ding-synthetic-atl-bot',
       clock: () => new Date('2026-08-11T02:00:00.000Z'),
       dwsRunner: runner,
     });
@@ -119,9 +120,12 @@ describe('createAcceptanceNotifier', () => {
     ]);
     expect(calls[1]).toEqual(expect.arrayContaining([
       '--profile', 'synthetic-current-profile',
-      '--user', 'synthetic-self-user',
+      'chat', 'message', 'send-by-bot',
+      '--robot-code', 'ding-synthetic-atl-bot',
+      '--users', 'synthetic-self-user',
       '--title', 'ATL 待验收通知',
     ]));
+    expect(calls[1]).not.toContain('send');
     expect(calls[1]?.join('\n')).not.toContain(task.body.trim());
     expect(JSON.parse(await readFile(join(
       context.root,
@@ -198,6 +202,7 @@ describe('createAcceptanceNotifier', () => {
     const notify = createAcceptanceNotifier({
       vaultRoot: context.root,
       profile: 'synthetic-current-profile',
+      robotCode: 'ding-synthetic-atl-bot',
       clock: () => new Date('2026-08-11T02:00:00.000Z'),
       dwsRunner: runner,
     });
@@ -290,6 +295,7 @@ describe('createAcceptanceNotifier', () => {
     const notify = createAcceptanceNotifier({
       vaultRoot: context.root,
       profile: 'synthetic-current-profile',
+      robotCode: 'ding-synthetic-atl-bot',
       dwsRunner: runner,
     });
     const notification = (task: Task) => ({

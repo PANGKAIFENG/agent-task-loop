@@ -102,13 +102,29 @@ function state(overrides: Partial<ContributionDashboardState> = {}): Contributio
       status: 'ready',
       errorCode: null,
       snapshot: {
+        total: 5,
         counts: {
           inbox: 1,
           ready: 1,
           agentExecutable: 1,
           inProgress: 1,
+          waitingForDecision: 0,
           review: 1,
+          done: 0,
           blocked: 0,
+          cancelled: 0,
+          unknown: 0,
+        },
+        agentQueue: {
+          admittedCount: 1,
+          quarantinedCount: 0,
+          admittedTaskIds: ['task-agent'],
+          quarantinedTasks: [],
+        },
+        expiredClaimTaskIds: [],
+        integrityIssues: {
+          unknownStatusTaskIds: [],
+          invalidClaimLeaseTaskIds: [],
         },
         focusTasks: [{
           taskId: 'task-focus',
@@ -116,6 +132,7 @@ function state(overrides: Partial<ContributionDashboardState> = {}): Contributio
           status: 'in_progress',
           reviewState: 'confirmed',
           projectName: 'Agent Task Loop',
+          origin: 'synthetic-view-test',
           priority: 'high',
           updatedAt: '2026-07-20T08:00:00+08:00',
           artifactCount: 0,
@@ -126,6 +143,7 @@ function state(overrides: Partial<ContributionDashboardState> = {}): Contributio
           status: 'inbox',
           reviewState: 'ready_for_confirm',
           projectName: '未归类',
+          origin: 'synthetic-view-test',
           priority: 'normal',
           updatedAt: '2026-07-20T07:00:00+08:00',
           artifactCount: 0,
@@ -136,6 +154,7 @@ function state(overrides: Partial<ContributionDashboardState> = {}): Contributio
           status: 'in_progress',
           reviewState: 'confirmed',
           projectName: 'Agent Task Loop',
+          origin: 'synthetic-view-test',
           priority: 'high',
           updatedAt: '2026-07-20T08:00:00+08:00',
           artifactCount: 0,
@@ -297,57 +316,22 @@ describe('WorkContributionView', () => {
       .toBe('AI每日贡献图');
   });
 
-  it('offers the weekly coach from the focus title bar when no session exists', async () => {
-    const { openWeeklyCoach, view } = setup();
-    await view.onOpen();
-
-    const action = [...view.contentEl.querySelectorAll<HTMLButtonElement>(
-      '.atl-home-focus .atl-home-section-link',
-    )].find((button) => button.textContent?.includes('梳理本周重点'));
-    expect(action).toBeDefined();
-    fireEvent.click(action!);
-    expect(openWeeklyCoach).toHaveBeenCalledOnce();
-  });
-
-  it('offers to continue a saved weekly thinking draft', async () => {
-    const { view } = setup(state(), null, weeklyDraft());
-    await view.onOpen();
-
-    expect(view.contentEl.querySelector('.atl-home-focus .atl-home-section-link')?.textContent)
-      .toContain('继续本周思考');
-    expect(view.contentEl.querySelector('.atl-home-focus')?.textContent)
-      .toContain('CURRENT FOCUS · 系统候选');
-  });
-
-  it('keeps legacy Markdown drafts resumable', async () => {
-    const { view } = setup(state(), weeklyFocus('草稿'));
-    await view.onOpen();
-
-    expect(view.contentEl.querySelector('.atl-home-focus .atl-home-section-link')?.textContent)
-      .toContain('继续本周思考');
-  });
-
-  it('reloads both weekly coach sources after the modal reports a change', async () => {
-    const setupResult = setup(state(), null, weeklyDraft());
+  it.each([
+    ['unstarted', () => setup()],
+    ['saved ATL draft', () => setup(state(), null, weeklyDraft())],
+    ['legacy Markdown draft', () => setup(state(), weeklyFocus('草稿'))],
+  ])('does not expose an ATL weekly coach action when %s', async (_label, createSetup) => {
+    const setupResult = createSetup();
     await setupResult.view.onOpen();
-    setupResult.loadWeeklyFocus.mockResolvedValue(weeklyFocus('已确认'));
-    setupResult.loadWeeklyCoachDraft.mockResolvedValue(null);
 
-    const action = setupResult.view.contentEl.querySelector<HTMLButtonElement>(
-      '.atl-home-focus .atl-home-section-link',
-    );
-    fireEvent.click(action!);
-    const onChanged = setupResult.openWeeklyCoach.mock.calls[0]?.[0];
-    expect(onChanged).toBeDefined();
-    onChanged?.();
-
-    await vi.waitFor(() => {
-      expect(setupResult.loadWeeklyFocus).toHaveBeenCalledTimes(2);
-      expect(setupResult.loadWeeklyCoachDraft).toHaveBeenCalledTimes(2);
-      expect(setupResult.view.contentEl.querySelector(
-        '.atl-home-focus .atl-home-section-link',
-      )?.textContent).toContain('查看本周判断');
-    });
+    const focus = setupResult.view.contentEl.querySelector('.atl-home-focus')!;
+    expect(focus.querySelector('.atl-home-section-link')).toBeNull();
+    expect(focus.querySelectorAll('button')).toHaveLength(1);
+    expect(focus.querySelectorAll('button, a[href], [tabindex]')).toHaveLength(1);
+    expect(setupResult.openWeeklyCoach).not.toHaveBeenCalled();
+    expect(setupResult.loadWeeklyCoachDraft).not.toHaveBeenCalled();
+    fireEvent.click(focus.querySelector<HTMLButtonElement>('.atl-home-focus-card')!);
+    expect(setupResult.openTask).toHaveBeenCalledWith('task-focus');
   });
 
   it('replaces only focus cards with confirmed judgments and opens the weekly record', async () => {
@@ -372,14 +356,29 @@ describe('WorkContributionView', () => {
     expect([...grid?.querySelectorAll('.atl-home-focus-meta-label') ?? []]
       .map((label) => label.textContent)).toContain('为什么是本周');
     expect(focus.textContent).not.toContain('完成真实个人首页');
-    expect(focus.querySelector('.atl-home-section-link')?.textContent)
-      .toContain('查看本周判断');
+    expect(focus.querySelector('.atl-home-section-link')).toBeNull();
+    expect(focus.querySelectorAll('button, a[href], [tabindex]')).toHaveLength(3);
     expect(view.contentEl.textContent).toContain('输入积压');
     expect(view.contentEl.textContent).toContain('系统状态');
 
     fireEvent.click(focus.querySelector<HTMLButtonElement>('.atl-home-focus-card')!);
     expect(openWeeklyFocus).toHaveBeenCalledWith(confirmed.path);
     expect(openTask).not.toHaveBeenCalled();
+  });
+
+  it('keeps a confirmed no-new-focus decision as an explicit non-focusable state', async () => {
+    const confirmed = weeklyFocus('已确认');
+    confirmed.record.input.focuses = [];
+    confirmed.record.input.noNewFocus = true;
+    const { view } = setup(state(), confirmed);
+    await view.onOpen();
+
+    const focus = view.contentEl.querySelector('.atl-home-focus')!;
+    expect(focus.textContent).toContain('CURRENT FOCUS · 用户确认');
+    expect(focus.textContent).toContain('本周暂不新增重点，先完成既有承诺。');
+    expect(focus.textContent).not.toContain('完成真实个人首页');
+    expect(focus.querySelector('.atl-home-section-link')).toBeNull();
+    expect(focus.querySelectorAll('button, a[href], [tabindex]')).toHaveLength(0);
   });
 
   it('keeps the heatmap at 26 weeks while range controls only slice trends', async () => {

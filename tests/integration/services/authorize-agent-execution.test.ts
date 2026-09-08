@@ -6,7 +6,7 @@ import {
   AgentAuthorizationInvalidStateError,
   AgentAuthorizationNotReadyError,
   AgentAuthorizationRecoveryError,
-  authorizeAgentExecution,
+  authorizeLegacyResearchExecution,
 } from '../../../src/services/authorize-agent-execution.js';
 import { captureTask } from '../../../src/services/capture-task.js';
 import { confirmTask } from '../../../src/services/confirm-task.js';
@@ -50,14 +50,14 @@ afterEach(async () => {
   await Promise.all(contexts.splice(0).map(({ cleanup }) => cleanup()));
 });
 
-describe('authorizeAgentExecution', () => {
+describe('authorizeLegacyResearchExecution', () => {
   it('moves a confirmed Ready task to Agent Executable and records authorization', async () => {
     const context = await createTestServiceContext();
     contexts.push(context);
     const ready = await makeReadyTask(context);
     expect(ready).toMatchObject({ status: 'ready', autoExecutable: false });
 
-    const authorized = await authorizeAgentExecution(context.ctx, ready.taskId);
+    const authorized = await authorizeLegacyResearchExecution(context.ctx, ready.taskId);
 
     expect(authorized).toMatchObject({
       taskId: ready.taskId,
@@ -84,7 +84,7 @@ describe('authorizeAgentExecution', () => {
       const ready = await makeReadyTask(context);
       const candidate = await context.ctx.tasks.save({ ...ready, status });
 
-      await expect(authorizeAgentExecution(context.ctx, candidate.taskId))
+      await expect(authorizeLegacyResearchExecution(context.ctx, candidate.taskId))
         .rejects.toBeInstanceOf(AgentAuthorizationInvalidStateError);
       await expect(context.ctx.tasks.get(candidate.taskId)).resolves
         .toMatchObject({ status });
@@ -104,7 +104,7 @@ describe('authorizeAgentExecution', () => {
       permissionProfile: null,
     });
 
-    await expect(authorizeAgentExecution(context.ctx, incomplete.taskId))
+    await expect(authorizeLegacyResearchExecution(context.ctx, incomplete.taskId))
       .rejects.toMatchObject({
         name: 'AgentAuthorizationNotReadyError',
         code: 'task_agent_authorization_not_ready',
@@ -134,7 +134,7 @@ describe('authorizeAgentExecution', () => {
       return saved;
     };
 
-    await expect(authorizeAgentExecution(context.ctx, ready.taskId))
+    await expect(authorizeLegacyResearchExecution(context.ctx, ready.taskId))
       .rejects.toBeInstanceOf(TaskSavedIndexStaleError);
     await expect(context.ctx.tasks.get(ready.taskId)).resolves.toMatchObject({
       status: 'agent_executable',
@@ -151,7 +151,7 @@ describe('authorizeAgentExecution', () => {
     const ready = await makeReadyTask(context);
     vi.spyOn(context.ctx.audit, 'append').mockRejectedValueOnce(new Error('synthetic audit failure'));
 
-    await expect(authorizeAgentExecution(context.ctx, ready.taskId))
+    await expect(authorizeLegacyResearchExecution(context.ctx, ready.taskId))
       .rejects.toBeInstanceOf(AgentAuthorizationAuditFailedError);
     await expect(context.ctx.tasks.get(ready.taskId)).resolves.toEqual(ready);
   });
@@ -170,7 +170,7 @@ describe('authorizeAgentExecution', () => {
       new Error('synthetic audit failure'),
     );
 
-    await expect(authorizeAgentExecution(context.ctx, ready.taskId))
+    await expect(authorizeLegacyResearchExecution(context.ctx, ready.taskId))
       .rejects.toBeInstanceOf(AgentAuthorizationAuditFailedError);
     await expect(context.ctx.tasks.get(ready.taskId)).resolves.toEqual(ready);
   });
@@ -190,7 +190,7 @@ describe('authorizeAgentExecution', () => {
       new Error('synthetic audit failure'),
     );
 
-    await expect(authorizeAgentExecution(context.ctx, ready.taskId))
+    await expect(authorizeLegacyResearchExecution(context.ctx, ready.taskId))
       .rejects.toMatchObject({
         name: 'AgentAuthorizationRecoveryError',
         code: 'task_agent_authorization_recovery_error',

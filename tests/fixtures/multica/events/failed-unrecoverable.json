@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "event_id": "evt-fixture-0003",
+  "atl_task_id": "task-20260820-fixture01",
+  "state": "failed",
+  "summary": "执行器配额耗尽且不可恢复",
+  "decision": null,
+  "recoverability": {
+    "recoverable": false,
+    "resume_condition": "quota resets next cycle",
+    "last_safe_step": "cr dispatch"
+  },
+  "artifact_refs": [],
+  "release": null,
+  "occurred_at": "2026-08-20T12:00:00.000Z"
+}

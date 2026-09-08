@@ -25,6 +25,20 @@ interface TestContextOptions {
       leaseMs?: number;
       clock?: () => Date;
     };
+    taskLock?: {
+      attempts?: number;
+      retryMs?: number;
+      leaseMs?: number;
+      clock?: () => Date;
+    };
+  };
+  projectRepository?: {
+    projectLock?: {
+      attempts?: number;
+      retryMs?: number;
+      leaseMs?: number;
+      clock?: () => Date;
+    };
   };
 }
 
@@ -40,7 +54,7 @@ function serviceContext(root: string, options: TestContextOptions): ServiceConte
   return {
     tasks: new MarkdownTaskRepository(root, options.taskRepository),
     artifacts: new MarkdownArtifactRepository(root),
-    projects: new MarkdownProjectRepository(root),
+    projects: new MarkdownProjectRepository(root, options.projectRepository),
     audit: new FileAuditLog(root, { timeZone: 'Asia/Shanghai' }),
     clock: () => new Date(now),
     id: () => {

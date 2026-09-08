@@ -1,22 +1,38 @@
+import { isAbsolute, relative, resolve } from 'node:path';
+
 import { z } from 'zod';
 
-export const TASK_STATUSES = [
-  'inbox',
-  'ready',
-  'agent_executable',
-  'in_progress',
-  'waiting_for_decision',
-  'review',
-  'done',
-  'blocked',
-  'cancelled',
-] as const;
+import {
+  executionLinkSchema,
+  type ExecutionLink,
+} from './execution-link.js';
+import {
+  actionRequestSchema,
+  type ActionRequest,
+} from './action-request.js';
+import {
+  TASK_STATUSES,
+  type ControlledTaskStatus,
+  type TaskStatus,
+} from './task-status.js';
+import {
+  candidateUnderstandingRevisionSchema,
+  type CandidateUnderstandingRevision,
+} from './candidate-understanding.js';
+
+export { TASK_STATUSES };
+export type { ControlledTaskStatus, TaskStatus };
 
 export const PRIORITIES = ['urgent', 'high', 'normal', 'low'] as const;
 
-export type ControlledTaskStatus = (typeof TASK_STATUSES)[number];
-export type TaskStatus = string;
+export const TASK_TYPES = ['research', 'development'] as const;
+export const PERMISSION_PROFILES = ['read_only_research', 'repo_delivery'] as const;
+export const EXECUTION_TARGETS = ['multica'] as const;
+
 export type Priority = (typeof PRIORITIES)[number];
+export type TaskType = (typeof TASK_TYPES)[number] | null;
+export type PermissionProfile = (typeof PERMISSION_PROFILES)[number] | null;
+export type ExecutionTarget = (typeof EXECUTION_TARGETS)[number] | null;
 
 export interface TaskBrief {
   schemaVersion: 1;
@@ -123,11 +139,22 @@ export interface Task {
   status: TaskStatus;
   reviewState: 'candidate' | 'ready_for_confirm' | 'confirmed';
   projectId: string | null;
-  taskType: 'research' | null;
+  taskType: TaskType;
   objective: string | null;
   acceptanceCriteria: string[];
   autoExecutable: boolean;
-  permissionProfile: 'read_only_research' | null;
+  permissionProfile: PermissionProfile;
+  executionTarget?: ExecutionTarget | null | undefined;
+  contextRefs?: string[] | undefined;
+  executionLink?: ExecutionLink | null | undefined;
+  actionRequest?: ActionRequest | null | undefined;
+  /**
+   * TEP-50 fix 1 (TECH §6 step 2): handled action_requests retained when a
+   * newer event replaced them. The current `actionRequest` is replaceable, so
+   * the durable handled-reply evidence (stream event id + terminal step) lives
+   * on in this history — written in the same task save as the replacement.
+   */
+  handledActionRequests?: ActionRequest[] | undefined;
   origin: string;
   sourceDate: string | null;
   sourceNote: string | null;
@@ -148,6 +175,7 @@ export interface Task {
   pendingDecision?: PendingDecision | null | undefined;
   lastDecision?: DecisionContext | null | undefined;
   taskBrief?: TaskBrief | null | undefined;
+  candidateUnderstanding?: CandidateUnderstandingRevision | null | undefined;
   createdAt: string;
   updatedAt: string;
 }
@@ -161,11 +189,16 @@ export const taskSchema: z.ZodType<Task> = z
     status: taskStatusSchema,
     reviewState: z.enum(['candidate', 'ready_for_confirm', 'confirmed']),
     projectId: z.string().nullable(),
-    taskType: z.literal('research').nullable(),
+    taskType: z.enum(TASK_TYPES).nullable(),
     objective: z.string().nullable(),
     acceptanceCriteria: z.array(z.string()),
     autoExecutable: z.boolean(),
-    permissionProfile: z.literal('read_only_research').nullable(),
+    permissionProfile: z.enum(PERMISSION_PROFILES).nullable(),
+    executionTarget: z.enum(EXECUTION_TARGETS).nullable().optional(),
+    contextRefs: z.array(z.string()).optional(),
+    executionLink: executionLinkSchema.nullable().optional(),
+    actionRequest: actionRequestSchema.nullable().optional(),
+    handledActionRequests: z.array(actionRequestSchema).max(20).optional(),
     origin: z.string(),
     sourceDate: z.string().nullable(),
     sourceNote: z.string().nullable(),
@@ -189,6 +222,7 @@ export const taskSchema: z.ZodType<Task> = z
     pendingDecision: pendingDecisionSchema.nullable().optional(),
     lastDecision: decisionContextSchema.nullable().optional(),
     taskBrief: taskBriefSchema.nullable().optional(),
+    candidateUnderstanding: candidateUnderstandingRevisionSchema.nullable().optional(),
     createdAt: z.string(),
     updatedAt: z.string(),
   })
@@ -207,6 +241,9 @@ export function readinessErrors(task: Task): string[] {
   if (task.projectId === null || task.projectId.trim() === '') {
     errors.push('projectId is required');
   }
+  if (task.sourceKey.trim() === '') {
+    errors.push('sourceKey is required');
+  }
   if (task.taskType !== 'research') {
     errors.push('taskType must be research');
   }
@@ -223,7 +260,8 @@ export function readinessErrors(task: Task): string[] {
 }
 
 export function isDecisionContinuationPending(task: Task): boolean {
-  return task.status === 'agent_executable'
+  return !isExternalExecutionTask(task)
+    && task.status === 'agent_executable'
     && task.reviewState === 'confirmed'
     && task.claim === null
     && task.lastDecision !== null
@@ -232,4 +270,102 @@ export function isDecisionContinuationPending(task: Task): boolean {
     && typeof task.lastDecision.continuationOfRunId === 'string'
     && task.lastDecision.continuationOfRunId.trim() !== ''
     && readinessErrors(task).length === 0;
+}
+
+// PAW-GOAL-003 T1: a task dispatched to an external executor (Multica) is
+// owned by the remote loop; every local execution entry point must exclude
+// it explicitly instead of relying on the research readiness rules.
+export function isExternalExecutionTask(task: Task): boolean {
+  return task.executionTarget === 'multica';
+}
+
+export function taskContextRefs(task: Task): string[] {
+  return task.contextRefs ?? [];
+}
+
+// PAW-GOAL-003 T1 admission contract (PRD 4.1 / Goal AC 2): a development
+// task may only be dispatched when every field-level requirement holds.
+// Missing pieces keep the task undelivered and surface the exact gap.
+export function developmentDispatchErrors(
+  task: Task,
+  allowedLocalRoots: readonly string[] = [],
+): string[] {
+  const errors: string[] = [];
+  if (task.status !== 'agent_executable') {
+    errors.push('status must be agent_executable');
+  }
+  if (task.taskType !== 'development') {
+    errors.push('taskType must be development');
+  }
+  if (task.projectId === null || task.projectId.trim() === '') {
+    errors.push('projectId is required');
+  }
+  if (task.objective === null || task.objective.trim() === '') {
+    errors.push('objective is required');
+  }
+  if (!task.acceptanceCriteria.some((criterion) => criterion.trim() !== '')) {
+    errors.push('acceptanceCriteria requires at least one item');
+  }
+  if (task.permissionProfile !== 'repo_delivery') {
+    errors.push('permissionProfile must be repo_delivery');
+  }
+  if (task.executionTarget !== 'multica') {
+    errors.push('executionTarget must be multica');
+  }
+  const refs = taskContextRefs(task);
+  if (!refs.some((ref) => ref.trim() !== '')) {
+    errors.push('contextRefs requires at least one item');
+  } else {
+    errors.push(...contextRefErrors(refs, allowedLocalRoots));
+  }
+  return errors;
+}
+
+// context_refs only allow repo-relative paths or allowlisted local paths
+// (TECH §2). Traversal segments, absolute roots outside the allowlist, and
+// control characters are rejected with a per-field reason. Absolute refs are
+// canonicalized with path semantics before the containment check, so a
+// written `..` segment can never smuggle a ref outside its allowlisted root
+// (symlink escapes are covered separately by context-ref-resolution.ts).
+function containsControlCharacters(value: string): boolean {
+  return Array.from(value).some((character) => {
+    const code = character.charCodeAt(0);
+    return (code >= 0 && code <= 31) || code === 127;
+  });
+}
+
+function isInsideRoot(root: string, candidate: string): boolean {
+  const rel = relative(resolve(root), resolve(candidate));
+  return rel !== '' && rel !== '..' && !rel.startsWith('../') && !isAbsolute(rel);
+}
+
+export function contextRefErrors(refs: readonly string[], allowedLocalRoots: readonly string[] = []): string[] {
+  const errors: string[] = [];
+  for (const ref of refs) {
+    const trimmed = ref.trim();
+    if (trimmed === '') {
+      errors.push('contextRefs must not contain empty entries');
+      continue;
+    }
+    if (trimmed.length > 300) {
+      errors.push('contextRefs entries must be at most 300 characters');
+      continue;
+    }
+    if (containsControlCharacters(trimmed)) {
+      errors.push('contextRefs entries must not contain control characters');
+      continue;
+    }
+    if (trimmed.startsWith('/')) {
+      const allowed = allowedLocalRoots.some((root) => root !== '' && isInsideRoot(root, trimmed));
+      if (!allowed) {
+        errors.push(`contextRefs entry is outside the allowlist: ${trimmed}`);
+      }
+      continue;
+    }
+    const segments = trimmed.split('/');
+    if (segments.some((segment) => segment === '..' || segment === '.')) {
+      errors.push(`contextRefs entry must not contain traversal segments: ${trimmed}`);
+    }
+  }
+  return errors;
 }

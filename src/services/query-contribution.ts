@@ -49,7 +49,7 @@ export interface QueryContributionInput {
   selectedDate: string;
 }
 
-interface Completion {
+export interface TaskCompletion {
   task: Task;
   date: string;
   event: AuditEvent;
@@ -112,11 +112,11 @@ function taskTitle(task: Task): string {
 }
 
 function completionMap(
-  tasksById: Map<string, Task>,
-  auditEvents: AuditEvent[],
+  tasksById: ReadonlyMap<string, Task>,
+  auditEvents: readonly AuditEvent[],
   formatter: Intl.DateTimeFormat,
-): Map<string, Completion> {
-  const map = new Map<string, Completion>();
+): Map<string, TaskCompletion> {
+  const map = new Map<string, TaskCompletion>();
   auditEvents.forEach((event, order) => {
     if (!isTaskCompletionEvent(event) || event.taskId === undefined) return;
     const task = tasksById.get(event.taskId);
@@ -135,6 +135,19 @@ function completionMap(
   return map;
 }
 
+export function projectTaskCompletions(input: {
+  tasks: readonly Task[];
+  auditEvents: readonly AuditEvent[];
+  timeZone: string;
+}): TaskCompletion[] {
+  const tasksById = new Map(input.tasks.map((task) => [task.taskId, task]));
+  return [...completionMap(
+    tasksById,
+    input.auditEvents,
+    dateFormatter(input.timeZone),
+  ).values()];
+}
+
 function currentStreak(dates: Set<string>, today: string): number {
   let cursor = dates.has(today) ? today : addDays(today, -1);
   let streak = 0;
@@ -150,10 +163,9 @@ export function queryContribution(input: QueryContributionInput): ContributionSn
   const today = localDate(formatter, input.now);
   const length = rangeLength(input.range);
   const firstDate = addDays(today, -(length - 1));
-  const tasksById = new Map(input.tasks.map((task) => [task.taskId, task]));
   const projectsById = new Map(input.projects.map((project) => [project.projectId, project]));
-  const completions = [...completionMap(tasksById, input.auditEvents, formatter).values()];
-  const byDate = new Map<string, Completion[]>();
+  const completions = projectTaskCompletions(input);
+  const byDate = new Map<string, TaskCompletion[]>();
   for (const completion of completions) {
     const values = byDate.get(completion.date) ?? [];
     values.push(completion);
