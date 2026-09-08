@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "event_id": "evt-fixture-0004",
+  "atl_task_id": "task-20260820-fixture01",
+  "state": "release_candidate_ready",
+  "summary": "Fresh CR 已通过，候选绑定不可变 SHA",
+  "decision": null,
+  "recoverability": null,
+  "artifact_refs": ["docs/HANDOFF/PAW-GOAL-003-T2.md"],
+  "release": {
+    "repository": "personal-ai-workbench",
+    "issue": "12",
+    "pr": "13",
+    "head_sha": "bb757f2abbb676e45ecc631d7759885806106727"
+  },
+  "occurred_at": "2026-08-20T13:00:00.000Z"
+}

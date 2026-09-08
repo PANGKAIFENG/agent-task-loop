@@ -5,6 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { assertTransition } from '../../../src/domain/transitions.js';
+import type { Task } from '../../../src/domain/task.js';
 import { captureTask } from '../../../src/services/capture-task.js';
 import {
   confirmTask,
@@ -26,9 +27,13 @@ async function makeContext(): Promise<TestServiceContext> {
   return context;
 }
 
+// The PAW-GOAL-003-V0.5 development fields stay optional in the fixture:
+// the legacy research shape is exactly what the old Required<> contract was.
+type LegacyConfirmInput = Required<Omit<ConfirmTaskInput, 'executionTarget' | 'contextRefs'>>;
+
 function confirmInput(
-  overrides: Partial<Required<ConfirmTaskInput>> = {},
-): Required<ConfirmTaskInput> {
+  overrides: Partial<LegacyConfirmInput> = {},
+): LegacyConfirmInput {
   return {
     projectId: 'project-public-research',
     taskType: 'research',
@@ -627,5 +632,207 @@ describe('confirmTask', () => {
     ]);
     expect((await context.ctx.audit.listForTask(task.taskId))
       .filter(({ event }) => event === 'task.confirmed')).toHaveLength(1);
+  });
+});
+
+describe('confirmTask development declarations (PAW-GOAL-003-V0.5 D1)', () => {
+  function developmentInput(): ConfirmTaskInput {
+    return {
+      projectId: 'project-public-research',
+      taskType: 'development',
+      objective: 'Rebuild the Multica binding from the board.',
+      acceptanceCriteria: ['The board restores the TEP identifier.'],
+      permissionProfile: 'repo_delivery',
+      executionTarget: 'multica',
+      contextRefs: [
+        'docs/TECH/PAW-GOAL-003-multica-execution-bridge-v0.4.md',
+        'apps/agent-task-loop/src/services/reconcile-multica-dispatch.ts',
+      ],
+      priority: 'high',
+    };
+  }
+
+  it('persists a development confirmation as ready + confirmed with all four contract fields', async () => {
+    const context = await makeContext();
+    await createSyntheticProject(context);
+    const task = await captureSyntheticTask(context);
+
+    const confirmed = await confirmTask(
+      context.ctx,
+      task.taskId,
+      developmentInput(),
+    );
+
+    expect(confirmed).toMatchObject({
+      status: 'ready',
+      reviewState: 'confirmed',
+      taskType: 'development',
+      permissionProfile: 'repo_delivery',
+      executionTarget: 'multica',
+      contextRefs: developmentInput().contextRefs,
+      autoExecutable: false,
+    });
+    const reread = await context.ctx.tasks.get(task.taskId);
+    expect(reread).toMatchObject({
+      status: 'ready',
+      executionTarget: 'multica',
+      contextRefs: developmentInput().contextRefs,
+    });
+  });
+
+  it('rejects out-of-bounds context refs before anything is persisted', async () => {
+    const context = await makeContext();
+    await createSyntheticProject(context);
+    const task = await captureSyntheticTask(context);
+    const input = {
+      ...developmentInput(),
+      contextRefs: ['docs/ok.md', '/Users/linctex/private/客户排期.xlsx'],
+    };
+
+    await expect(confirmTask(context.ctx, task.taskId, input)).rejects.toMatchObject({
+      code: 'invalid_confirm_task_input',
+    });
+    const unchanged = await context.ctx.tasks.get(task.taskId);
+    expect(unchanged).toMatchObject({ status: 'inbox' });
+    expect(unchanged.executionTarget).toBeUndefined();
+    expect(unchanged.contextRefs).toBeUndefined();
+  });
+
+  it('rejects traversal refs with the shared per-entry rule', async () => {
+    const context = await makeContext();
+    await createSyntheticProject(context);
+    const task = await captureSyntheticTask(context);
+    const input = {
+      ...developmentInput(),
+      contextRefs: ['docs/../../secrets.md'],
+    };
+
+    await expect(confirmTask(context.ctx, task.taskId, input)).rejects.toMatchObject({
+      code: 'invalid_confirm_task_input',
+    });
+  });
+
+  it('keeps research inputs byte-compatible with the legacy contract', async () => {
+    const context = await makeContext();
+    await createSyntheticProject(context);
+    const task = await captureSyntheticTask(context);
+
+    const confirmed = await confirmTask(context.ctx, task.taskId, confirmInput());
+
+    expect(confirmed).toMatchObject({
+      status: 'ready',
+      taskType: 'research',
+      permissionProfile: 'read_only_research',
+    });
+    expect(confirmed.executionTarget).toBeUndefined();
+    expect(confirmed.contextRefs).toBeUndefined();
+  });
+
+  it('rejects unknown keys under the strict development contract', async () => {
+    const context = await makeContext();
+    const task = await captureSyntheticTask(context);
+    const input = {
+      ...developmentInput(),
+      dispatchNow: true,
+    } as unknown as ConfirmTaskInput;
+
+    await expect(confirmTask(context.ctx, task.taskId, input)).rejects.toMatchObject({
+      code: 'invalid_confirm_task_input',
+    });
+  });
+});
+
+describe('confirmTask development amendments (PRD 4.2 返回表单修正)', () => {
+  function developmentInput(): ConfirmTaskInput {
+    return {
+      projectId: 'project-public-research',
+      taskType: 'development',
+      objective: 'Rebuild the Multica binding from the board.',
+      acceptanceCriteria: ['The board restores the TEP identifier.'],
+      permissionProfile: 'repo_delivery',
+      executionTarget: 'multica',
+      contextRefs: ['docs/TECH/PAW-GOAL-003-multica-execution-bridge-v0.4.md'],
+      priority: 'high',
+    };
+  }
+
+  it('amends an undelivered confirmed development declaration', async () => {
+    const context = await makeContext();
+    await createSyntheticProject(context);
+    const task = await captureSyntheticTask(context);
+    await confirmTask(context.ctx, task.taskId, developmentInput());
+
+    const amended = await confirmTask(context.ctx, task.taskId, {
+      ...developmentInput(),
+      objective: 'Rebuild the binding and keep the board honest.',
+      contextRefs: ['docs/TECH/PAW-GOAL-003-multica-execution-bridge-v0.4.md', 'apps/agent-task-loop/src/cli.ts'],
+    });
+
+    expect(amended).toMatchObject({
+      status: 'ready',
+      reviewState: 'confirmed',
+      objective: 'Rebuild the binding and keep the board honest.',
+      contextRefs: [
+        'docs/TECH/PAW-GOAL-003-multica-execution-bridge-v0.4.md',
+        'apps/agent-task-loop/src/cli.ts',
+      ],
+    });
+  });
+
+  it('refuses to amend once a dispatch intent exists', async () => {
+    const context = await makeContext();
+    await createSyntheticProject(context);
+    const task = await captureSyntheticTask(context);
+    const confirmed = await confirmTask(context.ctx, task.taskId, developmentInput());
+    const withPendingLease: Task = {
+      ...confirmed,
+      executionLink: {
+        schemaVersion: 1,
+        provider: 'multica',
+        idempotencyKey: `atl:${confirmed.taskId}`,
+        workspaceId: '89440e05-518e-4c7e-aa80-0afa2be21196',
+        projectId: 'b70aeddc-4a32-47ed-a288-571f5475634a',
+        issueId: null,
+        issueIdentifier: null,
+        dispatchState: 'pending',
+        remoteState: null,
+        lastCommentId: null,
+        lastEventId: null,
+        summary: null,
+        artifactRefs: [],
+        lastAttemptAt: '2026-08-22T00:00:00.000Z',
+        lastSyncedAt: null,
+      },
+    };
+    await context.ctx.tasks.save(withPendingLease);
+
+    await expect(confirmTask(
+      context.ctx,
+      task.taskId,
+      { ...developmentInput(), objective: 'Late edit.' },
+    )).rejects.toMatchObject({ code: 'task_confirmation_invalid_state' });
+  });
+
+  it('still rejects a confirmed research task re-confirmation', async () => {
+    const context = await makeContext();
+    await createSyntheticProject(context);
+    const task = await captureSyntheticTask(context);
+    await confirmTask(context.ctx, task.taskId, confirmInput());
+
+    await expect(confirmTask(
+      context.ctx,
+      task.taskId,
+      confirmInput({ objective: 'Second pass.' }),
+    )).rejects.toMatchObject({ code: 'task_confirmation_invalid_state' });
+  });
+
+  it('rejects invalid context refs even on a research-shaped input', async () => {
+    const context = await makeContext();
+    const task = await captureSyntheticTask(context);
+
+    await expect(confirmTask(context.ctx, task.taskId, {
+      ...confirmInput(),
+      contextRefs: ['docs/../../secrets.md'],
+    } as ConfirmTaskInput)).rejects.toMatchObject({ code: 'invalid_confirm_task_input' });
   });
 });

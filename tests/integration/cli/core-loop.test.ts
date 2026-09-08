@@ -15,9 +15,16 @@ import { execa } from 'execa';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { Task } from '../../../src/domain/task.js';
+import { authorizeLegacyResearchExecution } from '../../../src/services/authorize-agent-execution.js';
+import type { ServiceContext } from '../../../src/services/service-context.js';
+import { FileAuditLog } from '../../../src/storage/audit-log.js';
+import { MarkdownArtifactRepository } from '../../../src/storage/markdown-artifact-repository.js';
+import { MarkdownProjectRepository } from '../../../src/storage/markdown-project-repository.js';
+import { MarkdownTaskRepository } from '../../../src/storage/markdown-task-repository.js';
 
 const repositoryRoot = process.cwd();
 const cli = join(repositoryRoot, 'src', 'cli.ts');
+const tsx = join(repositoryRoot, 'node_modules', '.bin', 'tsx');
 const temporaryRoots: string[] = [];
 
 interface CliResult {
@@ -38,7 +45,7 @@ async function runCli(
   extraEnv: Record<string, string | undefined> = {},
   input?: string,
 ): Promise<CliResult> {
-  const result = await execa('pnpm', ['exec', 'tsx', cli, ...args], {
+  const result = await execa(tsx, [cli, ...args], {
     cwd: repositoryRoot,
     env: {
       ATL_VAULT_ROOT: root,
@@ -92,12 +99,16 @@ async function createProject(root: string): Promise<void> {
   expect(json<{ projectId: string }>(result).projectId).toBe('public-research');
 }
 
-async function captureTask(root: string, sourceKey = 'manual:cli:001'): Promise<Task> {
+async function captureTask(
+  root: string,
+  sourceKey = 'manual:cli:001',
+  title = 'Review public pricing',
+): Promise<Task> {
   const result = await runCli(root, [
     'task',
     'capture',
     '--title',
-    'Review public pricing',
+    title,
     '--body',
     'Compare the public pricing page.',
     '--origin',
@@ -135,10 +146,20 @@ async function confirmTask(root: string, taskId: string): Promise<void> {
   });
 }
 
-async function authorizeAgent(root: string, taskId: string): Promise<Task> {
-  return json<Task>(await runCli(root, [
-    'task', 'authorize-agent', '--task-id', taskId, '--json',
-  ]));
+async function authorizeLegacyLocalFixture(root: string, taskId: string): Promise<Task> {
+  const context: ServiceContext = {
+    tasks: new MarkdownTaskRepository(root),
+    artifacts: new MarkdownArtifactRepository(root),
+    projects: new MarkdownProjectRepository(root),
+    audit: new FileAuditLog(root, { timeZone: 'Asia/Shanghai' }),
+    clock: () => new Date(),
+    id: () => 'unused-local-fixture-id',
+  };
+  const task = await context.tasks.get(taskId);
+  const localTask = { ...task };
+  delete localTask.executionTarget;
+  await context.tasks.save(localTask);
+  return authorizeLegacyResearchExecution(context, taskId);
 }
 
 afterEach(async () => {
@@ -157,6 +178,9 @@ describe('atl CLI core loop', () => {
     expect(help.stdout).toContain('install');
     expect(help.stdout).toContain('status');
     expect(help.stdout).toContain('uninstall');
+    expect(help.stdout).toContain('install-dingtalk-stream');
+    expect(help.stdout).toContain('status-dingtalk-stream');
+    expect(help.stdout).toContain('uninstall-dingtalk-stream');
 
     const status = await runCli(root, ['scheduler', 'status', '--json'], {
       HOME: home,
@@ -170,6 +194,23 @@ describe('atl CLI core loop', () => {
         'Library',
         'LaunchAgents',
         'ai.agent-task-loop.runner.plist',
+      ),
+    });
+
+    const streamStatus = await runCli(
+      root,
+      ['scheduler', 'status-dingtalk-stream', '--json'],
+      { HOME: home },
+    );
+    expect(json(streamStatus)).toMatchObject({
+      installed: false,
+      managed: false,
+      label: null,
+      path: join(
+        await realpath(home),
+        'Library',
+        'LaunchAgents',
+        'ai.agent-task-loop.dingtalk-stream.plist',
       ),
     });
     await expect(stat(join(home, 'Library')))
@@ -401,7 +442,7 @@ describe('atl CLI core loop', () => {
     expect(result.stderr).toBe("Error: unknown option '--unknown'");
   });
 
-  it('runs capture, confirmation, supervised claim, submission and approval to Archive', async () => {
+  it('runs the explicit legacy local fixture through claim, submission and approval', async () => {
     const root = await makeVault();
     await createProject(root);
     const captured = await captureTask(root);
@@ -420,10 +461,10 @@ describe('atl CLI core loop', () => {
     expect(unauthorizedClaim.exitCode).toBe(1);
     expect(JSON.parse(unauthorizedClaim.stdout)).toMatchObject({
       ok: false,
-      error: { code: 'task_not_eligible_for_claim' },
+      error: { code: 'task_claim_external_execution' },
     });
 
-    const authorized = await authorizeAgent(root, captured.taskId);
+    const authorized = await authorizeLegacyLocalFixture(root, captured.taskId);
     expect(authorized).toMatchObject({
       status: 'agent_executable',
       autoExecutable: true,
@@ -595,7 +636,7 @@ describe('atl CLI core loop', () => {
     await createProject(root);
     const first = await captureTask(root, 'manual:cli:stop');
     await confirmTask(root, first.taskId);
-    await authorizeAgent(root, first.taskId);
+    await authorizeLegacyLocalFixture(root, first.taskId);
     await runCli(root, [
       'task', 'next', '--claim', '--task-id', first.taskId,
       '--run-id', 'run-stop', '--json',
@@ -606,7 +647,7 @@ describe('atl CLI core loop', () => {
     expect(stopped.status).toBe('ready');
     expect(stopped.autoExecutable).toBe(false);
 
-    await authorizeAgent(root, first.taskId);
+    await authorizeLegacyLocalFixture(root, first.taskId);
     await runCli(root, [
       'task', 'next', '--claim', '--task-id', first.taskId,
       '--run-id', 'run-stop-done', '--json',
@@ -629,9 +670,15 @@ describe('atl CLI core loop', () => {
     ]));
     expect(approved.status).toBe('done');
 
-    const second = await captureTask(root, 'manual:cli:block');
+    const second = await captureTask(
+      root,
+      'manual:cli:block',
+      // Issue #3: a fuzzy duplicate of the first task would be quarantined
+      // from the agent queue; this test exercises lifecycle adapters.
+      'Schedule follow-up interviews',
+    );
     await confirmTask(root, second.taskId);
-    await authorizeAgent(root, second.taskId);
+    await authorizeLegacyLocalFixture(root, second.taskId);
     await runCli(root, [
       'task', 'next', '--claim', '--task-id', second.taskId,
       '--run-id', 'run-block', '--json',

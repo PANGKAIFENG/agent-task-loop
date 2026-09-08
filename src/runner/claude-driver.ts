@@ -386,12 +386,15 @@ function buildPrompt(
     '- If the task can be completed with the allowed context and public sources, return a research result.',
     '- If a user decision or authorization is required before continuing, return a decision_request with a stable request ID and concrete options.',
     '- Do not invent a decision or perform any action that requires user authorization.',
+    '- When the context includes a Latest User Decision, treat it as the authoritative continuation instruction and execute the selected option.',
+    '- Do not request another decision merely to choose an analysis, presentation, or verification approach that is already allowed by the selected option and permission profile.',
     '- Every task acceptance criterion must have an explicit acceptance response.',
     '- Evidence URLs must use HTTPS.',
     '- The result always requires human review and must not mark the task complete.',
     '',
     'Output contract:',
     JSON.stringify(claudeResearchJsonSchema),
+    'The final response must be exactly one valid JSON object matching the output contract. Do not include Markdown, headings, tables, code fences, commentary, or any text before or after the JSON object.',
     'Return only the structured result required by the output contract.',
   ].join('\n');
 }
@@ -411,7 +414,20 @@ function extractStructuredOutput(envelope: unknown): unknown {
       try {
         parsed = JSON.parse(result);
       } catch {
-        throw new ClaudeDriverError('invalid_claude_json');
+        // Claude may add a short explanation before or after the JSON block,
+        // even when --json-schema is enabled. Keep the parser strict about
+        // the fenced payload while allowing that surrounding text.
+        const fenced = /```json[ \t]*\r?\n([\s\S]*?)\r?\n```/i.exec(
+          result,
+        );
+        if (fenced?.[1] === undefined) {
+          throw new ClaudeDriverError('invalid_claude_json');
+        }
+        try {
+          parsed = JSON.parse(fenced[1].trim());
+        } catch {
+          throw new ClaudeDriverError('invalid_claude_json');
+        }
       }
       return extractStructuredOutput(parsed);
     }

@@ -49,6 +49,7 @@ describe('queryPersonalHome', () => {
   it('builds status counts and prioritizes active work without exposing private content', () => {
     const snapshot = queryPersonalHome({
       projects,
+      now: new Date('2026-07-21T00:00:00.000Z'),
       tasks: [
         task({ taskId: 'inbox', title: 'Inbox', status: 'inbox' }),
         task({ taskId: 'ready', title: 'Ready', status: 'ready', priority: 'urgent' }),
@@ -72,17 +73,30 @@ describe('queryPersonalHome', () => {
       ],
     });
 
+    // Issue #3 unified counting: counts are RAW workflow status counts that
+    // sum to total; queue admission is reported separately in agentQueue.
     expect(snapshot.counts).toEqual({
       inbox: 1,
       ready: 1,
       agentExecutable: 1,
       inProgress: 1,
+      waitingForDecision: 0,
       review: 1,
+      done: 1,
       blocked: 1,
+      cancelled: 0,
+      unknown: 0,
     });
+    expect(snapshot.total).toBe(7);
+    expect(snapshot.agentQueue.admittedTaskIds).toEqual([]);
+    expect(snapshot.agentQueue.admittedCount).toBe(0);
+    expect(snapshot.agentQueue.quarantinedTasks).toEqual([
+      { taskId: 'agent-executable', reasons: ['unconfirmed', 'not_ready', 'orphan_task'] },
+    ]);
+    // Quarantined agent tasks are not actionable focus work (P1-2): only
+    // admitted agent tasks may appear in focusTasks / nextAction.
     expect(snapshot.focusTasks.map(({ taskId }) => taskId)).toEqual([
       'active',
-      'agent-executable',
       'ready',
     ]);
     expect(snapshot.nextAction?.taskId).toBe('active');
@@ -92,6 +106,7 @@ describe('queryPersonalHome', () => {
       status: 'in_progress',
       reviewState: 'candidate',
       projectName: 'Agent Task Loop',
+      origin: 'manual',
       priority: 'low',
       updatedAt: '2026-07-20T00:00:00.000Z',
       artifactCount: 1,
@@ -108,7 +123,7 @@ describe('queryPersonalHome', () => {
       updatedAt: `2026-07-${String(10 + index).padStart(2, '0')}T00:00:00.000Z`,
     }));
 
-    const snapshot = queryPersonalHome({ projects, tasks });
+    const snapshot = queryPersonalHome({ projects, tasks, now: new Date('2026-07-21T00:00:00.000Z') });
 
     expect(snapshot.focusTasks).toHaveLength(5);
     expect(snapshot.inboxTasks).toHaveLength(7);

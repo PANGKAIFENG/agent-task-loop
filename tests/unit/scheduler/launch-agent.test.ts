@@ -11,18 +11,24 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  DINGTALK_STREAM_LAUNCH_AGENT_FILE_NAME,
+  DINGTALK_STREAM_LAUNCH_AGENT_LABEL,
   inspectLaunchAgent,
+  inspectDingTalkStreamLaunchAgent,
+  installDingTalkStreamLaunchAgent,
   inspectLaunchAgentProcess,
   installLaunchAgent,
   kickstartLaunchAgent,
   LAUNCH_AGENT_LABEL,
   type LaunchAgentCommandAdapter,
   renderLaunchAgent,
+  renderDingTalkStreamLaunchAgent,
+  uninstallDingTalkStreamLaunchAgent,
   uninstallLaunchAgent,
 } from '../../../src/scheduler/launch-agent.js';
 
@@ -38,19 +44,42 @@ async function fixture() {
   const claudeConfigDir = join(root, 'claude config');
   const claudeBinary = join(root, "claude's bin");
   const cliPath = join(repositoryRoot, 'build', 'server', 'cli.js');
+  const sourcePackagedStream = join(
+    repositoryRoot,
+    'build',
+    'obsidian-plugin',
+    'atl-dingtalk-stream.mjs',
+  );
+  const sourcePackagedBridge = join(
+    repositoryRoot,
+    'build',
+    'obsidian-plugin',
+    'atl-dingtalk-bridge.mjs',
+  );
   const packagedRunner = join(root, 'plugin', 'atl-runner.mjs');
+  const packagedStream = join(root, 'plugin', 'atl-dingtalk-stream.mjs');
+  const packagedBridge = join(root, 'plugin', 'atl-dingtalk-bridge.mjs');
+  const dwsExecutable = join(root, 'bin', 'dws');
   await Promise.all([
     mkdir(home, { recursive: true }),
     mkdir(join(repositoryRoot, 'build', 'server'), { recursive: true }),
+    mkdir(join(repositoryRoot, 'build', 'obsidian-plugin'), { recursive: true }),
     mkdir(vaultRoot, { recursive: true }),
     mkdir(allowedRoot, { recursive: true }),
     mkdir(claudeConfigDir, { recursive: true }),
     mkdir(join(root, 'plugin'), { recursive: true }),
+    mkdir(join(root, 'bin'), { recursive: true }),
   ]);
   await writeFile(cliPath, '#!/usr/bin/env node\n', 'utf8');
+  await writeFile(sourcePackagedStream, '#!/usr/bin/env node\n', 'utf8');
+  await writeFile(sourcePackagedBridge, '#!/usr/bin/env node\n', 'utf8');
   await writeFile(packagedRunner, '#!/usr/bin/env node\n', 'utf8');
+  await writeFile(packagedStream, '#!/usr/bin/env node\n', 'utf8');
+  await writeFile(packagedBridge, '#!/usr/bin/env node\n', 'utf8');
+  await writeFile(dwsExecutable, '#!/bin/sh\n', 'utf8');
   await writeFile(claudeBinary, '#!/bin/sh\n', 'utf8');
   await chmod(claudeBinary, 0o700);
+  await chmod(dwsExecutable, 0o700);
   return {
     root,
     home,
@@ -60,7 +89,12 @@ async function fixture() {
     claudeConfigDir,
     claudeBinary,
     cliPath,
+    sourcePackagedStream,
+    sourcePackagedBridge,
     packagedRunner,
+    packagedStream,
+    packagedBridge,
+    dwsExecutable,
   };
 }
 
@@ -89,7 +123,11 @@ function renderOptions(paths: Awaited<ReturnType<typeof fixture>>) {
       ATL_CLAUDE_BIN: paths.claudeBinary,
       ATL_CLAUDE_CONFIG_DIR: paths.claudeConfigDir,
       ATL_CLAUDE_MODEL: 'glm-4-flash',
-      ATL_DINGTALK_PROFILE: 'synthetic-current-profile',
+      ATL_DINGTALK_PROFILE: 'ding-synthetic-corp:synthetic-user-001',
+      ATL_DINGTALK_ROBOT_CODE: 'ding-synthetic-atl-bot',
+      ATL_DINGTALK_UNIFIED_APP_ID: '11111111-2222-4333-8444-555555555555',
+      ATL_DINGTALK_TRUSTED_CONVERSATION_ID: 'cid-synthetic-direct-chat',
+      ATL_DWS_EXECUTABLE: paths.dwsExecutable,
       ATL_ALLOWED_LOCAL_ROOTS: paths.allowedRoot,
     },
     homeDirectory: paths.home,
@@ -213,10 +251,18 @@ describe('renderLaunchAgent', () => {
       ATL_CLAUDE_BIN: canonical.claudeBinary,
       ATL_CLAUDE_CONFIG_DIR: canonical.claudeConfigDir,
       ATL_CLAUDE_MODEL: 'glm-4-flash',
-      ATL_DINGTALK_PROFILE: 'synthetic-current-profile',
+      ATL_DINGTALK_PROFILE: 'ding-synthetic-corp:synthetic-user-001',
+      ATL_DINGTALK_ROBOT_CODE: 'ding-synthetic-atl-bot',
+      ATL_DWS_EXECUTABLE: await realpath(paths.dwsExecutable),
       ATL_ALLOWED_LOCAL_ROOTS: canonical.allowedRoot,
       HOME: canonical.home,
-      PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
+      PATH: [
+        dirname(await realpath(process.execPath)),
+        '/usr/bin',
+        '/bin',
+        '/usr/sbin',
+        '/sbin',
+      ].join(delimiter),
     });
 
     expect(rendered.plist).toContain('<string>ai.agent-task-loop.runner</string>');
@@ -250,6 +296,31 @@ describe('renderLaunchAgent', () => {
     })).rejects.toThrow('ATL_DINGTALK_PROFILE');
   });
 
+  it.each(['bad code', 'abc', 'ding\nrobot'])(
+    'rejects an invalid DingTalk robot code: %j',
+    async (robotCode) => {
+      const paths = await fixture();
+      await expect(renderLaunchAgent({
+        ...renderOptions(paths),
+        environment: {
+          ...renderOptions(paths).environment,
+          ATL_DINGTALK_ROBOT_CODE: robotCode,
+        },
+      })).rejects.toThrow('ATL_DINGTALK_ROBOT_CODE');
+    },
+  );
+
+  it('requires an explicit DWS executable when DingTalk notifications are enabled', async () => {
+    const paths = await fixture();
+    const environment: NodeJS.ProcessEnv = { ...renderOptions(paths).environment };
+    delete environment.ATL_DWS_EXECUTABLE;
+
+    await expect(renderLaunchAgent({
+      ...renderOptions(paths),
+      environment,
+    })).rejects.toThrow('ATL_DWS_EXECUTABLE');
+  });
+
   it('rejects rendering outside Asia/Shanghai before resolving runtime paths', async () => {
     await expect(renderLaunchAgent({
       environment: {},
@@ -278,6 +349,226 @@ describe('renderLaunchAgent', () => {
       'claude',
     ]);
     expect(rendered.workingDirectory).toBe(join(await realpath(paths.root), 'plugin'));
+  });
+
+  it('infers the packaged runner from the invoked CLI entry', async () => {
+    const paths = await fixture();
+    const rendered = await renderLaunchAgent({
+      environment: renderOptions(paths).environment,
+      homeDirectory: paths.home,
+      nodeExecutable: process.execPath,
+      processArguments: [process.execPath, paths.packagedRunner],
+      systemTimeZone: () => 'Asia/Shanghai',
+    });
+
+    expect(rendered.programArguments[1]).toBe(await realpath(paths.packagedRunner));
+    expect(rendered.workingDirectory).toBe(join(await realpath(paths.root), 'plugin'));
+  });
+});
+
+describe('DingTalk Stream LaunchAgent', () => {
+  it('resolves release artifacts from a repository CLI build', async () => {
+    const paths = await fixture();
+    const rendered = await renderDingTalkStreamLaunchAgent({
+      ...renderOptions(paths),
+      dwsExecutable: paths.dwsExecutable,
+    });
+
+    expect(rendered.programArguments).toEqual([
+      await realpath(process.execPath),
+      await realpath(paths.sourcePackagedStream),
+    ]);
+    expect(rendered.environmentVariables).toMatchObject({
+      ATL_DINGTALK_BRIDGE_ENTRY: await realpath(paths.sourcePackagedBridge),
+      ATL_RUNNER_ENTRY: await realpath(paths.cliPath),
+    });
+    expect(rendered.workingDirectory).toBe(await realpath(paths.repositoryRoot));
+  });
+
+  it('renders an independently supervised, secret-free stream listener', async () => {
+    const paths = await fixture();
+    const rendered = await renderDingTalkStreamLaunchAgent({
+      ...renderOptions(paths),
+      runnerEntry: paths.packagedRunner,
+      streamEntry: paths.packagedStream,
+      bridgeEntry: paths.packagedBridge,
+      dwsExecutable: paths.dwsExecutable,
+      environment: {
+        ...renderOptions(paths).environment,
+        DINGTALK_APP_SECRET: 'SECRET_SENTINEL',
+      },
+    });
+
+    expect(rendered.label).toBe(DINGTALK_STREAM_LAUNCH_AGENT_LABEL);
+    expect(rendered.programArguments).toEqual([
+      await realpath(process.execPath),
+      await realpath(paths.packagedStream),
+    ]);
+    expect(rendered.workingDirectory).toBe(join(await realpath(paths.root), 'plugin'));
+    expect(rendered.environmentVariables).toMatchObject({
+      ATL_DINGTALK_UNIFIED_APP_ID: '11111111-2222-4333-8444-555555555555',
+      ATL_DINGTALK_TRUSTED_CONVERSATION_ID: 'cid-synthetic-direct-chat',
+      ATL_DINGTALK_TRUSTED_SENDER_USER_ID: 'synthetic-user-001',
+      ATL_DINGTALK_BRIDGE_ENTRY: await realpath(paths.packagedBridge),
+      ATL_DWS_EXECUTABLE: await realpath(paths.dwsExecutable),
+      ATL_RUNNER_ENTRY: await realpath(paths.packagedRunner),
+    });
+    expect(rendered.plist).toContain('<string>ai.agent-task-loop.dingtalk-stream</string>');
+    expect(rendered.plist).toContain('<key>RunAtLoad</key>\n  <true/>');
+    expect(rendered.plist).toContain('<key>KeepAlive</key>\n  <true/>');
+    expect(rendered.plist).toContain('<key>ThrottleInterval</key>\n  <integer>15</integer>');
+    expect(rendered.plist).not.toContain('StartInterval');
+    expect(rendered.plist).not.toContain('SECRET_SENTINEL');
+    expect(rendered.plist).not.toContain('DINGTALK_APP_SECRET');
+  });
+
+  it('installs, inspects, and uninstalls only its fixed managed label', async () => {
+    const paths = await fixture();
+    const commands = commandRecorder();
+    const options = {
+      ...renderOptions(paths),
+      runnerEntry: paths.packagedRunner,
+      streamEntry: paths.packagedStream,
+      bridgeEntry: paths.packagedBridge,
+      dwsExecutable: paths.dwsExecutable,
+      commandAdapter: commands.adapter,
+      uid: 501,
+    };
+
+    await expect(installDingTalkStreamLaunchAgent(options)).resolves.toMatchObject({
+      installed: true,
+      managed: true,
+      label: DINGTALK_STREAM_LAUNCH_AGENT_LABEL,
+    });
+    await expect(inspectDingTalkStreamLaunchAgent({
+      homeDirectory: paths.home,
+    })).resolves.toMatchObject({
+      installed: true,
+      managed: true,
+      label: DINGTALK_STREAM_LAUNCH_AGENT_LABEL,
+    });
+    await expect(uninstallDingTalkStreamLaunchAgent({
+      homeDirectory: paths.home,
+      commandAdapter: commands.adapter,
+      uid: 501,
+    })).resolves.toMatchObject({
+      installed: false,
+      managed: true,
+      label: DINGTALK_STREAM_LAUNCH_AGENT_LABEL,
+    });
+  });
+
+  it('reinstalls when a managed Stream plist exists but its service is not loaded', async () => {
+    const paths = await fixture();
+    const launchAgents = join(paths.home, 'Library', 'LaunchAgents');
+    const path = join(launchAgents, DINGTALK_STREAM_LAUNCH_AGENT_FILE_NAME);
+    const previous = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<plist version="1.0"><dict>',
+      `<key>Label</key><string>${DINGTALK_STREAM_LAUNCH_AGENT_LABEL}</string>`,
+      '</dict></plist>',
+    ].join('\n');
+    const calls: Array<{ command: string; args: readonly string[] }> = [];
+    const adapter: LaunchAgentCommandAdapter = {
+      async execute(command, args) {
+        calls.push({ command, args });
+        if (args[0] === 'bootout') {
+          throw new Error(
+            'Boot-out failed: 5: Input/output error',
+          );
+        }
+        return { stdout: '', stderr: '' };
+      },
+    };
+    await mkdir(launchAgents, { recursive: true });
+    await writeFile(path, previous, { mode: 0o600 });
+
+    await expect(installDingTalkStreamLaunchAgent({
+      ...renderOptions(paths),
+      runnerEntry: paths.packagedRunner,
+      streamEntry: paths.packagedStream,
+      bridgeEntry: paths.packagedBridge,
+      dwsExecutable: paths.dwsExecutable,
+      commandAdapter: adapter,
+      uid: 501,
+    })).resolves.toMatchObject({
+      installed: true,
+      managed: true,
+      label: DINGTALK_STREAM_LAUNCH_AGENT_LABEL,
+    });
+
+    expect(calls).toEqual([
+      { command: '/usr/bin/plutil', args: ['-lint', await realpath(path)] },
+      { command: '/bin/launchctl', args: ['bootout', 'gui/501', await realpath(path)] },
+      { command: '/bin/launchctl', args: ['bootstrap', 'gui/501', await realpath(path)] },
+    ]);
+  });
+
+  it('refuses to replace a different Label at the fixed Stream path', async () => {
+    const paths = await fixture();
+    const commands = commandRecorder();
+    const launchAgents = join(paths.home, 'Library', 'LaunchAgents');
+    const path = join(launchAgents, DINGTALK_STREAM_LAUNCH_AGENT_FILE_NAME);
+    const existing = '<plist><dict><key>Label</key><string>user.job</string></dict></plist>';
+    await mkdir(launchAgents, { recursive: true });
+    await writeFile(path, existing, { mode: 0o600 });
+
+    await expect(installDingTalkStreamLaunchAgent({
+      ...renderOptions(paths),
+      runnerEntry: paths.packagedRunner,
+      streamEntry: paths.packagedStream,
+      bridgeEntry: paths.packagedBridge,
+      dwsExecutable: paths.dwsExecutable,
+      commandAdapter: commands.adapter,
+      uid: 501,
+    })).rejects.toThrow('different Label');
+
+    expect(commands.calls).toEqual([]);
+    expect(await readFile(path, 'utf8')).toBe(existing);
+  });
+
+  it('restores and reloads the previous Stream service when an update fails', async () => {
+    const paths = await fixture();
+    const launchAgents = join(paths.home, 'Library', 'LaunchAgents');
+    const path = join(launchAgents, DINGTALK_STREAM_LAUNCH_AGENT_FILE_NAME);
+    const previous = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<plist version="1.0"><dict>',
+      `<key>Label</key><string>${DINGTALK_STREAM_LAUNCH_AGENT_LABEL}</string>`,
+      '<key>Previous</key><true/>',
+      '</dict></plist>',
+    ].join('\n');
+    const calls: Array<{ command: string; args: readonly string[] }> = [];
+    let bootstrapAttempts = 0;
+    const adapter: LaunchAgentCommandAdapter = {
+      async execute(command, args) {
+        calls.push({ command, args });
+        if (args[0] === 'bootstrap' && bootstrapAttempts++ === 0) {
+          throw new Error('new Stream bootstrap failed');
+        }
+        return { stdout: '', stderr: '' };
+      },
+    };
+    await mkdir(launchAgents, { recursive: true });
+    await writeFile(path, previous, { mode: 0o600 });
+
+    await expect(installDingTalkStreamLaunchAgent({
+      ...renderOptions(paths),
+      runnerEntry: paths.packagedRunner,
+      streamEntry: paths.packagedStream,
+      bridgeEntry: paths.packagedBridge,
+      dwsExecutable: paths.dwsExecutable,
+      commandAdapter: adapter,
+      uid: 501,
+    })).rejects.toThrow('new Stream bootstrap failed');
+
+    expect(await readFile(path, 'utf8')).toBe(previous);
+    expect(calls).toEqual([
+      { command: '/usr/bin/plutil', args: ['-lint', await realpath(path)] },
+      { command: '/bin/launchctl', args: ['bootout', 'gui/501', await realpath(path)] },
+      { command: '/bin/launchctl', args: ['bootstrap', 'gui/501', await realpath(path)] },
+      { command: '/bin/launchctl', args: ['bootstrap', 'gui/501', await realpath(path)] },
+    ]);
   });
 });
 

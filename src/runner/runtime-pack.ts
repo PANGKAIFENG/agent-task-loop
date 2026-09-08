@@ -6,6 +6,7 @@ import type { Task } from '../domain/task.js';
 import { redactSecrets } from '../security/redact-secrets.js';
 import {
   atomicCreateTextFile,
+  listSafeRegularFiles,
   readSafeTextFile,
   type StorageReadBoundary,
 } from '../storage/file-io.js';
@@ -19,6 +20,10 @@ import {
 export interface RuntimePackBlock {
   label: string;
   kind: ContextBundle['blocks'][number]['kind'];
+  category: ContextBundle['blocks'][number]['category'];
+  sourceRef: string;
+  version: string | null;
+  readRef: string;
   sha256: string;
 }
 
@@ -42,6 +47,8 @@ export interface RuntimePack {
   permissionProfile: Task['permissionProfile'];
   executionProfile: ExecutionProfile;
   executionProfileSha256: string;
+  contextManifestId: string | null;
+  contextManifestSha256: string | null;
   contextGaps: string[];
   expiresAt: string;
   blocks: RuntimePackBlock[];
@@ -54,13 +61,23 @@ export interface PersistRuntimePackResult {
   pack: RuntimePack;
 }
 
+export interface PersistedRuntimePackEvidence {
+  pack: RuntimePack;
+  sha256: string;
+}
+
 export interface PersistRuntimePackOptions {
   task: Task;
   project: Project;
   context: ContextBundle;
   executionProfile: ExecutionProfile;
+  contextManifest?: {
+    manifestId: string;
+    sha256: string;
+  };
   asOf: string;
   expiresAt: string;
+  continuationOfRunId?: string;
 }
 
 export class RuntimePackConflictError extends Error {
@@ -81,12 +98,105 @@ export class InvalidRuntimePackInputError extends Error {
   }
 }
 
+export class RuntimePackEvidenceError extends Error {
+  readonly code = 'runtime_pack_evidence_invalid';
+
+  constructor() {
+    super('Persisted Runtime Pack evidence is missing, malformed, or ambiguous');
+    this.name = 'RuntimePackEvidenceError';
+  }
+}
+
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
 function stableJson(value: unknown): string {
   return JSON.stringify(value);
+}
+
+function storageKey(pack: Pick<RuntimePack, 'taskId' | 'runId'>): string {
+  return `rpr_${sha256(stableJson({ taskId: pack.taskId, runId: pack.runId })).slice(0, 24)}`;
+}
+
+function packBoundary(runtimeRoot: string): StorageReadBoundary {
+  const directory = join(runtimeRoot, 'context-packs');
+  return {
+    vaultRoot: join(runtimeRoot, '..'),
+    tasksRoot: runtimeRoot,
+    subtree: directory,
+  };
+}
+
+function runtimePackUnsigned(pack: RuntimePack): Omit<RuntimePack, 'packId'> {
+  return Object.fromEntries(
+    Object.entries(pack).filter(([key]) => key !== 'packId'),
+  ) as Omit<RuntimePack, 'packId'>;
+}
+
+export function isValidRuntimePackEvidence(
+  evidence: PersistedRuntimePackEvidence,
+): boolean {
+  try {
+    const { pack } = evidence;
+    if (
+      pack === null
+      || typeof pack !== 'object'
+      || !Array.isArray(pack.blocks)
+      || !Array.isArray(pack.acceptanceCriteria)
+      || !Array.isArray(pack.projectContextRefs)
+      || !Array.isArray(pack.sourceRefs)
+      || !Array.isArray(pack.previousArtifactRefs)
+      || !Array.isArray(pack.allowedSources)
+      || !Array.isArray(pack.forbiddenSources)
+      || !Array.isArray(pack.contextGaps)
+    ) return false;
+    parseSupportedExecutionProfile(pack.executionProfile);
+    const unsigned = runtimePackUnsigned(pack);
+    const expectedPackId = `pack-${sha256(stableJson(unsigned)).slice(0, 24)}`;
+    const expectedDocumentSha = sha256(`${JSON.stringify(pack, null, 2)}\n`);
+    const labels = pack.blocks.map(({ label }) => label);
+    return pack.schemaVersion === 2
+      && pack.packId === expectedPackId
+      && evidence.sha256 === expectedDocumentSha
+      && pack.taskId.trim() !== ''
+      && pack.runId.trim() !== ''
+      && (pack.continuationOfRunId === null || pack.continuationOfRunId.trim() !== '')
+      && pack.contextManifestId !== null
+      && /^cm_[0-9a-f]{24}$/u.test(pack.contextManifestId)
+      && pack.contextManifestSha256 !== null
+      && /^[0-9a-f]{64}$/u.test(pack.contextManifestSha256)
+      && pack.executionProfileSha256 === sha256(stableJson(pack.executionProfile))
+      && new Set(labels).size === labels.length
+      && pack.blocks.every((block) => (
+        block.label.trim() !== ''
+        && block.sourceRef.trim() !== ''
+        && block.readRef.trim() !== ''
+        && /^[0-9a-f]{64}$/u.test(block.sha256)
+      ));
+  } catch {
+    return false;
+  }
+}
+
+function parseRuntimePack(raw: string): PersistedRuntimePackEvidence {
+  try {
+    const pack = JSON.parse(raw) as RuntimePack;
+    const evidence = { pack, sha256: sha256(raw) };
+    if (!isValidRuntimePackEvidence(evidence)) throw new RuntimePackEvidenceError();
+    return evidence;
+  } catch (error) {
+    if (error instanceof RuntimePackEvidenceError) throw error;
+    throw new RuntimePackEvidenceError();
+  }
+}
+
+async function readRuntimePackAt(
+  absolutePath: string,
+  boundary: StorageReadBoundary,
+): Promise<PersistedRuntimePackEvidence | null> {
+  const raw = await readSafeTextFile(absolutePath, boundary);
+  return raw === null ? null : parseRuntimePack(raw);
 }
 
 function sourceRefs(task: Task, project: Project): string[] {
@@ -111,6 +221,13 @@ function createRuntimePack(options: PersistRuntimePackOptions): RuntimePack {
     || !Number.isFinite(Date.parse(options.asOf))
     || !Number.isFinite(Date.parse(options.expiresAt))
     || options.expiresAt !== task.claim.leaseExpiresAt
+    || (
+      options.contextManifest !== undefined
+      && (
+        !/^cm_[0-9a-f]{24}$/u.test(options.contextManifest.manifestId)
+        || !/^[0-9a-f]{64}$/u.test(options.contextManifest.sha256)
+      )
+    )
   ) {
     throw new InvalidRuntimePackInputError();
   }
@@ -122,9 +239,22 @@ function createRuntimePack(options: PersistRuntimePackOptions): RuntimePack {
   const previousArtifactRef = includesPreviousArtifact
     ? task.artifactRefs.at(-1)
     : undefined;
-  const continuationOfRunId = task.lastDecision?.continuationRunId === task.claim.runId
+  const decisionContinuationOfRunId = task.lastDecision?.continuationRunId === task.claim.runId
     ? task.lastDecision.continuationOfRunId ?? null
     : null;
+  if (
+    options.continuationOfRunId !== undefined
+    && (
+      options.continuationOfRunId.trim() === ''
+      || !includesPreviousArtifact
+      || (
+        decisionContinuationOfRunId !== null
+        && decisionContinuationOfRunId !== options.continuationOfRunId
+      )
+    )
+  ) throw new InvalidRuntimePackInputError();
+  const continuationOfRunId = options.continuationOfRunId
+    ?? decisionContinuationOfRunId;
   const unsigned = {
     schemaVersion: 2 as const,
     taskId: task.taskId,
@@ -151,11 +281,25 @@ function createRuntimePack(options: PersistRuntimePackOptions): RuntimePack {
     permissionProfile: task.permissionProfile,
     executionProfile,
     executionProfileSha256: sha256(stableJson(executionProfile)),
+    contextManifestId: options.contextManifest?.manifestId ?? null,
+    contextManifestSha256: options.contextManifest?.sha256 ?? null,
     contextGaps: [],
     expiresAt: options.expiresAt,
-    blocks: context.blocks.map(({ label, kind, sha256: digest }) => ({
+    blocks: context.blocks.map(({
       label,
       kind,
+      category,
+      sourceRef,
+      version,
+      readRef,
+      sha256: digest,
+    }) => ({
+      label,
+      kind,
+      category,
+      sourceRef,
+      version,
+      readRef,
       sha256: digest,
     })),
   };
@@ -181,13 +325,43 @@ export async function persistRuntimePack(
 ): Promise<PersistRuntimePackResult> {
   const pack = createRuntimePack(options);
   const directory = join(runtimeRoot, 'context-packs');
-  const absolutePath = join(directory, `${pack.packId}.json`);
+  const absolutePath = join(directory, `${storageKey(pack)}.json`);
   const content = `${JSON.stringify(pack, null, 2)}\n`;
-  const boundary = {
-    vaultRoot: join(runtimeRoot, '..'),
-    tasksRoot: runtimeRoot,
-    subtree: directory,
-  };
+  const boundary = packBoundary(runtimeRoot);
   await writeImmutableJson(absolutePath, content, boundary);
   return { packId: pack.packId, absolutePath, sha256: sha256(content), pack };
+}
+
+export async function readRuntimePackForRun(
+  runtimeRoot: string,
+  taskId: string,
+  runId: string,
+): Promise<PersistedRuntimePackEvidence | null> {
+  if (taskId.trim() === '' || runId.trim() === '') throw new RuntimePackEvidenceError();
+  const boundary = packBoundary(runtimeRoot);
+  const evidence = await readRuntimePackAt(
+    join(boundary.subtree, `${storageKey({ taskId, runId })}.json`),
+    boundary,
+  );
+  if (
+    evidence !== null
+    && (evidence.pack.taskId !== taskId || evidence.pack.runId !== runId)
+  ) throw new RuntimePackEvidenceError();
+  return evidence;
+}
+
+export async function readRuntimePackById(
+  runtimeRoot: string,
+  packId: string,
+): Promise<PersistedRuntimePackEvidence | null> {
+  if (!/^pack-[0-9a-f]{24}$/u.test(packId)) throw new RuntimePackEvidenceError();
+  const boundary = packBoundary(runtimeRoot);
+  const files = await listSafeRegularFiles(boundary, '*.json');
+  const matches: PersistedRuntimePackEvidence[] = [];
+  for (const path of files) {
+    const evidence = await readRuntimePackAt(path, boundary);
+    if (evidence?.pack.packId === packId) matches.push(evidence);
+  }
+  if (matches.length > 1) throw new RuntimePackEvidenceError();
+  return matches[0] ?? null;
 }

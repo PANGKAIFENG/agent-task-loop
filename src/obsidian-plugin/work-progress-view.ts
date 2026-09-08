@@ -102,6 +102,7 @@ function notificationLabel(
     case 'sent': return `钉钉通知：已发送 · ${formatTime(notification.attemptedAt)}`;
     case 'conflict': return '钉钉通知：定位冲突';
     case 'failed': return `钉钉通知：发送失败（${notification.errorCode ?? 'unknown_error'}）`;
+    case 'unknown': return '钉钉通知：结果不确定，请人工核对';
   }
 }
 

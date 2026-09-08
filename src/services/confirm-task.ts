@@ -1,7 +1,11 @@
 import { z } from 'zod';
 
 import {
+  contextRefErrors,
+  isExternalExecutionTask,
   PRIORITIES,
+  TASK_TYPES,
+  PERMISSION_PROFILES,
   type Priority,
   type Task,
 } from '../domain/task.js';
@@ -12,10 +16,18 @@ import type { ServiceContext } from './service-context.js';
 
 export interface ConfirmTaskInput {
   projectId?: string;
-  taskType?: 'research';
+  taskType?: (typeof TASK_TYPES)[number];
   objective?: string;
   acceptanceCriteria?: string[];
-  permissionProfile?: 'read_only_research';
+  permissionProfile?: (typeof PERMISSION_PROFILES)[number];
+  /**
+   * PAW-GOAL-003-V0.5 D1 (PRD 4.1): a development declaration carries the
+   * dispatch contract — external execution target and repo-relative context
+   * refs. Research inputs never set these fields, so old callers are
+   * unaffected.
+   */
+  executionTarget?: 'multica';
+  contextRefs?: string[];
   priority: Priority;
 }
 
@@ -69,10 +81,12 @@ export class TaskConfirmationRecoveryError extends Error {
 const confirmTaskInputSchema = z
   .object({
     projectId: z.string().max(200).optional(),
-    taskType: z.literal('research').optional(),
+    taskType: z.enum(TASK_TYPES).optional(),
     objective: z.string().max(4_000).optional(),
     acceptanceCriteria: z.array(z.string().max(2_000)).max(50).optional(),
-    permissionProfile: z.literal('read_only_research').optional(),
+    permissionProfile: z.enum(PERMISSION_PROFILES).optional(),
+    executionTarget: z.literal('multica').optional(),
+    contextRefs: z.array(z.string().max(300)).max(50).optional(),
     priority: z.enum(PRIORITIES),
   })
   .strict();
@@ -86,12 +100,33 @@ export async function confirmTask(
   if (!parsed.success) {
     throw new InvalidConfirmTaskInputError();
   }
+  // PAW-GOAL-003-V0.5 D1 (PRD 4.1 / cross-module rule 6): context refs may
+  // only persist in the shape the dispatch admission would accept. The
+  // confirmation form surfaces the same per-entry errors before submit; this
+  // backstop fails closed on ANY provided refs regardless of the declared
+  // task type, so no caller can smuggle invalid entries into the vault. The
+  // plugin process has no allowlisted local roots, so absolute paths always
+  // count as out of bounds here — the same rule the Contract preview and
+  // authorizeDevelopmentTask enforce (stricter than admission, never looser).
+  if (contextRefErrors(parsed.data.contextRefs ?? [], []).length > 0) {
+    throw new InvalidConfirmTaskInputError();
+  }
 
   return ctx.tasks.withTaskLock(taskId, async () => {
     const task = await ctx.tasks.get(taskId);
+    // PAW-GOAL-003-V0.5 D1 CR fix (PRD 4.2 返回表单修正): a confirmed
+    // development declaration that has not started dispatch may be amended
+    // through the same confirmation path — otherwise the Contract's
+    // "return to the form and fix the gaps" loop would be a dead end.
+    // Research tasks keep the exact previous state guard.
+    const amendsUndeliveredDevelopment = task.status === 'ready'
+      && task.reviewState === 'confirmed'
+      && isExternalExecutionTask(task)
+      && parsed.data.taskType === 'development'
+      && (task.executionLink?.dispatchState ?? 'not_requested') === 'not_requested';
     const confirmsReadyCandidate = task.status === 'ready'
       && task.reviewState !== 'confirmed';
-    if (task.status !== 'inbox' && !confirmsReadyCandidate) {
+    if (task.status !== 'inbox' && !confirmsReadyCandidate && !amendsUndeliveredDevelopment) {
       throw new ConfirmTaskInvalidStateError();
     }
     if (task.status === 'inbox') {
@@ -105,6 +140,14 @@ export async function confirmTask(
       objective: parsed.data.objective ?? null,
       acceptanceCriteria: parsed.data.acceptanceCriteria ?? [],
       permissionProfile: parsed.data.permissionProfile ?? null,
+      // Development-only fields: untouched for research inputs, so research
+      // confirmation behavior stays byte-identical to the previous contract.
+      ...(parsed.data.executionTarget === undefined
+        ? {}
+        : { executionTarget: parsed.data.executionTarget }),
+      ...(parsed.data.contextRefs === undefined
+        ? {}
+        : { contextRefs: parsed.data.contextRefs }),
       priority: parsed.data.priority,
       // Agent authorization is a separate, explicit transition after confirmation.
       autoExecutable: false,

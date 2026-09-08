@@ -177,6 +177,7 @@ describe('normalizeSettings', () => {
         model: 'claude-sonnet-4-5',
         baseUrl: '',
         dingtalkProfile: '',
+        dingtalkRobotCode: '',
       },
       dashboard: {
         tokenCacheVersion: 1,
@@ -226,6 +227,7 @@ describe('normalizeSettings', () => {
         model: 'bad model; rm -rf /',
         baseUrl: 'file:///etc/passwd',
         dingtalkProfile: ' corp-a,corp-b ',
+        dingtalkRobotCode: 'bad code',
         dailyLimit: -8,
       },
     })).toEqual({
@@ -246,6 +248,7 @@ describe('normalizeSettings', () => {
         model: 'claude-sonnet-4-5',
         baseUrl: '',
         dingtalkProfile: '',
+        dingtalkRobotCode: '',
       },
       dashboard: {
         tokenCacheVersion: 1,
@@ -283,6 +286,15 @@ describe('normalizeSettings', () => {
     expect(normalizeSettings({
       background: { dingtalkProfile: 'corp-a,corp-b' },
     }).background.dingtalkProfile).toBe('');
+  });
+
+  it('keeps one valid robot code and rejects malformed values', () => {
+    expect(normalizeSettings({
+      background: { dingtalkRobotCode: 'ding-synthetic-atl-bot' },
+    }).background.dingtalkRobotCode).toBe('ding-synthetic-atl-bot');
+    expect(normalizeSettings({
+      background: { dingtalkRobotCode: 'bad code' },
+    }).background.dingtalkRobotCode).toBe('');
   });
 
   it('keeps only valid aggregate token cache values', () => {

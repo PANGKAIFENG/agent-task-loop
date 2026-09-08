@@ -14,6 +14,22 @@ import { afterEach, describe, expect, it } from 'vitest';
 const bridgePath = resolve('scripts/atl-dingtalk-bridge.mjs');
 const temporaryRoots: string[] = [];
 
+function replyInput(options: {
+  eventId: string;
+  message: string;
+  senderUserId?: string;
+  conversationId?: string;
+}): string {
+  return JSON.stringify({
+    eventId: options.eventId,
+    senderUserId: options.senderUserId ?? 'trusted-user-001',
+    conversationId: options.conversationId ?? 'trusted-conversation-001',
+    message: options.message,
+  });
+}
+
+const replyArgs = [bridgePath, 'reply', '--stdin-json'];
+
 async function fixture(): Promise<{
   root: string;
   runner: string;
@@ -26,9 +42,13 @@ async function fixture(): Promise<{
   await writeFile(runner, `#!/usr/bin/env node
 import { appendFileSync } from 'node:fs';
 const args = process.argv.slice(2);
+let privateInput = '';
+for await (const chunk of process.stdin) privateInput += chunk;
 appendFileSync(process.env.ATL_FAKE_RUNNER_LOG, JSON.stringify({
   args,
-  allowRealWrites: process.env.ATL_ALLOW_REAL_WRITES ?? null
+  privateInput,
+  allowRealWrites: process.env.ATL_ALLOW_REAL_WRITES ?? null,
+  trustedSenderId: process.env.ATL_DINGTALK_TRUSTED_SENDER_ID ?? null
 }) + '\\n');
 if (args[0] === 'task' && args[1] === 'list') {
   process.stdout.write(JSON.stringify([{
@@ -65,6 +85,187 @@ afterEach(async () => {
 
 describe('DingTalk decision bridge', () => {
   it.each([
+    'select:accept task-bridge-multica',
+    'approve task-bridge-multica',
+    'rework task-bridge-multica',
+    'block task-bridge-multica',
+    'cancel task-bridge-multica',
+  ])('routes an exact Multica action through private stdin: %s', async (message) => {
+    const paths = await fixture();
+    await writeFile(paths.runner, `#!/usr/bin/env node
+import { appendFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+let privateInput = '';
+for await (const chunk of process.stdin) privateInput += chunk;
+appendFileSync(process.env.ATL_FAKE_RUNNER_LOG, JSON.stringify({
+  args,
+  privateInput,
+  trustedSenderId: process.env.ATL_DINGTALK_TRUSTED_SENDER_ID ?? null,
+  trustedSenderUserId: process.env.ATL_DINGTALK_TRUSTED_SENDER_USER_ID ?? null
+}) + '\\n');
+if (args[0] === 'task' && args[1] === 'list') {
+  process.stdout.write(JSON.stringify([{
+    taskId: 'task-bridge-multica',
+    actionRequest: { status: 'pending' }
+  }]));
+} else if (args[0] === 'multica' && args[1] === 'reply') {
+  process.stdout.write(JSON.stringify({
+    status: 'completed',
+    step: 'supervisor_resumed',
+    record: { taskId: 'task-bridge-multica' }
+  }));
+} else {
+  process.stdout.write(JSON.stringify([]));
+}
+`, 'utf8');
+    await chmod(paths.runner, 0o700);
+    const input = replyInput({
+      eventId: 'dingtalk-multica-action-001',
+      message,
+    });
+
+    const result = await execa(process.execPath, replyArgs, {
+      input,
+      env: {
+        ATL_NODE_EXECUTABLE: process.execPath,
+        ATL_RUNNER_ENTRY: paths.runner,
+        ATL_VAULT_ROOT: paths.root,
+        ATL_FAKE_RUNNER_LOG: paths.runnerLog,
+        ATL_DINGTALK_TRUSTED_SENDER_ID: undefined,
+        ATL_DINGTALK_TRUSTED_SENDER_USER_ID: 'trusted-user-001',
+        ATL_DINGTALK_TRUSTED_CONVERSATION_ID: 'trusted-conversation-001',
+      },
+    });
+
+    expect(result.stdout).toContain('task-bridge-multica');
+    expect(result.stdout).toContain('supervisor_resumed');
+    const calls = (await readFile(paths.runnerLog, 'utf8'))
+      .trim().split('\n').map((line) => JSON.parse(line) as {
+        args: string[];
+        privateInput: string;
+        trustedSenderId: string | null;
+        trustedSenderUserId: string | null;
+      });
+    expect(calls).toHaveLength(3);
+    expect(calls[0]?.args).toEqual([
+      'task', 'list', '--status', 'agent_executable', '--json',
+    ]);
+    expect(calls[1]?.args).toEqual(['task', 'list', '--json']);
+    expect(calls[2]?.args).toEqual([
+      'multica', 'reply', '--stdin-json', '--json',
+    ]);
+    expect(calls[2]?.args).not.toContain(message);
+    expect(JSON.parse(calls[2]?.privateInput ?? '')).toEqual(JSON.parse(input));
+    expect(calls[2]?.trustedSenderId).toBeNull();
+    expect(calls[2]?.trustedSenderUserId).toBe('trusted-user-001');
+  });
+
+  it('keeps a reserved legacy option ID on the ATL decision path', async () => {
+    const paths = await fixture();
+    await writeFile(paths.runner, `#!/usr/bin/env node
+import { appendFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+let privateInput = '';
+for await (const chunk of process.stdin) privateInput += chunk;
+appendFileSync(process.env.ATL_FAKE_RUNNER_LOG, JSON.stringify({ args, privateInput }) + '\\n');
+if (args[0] === 'task' && args[1] === 'list') {
+  const statusIndex = args.indexOf('--status');
+  const status = statusIndex === -1 ? null : args[statusIndex + 1];
+  if (status === 'agent_executable') {
+    process.stdout.write('[]');
+  } else {
+    process.stdout.write(JSON.stringify([{
+      taskId: 'task-bridge-legacy',
+      pendingDecision: {
+        requestId: 'decision-legacy',
+        question: '是否接受？',
+        options: [{ id: 'approve', label: '接受' }]
+      }
+    }]));
+  }
+} else if (args[0] === 'runner' && args[1] === 'continue-decision') {
+  process.stdout.write(JSON.stringify({
+    status: 'submitted',
+    taskId: 'task-bridge-legacy',
+    artifactRef: 'Artifacts/task-bridge-legacy/attempt-002.md'
+  }));
+} else {
+  process.stdout.write(JSON.stringify({ status: 'unexpected' }));
+}
+`, 'utf8');
+    await chmod(paths.runner, 0o700);
+
+    const result = await execa(process.execPath, replyArgs, {
+      input: replyInput({
+        eventId: 'dingtalk-legacy-reserved-001',
+        message: 'approve task-bridge-legacy',
+      }),
+      env: {
+        ATL_NODE_EXECUTABLE: process.execPath,
+        ATL_RUNNER_ENTRY: paths.runner,
+        ATL_VAULT_ROOT: paths.root,
+        ATL_FAKE_RUNNER_LOG: paths.runnerLog,
+        ATL_DINGTALK_TRUSTED_SENDER_USER_ID: 'trusted-user-001',
+        ATL_DINGTALK_TRUSTED_CONVERSATION_ID: 'trusted-conversation-001',
+      },
+    });
+
+    expect(result.stdout).toContain('task-bridge-legacy');
+    const calls = (await readFile(paths.runnerLog, 'utf8'))
+      .trim().split('\n').map((line) => JSON.parse(line) as { args: string[] });
+    expect(calls.some(({ args }) => args[0] === 'multica' && args[1] === 'reply')).toBe(false);
+    expect(calls.at(-1)?.args).toEqual(expect.arrayContaining([
+      'runner', 'continue-decision',
+      '--selected-option-id', 'approve',
+    ]));
+  });
+
+  it('fails closed when the trusted sender environment names conflict', async () => {
+    const paths = await fixture();
+
+    await expect(execa(process.execPath, replyArgs, {
+      input: replyInput({
+        eventId: 'dingtalk-sender-conflict-001',
+        message: 'select:accept task-bridge-multica',
+      }),
+      env: {
+        ATL_NODE_EXECUTABLE: process.execPath,
+        ATL_RUNNER_ENTRY: paths.runner,
+        ATL_VAULT_ROOT: paths.root,
+        ATL_FAKE_RUNNER_LOG: paths.runnerLog,
+        ATL_DINGTALK_TRUSTED_SENDER_ID: 'different-trusted-user',
+        ATL_DINGTALK_TRUSTED_SENDER_USER_ID: 'trusted-user-001',
+        ATL_DINGTALK_TRUSTED_CONVERSATION_ID: 'trusted-conversation-001',
+      },
+    })).rejects.toMatchObject({
+      exitCode: 1,
+      stderr: expect.stringContaining('trusted sender environment values conflict'),
+    });
+    await expect(readFile(paths.runnerLog, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('does not route a Multica-like reply with trailing text', async () => {
+    const paths = await fixture();
+    const message = 'select:accept task-bridge-multica extra';
+
+    await execa(process.execPath, replyArgs, {
+      input: replyInput({ eventId: 'dingtalk-multica-invalid-001', message }),
+      env: {
+        ATL_NODE_EXECUTABLE: process.execPath,
+        ATL_RUNNER_ENTRY: paths.runner,
+        ATL_VAULT_ROOT: paths.root,
+        ATL_FAKE_RUNNER_LOG: paths.runnerLog,
+        ATL_DINGTALK_TRUSTED_SENDER_USER_ID: 'trusted-user-001',
+        ATL_DINGTALK_TRUSTED_CONVERSATION_ID: 'trusted-conversation-001',
+      },
+    });
+
+    const calls = (await readFile(paths.runnerLog, 'utf8'))
+      .trim().split('\n').map((line) => JSON.parse(line) as { args: string[] });
+    expect(calls.some(({ args }) => args[0] === 'multica' && args[1] === 'reply')).toBe(false);
+  });
+
+  it.each([
     ['接受 task-bridge-artifact v2', 'approve', undefined],
     ['要求修改 task-bridge-artifact v2：补充真实用户证据', 'request_changes', '补充真实用户证据'],
     ['阻塞 task-bridge-artifact v2：等待接口权限', 'block', '等待接口权限'],
@@ -78,8 +279,11 @@ describe('DingTalk decision bridge', () => {
     await writeFile(paths.runner, `#!/usr/bin/env node
 import { appendFileSync } from 'node:fs';
 const args = process.argv.slice(2);
+let privateInput = '';
+for await (const chunk of process.stdin) privateInput += chunk;
 appendFileSync(process.env.ATL_FAKE_RUNNER_LOG, JSON.stringify({
   args,
+  privateInput,
   allowRealWrites: process.env.ATL_ALLOW_REAL_WRITES ?? null
 }) + '\\n');
 if (args[0] === 'task' && args[1] === 'review-external') {
@@ -92,18 +296,11 @@ if (args[0] === 'task' && args[1] === 'review-external') {
 `, 'utf8');
     await chmod(paths.runner, 0o700);
 
-    const result = await execa(process.execPath, [
-      bridgePath,
-      'reply',
-      '--event-id',
-      `dingtalk-artifact-${decision}`,
-      '--sender-user-id',
-      'trusted-user-001',
-      '--conversation-id',
-      'trusted-conversation-001',
-      '--message',
-      message,
-    ], {
+    const result = await execa(process.execPath, replyArgs, {
+      input: replyInput({
+        eventId: `dingtalk-artifact-${decision}`,
+        message,
+      }),
       env: {
         ATL_NODE_EXECUTABLE: process.execPath,
         ATL_RUNNER_ENTRY: paths.runner,
@@ -119,6 +316,7 @@ if (args[0] === 'task' && args[1] === 'review-external') {
     const calls = (await readFile(paths.runnerLog, 'utf8'))
       .trim().split('\n').map((line) => JSON.parse(line) as {
         args: string[];
+        privateInput: string;
         allowRealWrites: string | null;
       });
     expect(calls).toHaveLength(1);
@@ -137,10 +335,15 @@ if (args[0] === 'task' && args[1] === 'review-external') {
       'trusted-conversation-001',
       `--${decision.replace('_', '-')}`,
     ]));
+    expect(calls[0]?.args).not.toContain(message);
     if (feedback === undefined) {
       expect(calls[0]?.args).not.toContain('--feedback');
+      expect(calls[0]?.args).not.toContain('--private-input-stdin-json');
+      expect(calls[0]?.privateInput).toBe('');
     } else {
-      expect(calls[0]?.args).toEqual(expect.arrayContaining(['--feedback', feedback]));
+      expect(calls[0]?.args).not.toContain(feedback);
+      expect(calls[0]?.args).toContain('--private-input-stdin-json');
+      expect(JSON.parse(calls[0]?.privateInput ?? '')).toEqual({ feedback });
     }
     expect(calls[0]?.allowRealWrites).toBeNull();
   });
@@ -148,18 +351,11 @@ if (args[0] === 'task' && args[1] === 'review-external') {
   it('rejects an Artifact change request without feedback before invoking ATL', async () => {
     const paths = await fixture();
 
-    await expect(execa(process.execPath, [
-      bridgePath,
-      'reply',
-      '--event-id',
-      'dingtalk-artifact-missing-feedback',
-      '--sender-user-id',
-      'trusted-user-001',
-      '--conversation-id',
-      'trusted-conversation-001',
-      '--message',
-      '要求修改 task-bridge-artifact v2',
-    ], {
+    await expect(execa(process.execPath, replyArgs, {
+      input: replyInput({
+        eventId: 'dingtalk-artifact-missing-feedback',
+        message: '要求修改 task-bridge-artifact v2',
+      }),
       env: {
         ATL_NODE_EXECUTABLE: process.execPath,
         ATL_RUNNER_ENTRY: paths.runner,
@@ -180,7 +376,9 @@ if (args[0] === 'task' && args[1] === 'review-external') {
     await writeFile(paths.runner, `#!/usr/bin/env node
 import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
 const args = process.argv.slice(2);
-appendFileSync(process.env.ATL_FAKE_RUNNER_LOG, JSON.stringify({ args }) + '\\n');
+let privateInput = '';
+for await (const chunk of process.stdin) privateInput += chunk;
+appendFileSync(process.env.ATL_FAKE_RUNNER_LOG, JSON.stringify({ args, privateInput }) + '\\n');
 const busyMarker = process.env.ATL_FAKE_BUSY_MARKER;
 if (args[0] === 'task' && args[1] === 'review-external') {
   process.stdout.write(JSON.stringify({
@@ -206,18 +404,10 @@ if (args[0] === 'task' && args[1] === 'review-external') {
 }
 `, 'utf8');
     await chmod(paths.runner, 0o700);
-    const args = [
-      bridgePath,
-      'reply',
-      '--event-id',
-      'dingtalk-artifact-rework-busy',
-      '--sender-user-id',
-      'trusted-user-001',
-      '--conversation-id',
-      'trusted-conversation-001',
-      '--message',
-      '要求修改 task-bridge-artifact v2：补充真实用户证据',
-    ];
+    const input = replyInput({
+      eventId: 'dingtalk-artifact-rework-busy',
+      message: '要求修改 task-bridge-artifact v2：补充真实用户证据',
+    });
     const env = {
       ATL_NODE_EXECUTABLE: process.execPath,
       ATL_RUNNER_ENTRY: paths.runner,
@@ -229,10 +419,10 @@ if (args[0] === 'task' && args[1] === 'review-external') {
       ATL_ALLOW_REAL_WRITES: undefined,
     };
 
-    await expect(execa(process.execPath, args, { env })).resolves.toMatchObject({
+    await expect(execa(process.execPath, replyArgs, { env, input })).resolves.toMatchObject({
       stdout: expect.stringContaining('runner_busy'),
     });
-    await expect(execa(process.execPath, args, { env })).resolves.toMatchObject({
+    await expect(execa(process.execPath, replyArgs, { env, input })).resolves.toMatchObject({
       stdout: expect.stringContaining('attempt-003.md'),
     });
 
@@ -280,18 +470,8 @@ process.stdout.write(JSON.stringify({ success: true }));
 `, 'utf8');
     await chmod(fakeDws, 0o700);
 
-    const result = await execa(process.execPath, [
-      bridgePath,
-      'reply',
-      '--event-id',
-      'dingtalk-stream-event-001',
-      '--sender-user-id',
-      'trusted-user-001',
-      '--conversation-id',
-      'trusted-conversation-001',
-      '--message',
-      'B',
-    ], {
+    const result = await execa(process.execPath, replyArgs, {
+      input: replyInput({ eventId: 'dingtalk-stream-event-001', message: 'B' }),
       env: {
         ATL_NODE_EXECUTABLE: process.execPath,
         ATL_RUNNER_ENTRY: paths.runner,
@@ -309,6 +489,7 @@ process.stdout.write(JSON.stringify({ success: true }));
     const calls = (await readFile(paths.runnerLog, 'utf8'))
       .trim().split('\n').map((line) => JSON.parse(line) as {
         args: string[];
+        privateInput: string;
         allowRealWrites: string | null;
       });
     expect(calls.at(-1)?.args).toEqual(expect.arrayContaining([
@@ -320,7 +501,10 @@ process.stdout.write(JSON.stringify({ success: true }));
       'trusted-conversation-001',
       '--selected-option-id',
       'option-b',
+      '--private-input-stdin-json',
     ]));
+    expect(calls.at(-1)?.args).not.toContain('B');
+    expect(JSON.parse(calls.at(-1)?.privateInput ?? '')).toEqual({ responseText: 'B' });
     expect(calls.every(({ allowRealWrites }) => allowRealWrites === null)).toBe(true);
     await expect(readFile(dwsLog, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
@@ -331,11 +515,13 @@ process.stdout.write(JSON.stringify({ success: true }));
     await writeFile(paths.runner, `#!/usr/bin/env node
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 const args = process.argv.slice(2);
+let privateInput = '';
+for await (const chunk of process.stdin) privateInput += chunk;
 const statePath = process.env.ATL_FAKE_RUNNER_STATE;
 const state = existsSync(statePath)
   ? JSON.parse(readFileSync(statePath, 'utf8'))
   : { decisionRecorded: false, continuationCalls: 0 };
-appendFileSync(process.env.ATL_FAKE_RUNNER_LOG, JSON.stringify({ args }) + '\\n');
+appendFileSync(process.env.ATL_FAKE_RUNNER_LOG, JSON.stringify({ args, privateInput }) + '\\n');
 if (args[0] === 'task' && args[1] === 'list') {
   const status = args[args.indexOf('--status') + 1];
   if (status === 'waiting_for_decision' && !state.decisionRecorded) {
@@ -383,18 +569,7 @@ if (args[0] === 'task' && args[1] === 'list') {
 }
 `, 'utf8');
     await chmod(paths.runner, 0o700);
-    const args = [
-      bridgePath,
-      'reply',
-      '--event-id',
-      'dingtalk-stream-event-busy',
-      '--sender-user-id',
-      'trusted-user-001',
-      '--conversation-id',
-      'trusted-conversation-001',
-      '--message',
-      'B',
-    ];
+    const input = replyInput({ eventId: 'dingtalk-stream-event-busy', message: 'B' });
     const env = {
       ATL_NODE_EXECUTABLE: process.execPath,
       ATL_RUNNER_ENTRY: paths.runner,
@@ -405,10 +580,10 @@ if (args[0] === 'task' && args[1] === 'list') {
       ATL_DINGTALK_TRUSTED_CONVERSATION_ID: 'trusted-conversation-001',
     };
 
-    await expect(execa(process.execPath, args, { env })).resolves.toMatchObject({
+    await expect(execa(process.execPath, replyArgs, { env, input })).resolves.toMatchObject({
       stdout: expect.stringContaining('runner_busy'),
     });
-    await expect(execa(process.execPath, args, { env })).resolves.toMatchObject({
+    await expect(execa(process.execPath, replyArgs, { env, input })).resolves.toMatchObject({
       stdout: expect.stringContaining('已进入 Review'),
     });
 
@@ -425,9 +600,9 @@ if (args[0] === 'task' && args[1] === 'list') {
       'dingtalk-stream-event-busy',
       '--selected-option-id',
       'option-b',
-      '--response-text',
-      'B',
+      '--private-input-stdin-json',
     ]));
+    expect(continuations[1]?.args).not.toContain('B');
     expect(calls.filter(({ args: callArgs }) => (
       callArgs[0] === 'task'
       && callArgs[1] === 'list'
@@ -438,12 +613,8 @@ if (args[0] === 'task' && args[1] === 'list') {
   it('requires an upstream Stream event ID instead of deriving one from text', async () => {
     const paths = await fixture();
 
-    await expect(execa(process.execPath, [
-      bridgePath,
-      'reply',
-      '--message',
-      'B',
-    ], {
+    await expect(execa(process.execPath, replyArgs, {
+      input: JSON.stringify({ message: 'B' }),
       env: {
         ATL_NODE_EXECUTABLE: process.execPath,
         ATL_RUNNER_ENTRY: paths.runner,
@@ -454,8 +625,55 @@ if (args[0] === 'task' && args[1] === 'list') {
       },
     })).rejects.toMatchObject({
       exitCode: 1,
-      stderr: expect.stringContaining('--event-id is required'),
+      stderr: expect.stringContaining('invalid fields'),
     });
+  });
+
+  it('rejects malformed stdin without echoing private reply text', async () => {
+    const paths = await fixture();
+    const sentinel = 'PRIVATE_REPLY_SENTINEL';
+
+    await expect(execa(process.execPath, replyArgs, {
+      input: `{"message":"${sentinel}"`,
+      env: {
+        ATL_NODE_EXECUTABLE: process.execPath,
+        ATL_RUNNER_ENTRY: paths.runner,
+        ATL_VAULT_ROOT: paths.root,
+        ATL_FAKE_RUNNER_LOG: paths.runnerLog,
+        ATL_DINGTALK_TRUSTED_SENDER_USER_ID: 'trusted-user-001',
+        ATL_DINGTALK_TRUSTED_CONVERSATION_ID: 'trusted-conversation-001',
+      },
+    })).rejects.toMatchObject({
+      exitCode: 1,
+      stderr: expect.not.stringContaining(sentinel),
+    });
+    await expect(readFile(paths.runnerLog, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('rejects oversized stdin without echoing private reply text', async () => {
+    const paths = await fixture();
+    const sentinel = 'OVERSIZED_PRIVATE_REPLY_SENTINEL';
+
+    await expect(execa(process.execPath, replyArgs, {
+      input: JSON.stringify({
+        eventId: 'dingtalk-stream-event-oversized',
+        senderUserId: 'trusted-user-001',
+        conversationId: 'trusted-conversation-001',
+        message: `${sentinel}${'x'.repeat(65 * 1024)}`,
+      }),
+      env: {
+        ATL_NODE_EXECUTABLE: process.execPath,
+        ATL_RUNNER_ENTRY: paths.runner,
+        ATL_VAULT_ROOT: paths.root,
+        ATL_FAKE_RUNNER_LOG: paths.runnerLog,
+        ATL_DINGTALK_TRUSTED_SENDER_USER_ID: 'trusted-user-001',
+        ATL_DINGTALK_TRUSTED_CONVERSATION_ID: 'trusted-conversation-001',
+      },
+    })).rejects.toMatchObject({
+      exitCode: 1,
+      stderr: expect.not.stringContaining(sentinel),
+    });
+    await expect(readFile(paths.runnerLog, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it.each([
@@ -464,18 +682,13 @@ if (args[0] === 'task' && args[1] === 'list') {
   ])('rejects a reply from an untrusted %s', async (_source, senderUserId, conversationId) => {
     const paths = await fixture();
 
-    await expect(execa(process.execPath, [
-      bridgePath,
-      'reply',
-      '--event-id',
-      'dingtalk-stream-event-untrusted',
-      '--sender-user-id',
-      senderUserId,
-      '--conversation-id',
-      conversationId,
-      '--message',
-      'B',
-    ], {
+    await expect(execa(process.execPath, replyArgs, {
+      input: replyInput({
+        eventId: 'dingtalk-stream-event-untrusted',
+        senderUserId,
+        conversationId,
+        message: 'B',
+      }),
       env: {
         ATL_NODE_EXECUTABLE: process.execPath,
         ATL_RUNNER_ENTRY: paths.runner,
@@ -501,18 +714,11 @@ if (args[0] === 'task' && args[1] === 'list') {
   ) => {
     const paths = await fixture();
 
-    await expect(execa(process.execPath, [
-      bridgePath,
-      'reply',
-      '--event-id',
-      'dingtalk-stream-event-missing-trust',
-      '--sender-user-id',
-      'trusted-user-001',
-      '--conversation-id',
-      'trusted-conversation-001',
-      '--message',
-      'B',
-    ], {
+    await expect(execa(process.execPath, replyArgs, {
+      input: replyInput({
+        eventId: 'dingtalk-stream-event-missing-trust',
+        message: 'B',
+      }),
       env: {
         ATL_NODE_EXECUTABLE: process.execPath,
         ATL_RUNNER_ENTRY: paths.runner,

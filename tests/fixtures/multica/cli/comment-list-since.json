@@ -1,0 +1,38 @@
+[
+  {
+    "attachments": [],
+    "author_id": "5269a0d4-b8ee-4761-bd35-50379ccabca1",
+    "author_type": "agent",
+    "content": "progress note",
+    "created_at": "2026-08-20T10:00:00.000Z",
+    "id": "c1",
+    "issue_id": "01234567-89ab-4cde-8f01-234567890abc",
+    "parent_id": null,
+    "reactions": [],
+    "resolved_at": null,
+    "resolved_by_id": null,
+    "resolved_by_type": null,
+    "revision": 1,
+    "source_task_id": "01234567-89ab-4cde-8f01-234567890abc",
+    "type": "comment",
+    "updated_at": "2026-08-20T10:00:00.000Z"
+  },
+  {
+    "attachments": [],
+    "author_id": "5269a0d4-b8ee-4761-bd35-50379ccabca1",
+    "author_type": "agent",
+    "content": "```json\n{\"schema_version\":1}\n```",
+    "created_at": "2026-08-20T11:00:00.000Z",
+    "id": "c2",
+    "issue_id": "01234567-89ab-4cde-8f01-234567890abc",
+    "parent_id": "c1",
+    "reactions": [],
+    "resolved_at": null,
+    "resolved_by_id": null,
+    "resolved_by_type": null,
+    "revision": 1,
+    "source_task_id": "01234567-89ab-4cde-8f01-234567890abc",
+    "type": "comment",
+    "updated_at": "2026-08-20T11:00:00.000Z"
+  }
+]

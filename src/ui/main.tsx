@@ -5,7 +5,9 @@ import { App } from './App.js';
 import './styles.css';
 
 const runtimeConfigPath = '/runtime-config.js';
-await import(/* @vite-ignore */ runtimeConfigPath);
+if (!window.location.pathname.startsWith('/__preview__/')) {
+  await import(/* @vite-ignore */ runtimeConfigPath);
+}
 
 const root = document.getElementById('root');
 if (root === null) throw new Error('Missing application root');

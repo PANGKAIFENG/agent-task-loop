@@ -4,7 +4,7 @@ import {
   type Task,
   type TaskStatus,
 } from '../domain/task.js';
-import { isClaimEligible } from './claim-task.js';
+import { isClaimEligible, loadKnownProjectIds } from './claim-task.js';
 import type { ServiceContext } from './service-context.js';
 
 export async function listTasks(
@@ -23,8 +23,9 @@ function readyTimestamp(task: Task): number {
 }
 
 export async function peekNextTask(ctx: ServiceContext): Promise<Task | null> {
+  const knownProjectIds = await loadKnownProjectIds(ctx);
   return (await ctx.tasks.list())
-    .filter(isClaimEligible)
+    .filter((task) => isClaimEligible(task, knownProjectIds))
     .sort((left, right) => (
       priorityRank[left.priority] - priorityRank[right.priority]
       || readyTimestamp(left) - readyTimestamp(right)

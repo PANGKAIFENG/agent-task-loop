@@ -11,6 +11,8 @@ import { buildContextBundle } from '../../../src/runner/context-bundle.js';
 import { resolveExecutionProfile } from '../../../src/runner/execution-profile.js';
 import {
   persistRuntimePack,
+  readRuntimePackById,
+  readRuntimePackForRun,
   type RuntimePack,
 } from '../../../src/runner/runtime-pack.js';
 
@@ -88,6 +90,7 @@ describe('persistRuntimePack', () => {
         allowedLocalRoots: [root],
         previousArtifact: {
           reference: 'Artifacts/task-runtime-pack-001/attempt-002.md',
+          version: 'v2',
           summary: 'Previous Artifact summary.',
           evidenceCount: 1,
         },
@@ -102,6 +105,10 @@ describe('persistRuntimePack', () => {
       executionProfile,
       asOf: NOW,
       expiresAt: '2026-07-15T01:00:00.000Z',
+      contextManifest: {
+        manifestId: 'cm_1234567890abcdef12345678',
+        sha256: 'f'.repeat(64),
+      },
     });
     const second = await persistRuntimePack(root, {
       task: { ...task(), sourceNote: source },
@@ -110,6 +117,10 @@ describe('persistRuntimePack', () => {
       executionProfile,
       asOf: NOW,
       expiresAt: '2026-07-15T01:00:00.000Z',
+      contextManifest: {
+        manifestId: 'cm_1234567890abcdef12345678',
+        sha256: 'f'.repeat(64),
+      },
     });
     const raw = await readFile(first.absolutePath, 'utf8');
     const manifest = JSON.parse(raw) as RuntimePack;
@@ -132,15 +143,60 @@ describe('persistRuntimePack', () => {
       previousArtifactRefs: ['Artifacts/task-runtime-pack-001/attempt-002.md'],
       asOf: NOW,
       expiresAt: '2026-07-15T01:00:00.000Z',
+      contextManifestId: 'cm_1234567890abcdef12345678',
+      contextManifestSha256: 'f'.repeat(64),
     });
-    expect(manifest.blocks).toEqual(context.blocks.map(({ label, kind, sha256 }) => ({
+    expect(manifest.blocks).toEqual(context.blocks.map(({
       label,
       kind,
+      category,
+      sourceRef,
+      version,
+      readRef,
+      sha256,
+    }) => ({
+      label,
+      kind,
+      category,
+      sourceRef,
+      version,
+      readRef,
       sha256,
     })));
     expect(raw).not.toContain('PRIVATE_SOURCE_BODY_MUST_NOT_BE_PERSISTED');
     expect(raw).not.toContain('BODY_MUST_NOT_BE_PERSISTED');
     expect(raw).not.toContain('FEEDBACK_MUST_NOT_BE_PERSISTED_AS_BODY');
+  });
+
+  it('reloads a persisted Runtime Pack by stable ID or Task and Run without process memory', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'atl-runtime-pack-reload-'));
+    roots.push(root);
+    const currentTask = task();
+    const context = await buildContextBundle(currentTask, project(), {
+      allowedLocalRoots: [],
+    });
+    const persisted = await persistRuntimePack(root, {
+      task: currentTask,
+      project: project(),
+      context,
+      executionProfile: resolveExecutionProfile(currentTask),
+      asOf: NOW,
+      expiresAt: currentTask.claim!.leaseExpiresAt,
+      contextManifest: {
+        manifestId: 'cm_1234567890abcdef12345678',
+        sha256: 'f'.repeat(64),
+      },
+    });
+
+    await expect(readRuntimePackForRun(
+      root,
+      currentTask.taskId,
+      currentTask.claim!.runId,
+    )).resolves.toEqual({ pack: persisted.pack, sha256: persisted.sha256 });
+    await expect(readRuntimePackById(
+      root,
+      persisted.packId,
+    )).resolves.toEqual({ pack: persisted.pack, sha256: persisted.sha256 });
   });
 
   it('rejects task, claim, and context identities that do not describe one run', async () => {
@@ -175,6 +231,29 @@ describe('persistRuntimePack', () => {
       asOf: NOW,
       expiresAt: '2026-07-15T02:00:00.000Z',
     })).rejects.toMatchObject({ code: 'invalid_runtime_pack_input' });
+  });
+
+  it('rejects different Runtime Pack contents for the same Task and Run', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'atl-runtime-pack-'));
+    roots.push(root);
+    const context = await buildContextBundle(task(), project(), {
+      allowedLocalRoots: [],
+    });
+    const options = {
+      task: task(),
+      project: project(),
+      context,
+      executionProfile: resolveExecutionProfile(task()),
+      asOf: NOW,
+      expiresAt: '2026-07-15T01:00:00.000Z',
+    };
+    await persistRuntimePack(root, options);
+
+    await expect(persistRuntimePack(root, {
+      ...options,
+      asOf: '2026-07-15T00:01:00.000Z',
+    })).rejects.toMatchObject({ code: 'runtime_pack_conflict' });
+    await expect(readdir(join(root, 'context-packs'))).resolves.toHaveLength(1);
   });
 
   it('does not label a later rework run as the earlier decision continuation', async () => {

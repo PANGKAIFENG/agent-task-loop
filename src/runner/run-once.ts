@@ -1,4 +1,11 @@
-import { buildContextBundle } from './context-bundle.js';
+import {
+  buildContextBundle,
+  type AdditionalLocalContext,
+} from './context-bundle.js';
+import {
+  ContextManifestBlockedError,
+  persistContextManifest,
+} from './context-manifest-runtime.js';
 import { persistRuntimePack } from './runtime-pack.js';
 import {
   executionProfileResultMatchesTask,
@@ -25,6 +32,25 @@ import { startDecisionContinuation } from '../services/start-decision-continuati
 import { submitArtifact } from '../services/submit-artifact.js';
 import type { RunOutcome } from './runner-controller.js';
 import type { Task } from '../domain/task.js';
+import type { ContextCandidate } from '../domain/context-manifest.js';
+import type { Project } from '../domain/project.js';
+import {
+  projectContextSha256,
+  resolveProjectContext,
+  type ResolveProjectContextInput,
+} from '../domain/project-context-resolution.js';
+import { parseArtifactReference } from '../storage/artifact-reference.js';
+
+export interface ArtifactChainContextPlan {
+  projectContext: ResolveProjectContextInput;
+  additionalLocalContexts: readonly AdditionalLocalContext[];
+  candidates: ContextCandidate[];
+}
+
+export type ArtifactChainContextPlanner = (input: {
+  task: Task;
+  project: Project;
+}) => Promise<ArtifactChainContextPlan>;
 
 export interface RunOnceDependencies {
   ctx: ServiceContext;
@@ -35,12 +61,14 @@ export interface RunOnceDependencies {
   timeoutMs: number;
   agent: string;
   runId: () => string;
+  artifactChainContextPlanner?: ArtifactChainContextPlanner;
   processLock?: Omit<AcquireProcessLockOptions, 'runtimeRoot' | 'clock'>;
 }
 
 export interface RunInput {
   taskId?: string;
   mode: ClaimMode;
+  continuationOfRunId?: string;
 }
 
 export class InvalidRunnerInputError extends Error {
@@ -93,6 +121,10 @@ export async function executeRun(
   if (
     (input.mode === 'manual' && (input.taskId === undefined || input.taskId.trim() === ''))
     || (input.mode === 'automatic' && input.taskId !== undefined)
+    || (
+      input.continuationOfRunId !== undefined
+      && (input.mode !== 'manual' || input.continuationOfRunId.trim() === '')
+    )
   ) {
     throw new InvalidRunnerInputError();
   }
@@ -159,18 +191,94 @@ export async function executeClaimedRun(
     }
     const project = await dependencies.ctx.projects.get(task.projectId);
     const previousArtifactRef = task.artifactRefs.at(-1);
-    const previousArtifact = previousArtifactRef === undefined
+    const previousArtifactParts = previousArtifactRef === undefined
+      ? null
+      : parseArtifactReference(previousArtifactRef, task.taskId);
+    if (previousArtifactRef !== undefined && previousArtifactParts === null) {
+      throw new InvalidRunnerInputError();
+    }
+    const previousArtifact = previousArtifactRef === undefined || previousArtifactParts === null
       ? undefined
       : {
           reference: previousArtifactRef,
+          version: `v${previousArtifactParts.attempt}`,
           ...await dependencies.ctx.artifacts.readSummary(previousArtifactRef),
         };
+    if (input.continuationOfRunId !== undefined) {
+      if (previousArtifactRef === undefined) throw new InvalidRunnerInputError();
+      const production = await dependencies.ctx.artifacts.readProductionEvidence(
+        previousArtifactRef,
+      );
+      if (
+        production.identity.taskId !== task.taskId
+        || production.identity.ref !== previousArtifactRef
+        || production.runId !== input.continuationOfRunId
+      ) throw new InvalidRunnerInputError();
+    }
+    const artifactChainContext = dependencies.artifactChainContextPlanner === undefined
+      ? undefined
+      : await dependencies.artifactChainContextPlanner({ task, project });
+    const projectResolution = artifactChainContext === undefined
+      ? undefined
+      : resolveProjectContext(artifactChainContext.projectContext);
+    if (
+      projectResolution !== undefined
+      && (
+        projectResolution.status !== 'resolved'
+        || projectResolution.registry.atlProjectId !== project.projectId
+        || projectResolution.atl.project.projectId !== project.projectId
+        || projectResolution.atl.ref !== `atl-project://${project.projectId}`
+        || projectResolution.atl.sha256 !== projectContextSha256(project)
+      )
+    ) {
+      throw new InvalidRunnerInputError();
+    }
     const context = await buildContextBundle(task, project, {
       allowedLocalRoots: dependencies.allowedLocalRoots,
       ...(previousArtifact === undefined ? {} : { previousArtifact }),
+      ...(artifactChainContext === undefined
+        ? {}
+        : { additionalLocalContexts: artifactChainContext.additionalLocalContexts }),
     });
     const executionProfile = resolveExecutionProfile(task);
     validateExecutionProfileContext(executionProfile, context);
+    const persistedContextManifest = (
+      artifactChainContext === undefined
+      || projectResolution === undefined
+    )
+      ? undefined
+      : await persistContextManifest(dependencies.runtimeRoot, {
+          taskId: task.taskId,
+          runId,
+          asOf: dependencies.ctx.clock().toISOString(),
+          projectResolution,
+          context,
+          candidates: artifactChainContext.candidates,
+        });
+    if (persistedContextManifest !== undefined) {
+      const consumedCount = persistedContextManifest.manifest.entries.filter(({ status }) => (
+        status === 'consumed'
+      )).length;
+      await dependencies.ctx.audit.append({
+        event: 'context_manifest.frozen',
+        at: dependencies.ctx.clock().toISOString(),
+        taskId: task.taskId,
+        projectId: project.projectId,
+        runId,
+        details: {
+          manifestId: persistedContextManifest.manifest.manifestId,
+          manifestSha256: persistedContextManifest.manifest.sha256,
+          documentSha256: persistedContextManifest.documentSha256,
+          status: persistedContextManifest.manifest.status,
+          candidateCount: persistedContextManifest.manifest.entries.length,
+          consumedCount,
+          issueCount: persistedContextManifest.manifest.issues.length,
+        },
+      });
+      if (persistedContextManifest.manifest.status === 'blocked') {
+        throw new ContextManifestBlockedError();
+      }
+    }
     const runtimePack = await persistRuntimePack(dependencies.runtimeRoot, {
       task,
       project,
@@ -178,6 +286,17 @@ export async function executeClaimedRun(
       executionProfile,
       asOf: dependencies.ctx.clock().toISOString(),
       expiresAt: task.claim.leaseExpiresAt,
+      ...(persistedContextManifest === undefined
+        ? {}
+        : {
+            contextManifest: {
+              manifestId: persistedContextManifest.manifest.manifestId,
+              sha256: persistedContextManifest.manifest.sha256,
+            },
+          }),
+      ...(input.continuationOfRunId === undefined
+        ? {}
+        : { continuationOfRunId: input.continuationOfRunId }),
     });
     resultContextPackId = runtimePack.packId;
     await dependencies.ctx.audit.append({
@@ -194,6 +313,8 @@ export async function executeClaimedRun(
         executionProfileId: executionProfile.profileId,
         executionProfileVersion: executionProfile.profileVersion,
         executionProfileSha256: runtimePack.pack.executionProfileSha256,
+        contextManifestId: runtimePack.pack.contextManifestId,
+        contextManifestSha256: runtimePack.pack.contextManifestSha256,
       },
     });
     const rawResult = await dependencies.driver.execute({

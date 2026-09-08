@@ -219,7 +219,7 @@ export class ContributionDashboardController {
         range: '1y',
         selectedDate: this.state.selectedDate,
       });
-      const home = queryPersonalHome({ tasks, projects });
+      const home = queryPersonalHome({ tasks, projects, now });
       this.patch({
         contribution: { status: 'ready', snapshot, errorCode: null },
         home: { status: 'ready', snapshot: home, errorCode: null },

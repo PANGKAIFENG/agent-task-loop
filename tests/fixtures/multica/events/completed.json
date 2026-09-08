@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "event_id": "evt-fixture-0005",
+  "atl_task_id": "task-20260820-fixture01",
+  "state": "completed",
+  "summary": "T2 候选实现完成，等待独立 CR",
+  "decision": null,
+  "recoverability": null,
+  "artifact_refs": ["docs/HANDOFF/PAW-GOAL-003-T2.md"],
+  "release": null,
+  "occurred_at": "2026-08-20T14:00:00.000Z"
+}

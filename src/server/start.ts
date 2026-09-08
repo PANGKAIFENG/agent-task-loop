@@ -9,7 +9,10 @@ import {
   CLAUDE_RESEARCH_TIMEOUT_MS,
   createClaudeResearchDriver,
 } from '../runner/claude-driver.js';
+import { createArtifactChainContextPlanner } from '../runner/artifact-chain-runtime.js';
 import { createRunnerController } from '../runner/runner-controller.js';
+import { authorizeResearchTask } from '../services/authorize-research-task.js';
+import { buildResearchMulticaDispatchDependencies } from '../services/build-multica-dispatch-dependencies.js';
 import { createTaskId, type ServiceContext } from '../services/service-context.js';
 import { FileAuditLog } from '../storage/audit-log.js';
 import { MarkdownArtifactRepository } from '../storage/markdown-artifact-repository.js';
@@ -102,19 +105,31 @@ export async function main(environment: NodeJS.ProcessEnv = process.env): Promis
   const runner = createRunnerController({
     ctx,
     driver,
-    runtimeRoot: join(process.cwd(), '.atl-runtime'),
+    runtimeRoot: join(config.vaultRoot, '.atl-runtime'),
     allowedLocalRoots: allowedLocalRoots(environment),
     leaseMinutes: config.leaseMinutes,
     timeoutMs: CLAUDE_RESEARCH_TIMEOUT_MS,
     agent: driver.name,
     runId: () => `run-${createTaskId()}`,
-  });
+    artifactChainContextPlanner: createArtifactChainContextPlanner({
+      vaultRoot: config.vaultRoot,
+    }),
+  }, { production: true });
   const staticRoot = await findBoardStaticRoot();
   const app = await createApp({
     ctx,
     runner,
+    authorizeResearch: (taskId) => authorizeResearchTask(
+      ctx,
+      buildResearchMulticaDispatchDependencies(
+        config,
+        allowedLocalRoots(environment),
+      ),
+      taskId,
+    ),
     boardOrigin: `http://${BOARD_HOST}:${port}`,
     environment,
+    sourceRoot: config.vaultRoot,
     ...(staticRoot === undefined ? {} : { staticRoot }),
   });
   await startServer(app, { host: requestedHost, port });

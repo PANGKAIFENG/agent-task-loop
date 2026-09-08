@@ -15,7 +15,7 @@ export interface AcceptanceNotificationRecord {
   objectId: string;
   version: number;
   uuid: string;
-  status: 'sent' | 'failed' | 'conflict';
+  status: 'sent' | 'failed' | 'conflict' | 'unknown';
   attemptedAt: string;
   errorCode: string | null;
   taskId: string | null;
@@ -50,6 +50,8 @@ const RETRYABLE_ERROR_CODES = new Set([
   'dingtalk_delivery_failed',
   'dingtalk_self_resolution_failed',
 ]);
+
+const UNKNOWN_DELIVERY_ERROR_CODE = 'acceptance_delivery_unknown';
 
 function idempotencyKey(object: AcceptanceObject): string {
   return `${object.objectType}:${object.objectId}:${object.version}`;
@@ -201,7 +203,10 @@ export async function notifyAcceptance(
   return context.ledger.withLock(async () => {
     const key = idempotencyKey(object);
     const existing = await context.ledger.get(key);
-    if (existing?.status === 'sent') return existing;
+    // A process crash can happen after DingTalk accepts the message but before
+    // the sent record is persisted. Never auto-send an uncertain notification
+    // again because the transport has no idempotency key.
+    if (existing?.status === 'sent' || existing?.status === 'unknown') return existing;
     const attemptedAt = context.clock().toISOString();
     const base = existing === null
       ? baseRecord(object, attemptedAt)
@@ -233,18 +238,9 @@ export async function notifyAcceptance(
       return failed;
     }
 
+    let message: { title: string; text: string };
     try {
-      const message = messageFor(object);
-      const delivery = await context.delivery.send({ uuid: base.uuid, ...message });
-      const sent: AcceptanceNotificationRecord = {
-        ...base,
-        status: 'sent',
-        errorCode: null,
-        taskId: delivery.taskId,
-        messageId: delivery.messageId,
-      };
-      await context.ledger.save(sent);
-      return sent;
+      message = messageFor(object);
     } catch (error) {
       const failed: AcceptanceNotificationRecord = {
         ...base,
@@ -256,6 +252,43 @@ export async function notifyAcceptance(
       await context.ledger.save(failed);
       return failed;
     }
+
+    await context.ledger.save({
+      ...base,
+      status: 'unknown',
+      errorCode: UNKNOWN_DELIVERY_ERROR_CODE,
+      taskId: null,
+      messageId: null,
+    });
+
+    let delivery: { taskId: string | null; messageId: string | null };
+    try {
+      delivery = await context.delivery.send({ uuid: base.uuid, ...message });
+    } catch (error) {
+      const errorCode = safeErrorCode(error);
+      const deliveryUnknown = errorCode === 'dingtalk_delivery_unknown';
+      const failed: AcceptanceNotificationRecord = {
+        ...base,
+        status: deliveryUnknown ? 'unknown' : 'failed',
+        errorCode: deliveryUnknown ? UNKNOWN_DELIVERY_ERROR_CODE : errorCode,
+        taskId: null,
+        messageId: null,
+      };
+      await context.ledger.save(failed);
+      return failed;
+    }
+
+    const sent: AcceptanceNotificationRecord = {
+      ...base,
+      status: 'sent',
+      errorCode: null,
+      taskId: delivery.taskId,
+      messageId: delivery.messageId,
+    };
+    // A persistence failure after delivery must leave the pre-dispatch
+    // `unknown` record in place. Propagating here prevents an automatic retry.
+    await context.ledger.save(sent);
+    return sent;
   });
 }
 

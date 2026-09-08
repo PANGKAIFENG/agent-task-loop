@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "event_id": "evt-fixture-0002",
+  "atl_task_id": "task-20260820-fixture01",
+  "state": "blocked",
+  "summary": "外部依赖不可用，需要人工恢复",
+  "decision": null,
+  "recoverability": {
+    "recoverable": true,
+    "resume_condition": "dependency restored by owner",
+    "last_safe_step": "dispatch linked"
+  },
+  "artifact_refs": [],
+  "release": null,
+  "occurred_at": "2026-08-20T11:00:00.000Z"
+}

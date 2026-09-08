@@ -7,6 +7,7 @@ import {
   claimTask,
 } from '../../../src/services/claim-task.js';
 import { claimNextTask } from '../../../src/services/claim-next-task.js';
+import { createProject } from '../../../src/services/create-project.js';
 import {
   RecoverExpiredClaimAuditFailedError,
   recoverExpiredClaims,
@@ -22,6 +23,14 @@ const contexts: TestServiceContext[] = [];
 async function makeContext(): Promise<TestServiceContext> {
   const context = await createTestServiceContext();
   contexts.push(context);
+  // Issue #3: claim admission requires the task's project to be registered;
+  // register the synthetic project every readyTask fixture refers to.
+  await createProject(context.ctx, {
+    projectId: 'project-public-research',
+    name: 'Public research',
+    description: 'Synthetic project fixture.',
+    resources: [],
+  });
   return context;
 }
 
@@ -311,6 +320,12 @@ describe('claimNextTask', () => {
       now: new Date('2026-07-14T15:59:59.000Z'),
     });
     contexts.push(context);
+    await createProject(context.ctx, {
+      projectId: 'project-public-research',
+      name: 'Public research',
+      description: 'Synthetic project fixture.',
+      resources: [],
+    });
     const afterMidnight = context.createIndependentContext({
       now: new Date('2026-07-14T16:00:01.000Z'),
     });
@@ -620,5 +635,127 @@ describe('recoverExpiredClaims', () => {
     await expect(recoverExpiredClaims(context.ctx))
       .rejects.toBeInstanceOf(RecoverExpiredClaimAuditFailedError);
     await expect(context.ctx.tasks.get(expired.taskId)).resolves.toEqual(expired);
+  });
+});
+
+// ---- Issue #3: admission gates shared by statistics and the queue ------
+
+describe('agent queue admission gates (Issue #3)', () => {
+  it('does not claim a task flagged as a possible duplicate until a human resolves it', async () => {
+    const context = await makeContext();
+    const flagged = readyTask({
+      taskId: 'task-possible-duplicate',
+      sourceKey: 'synthetic:possible-duplicate',
+      possibleDuplicateIds: ['task-20260714-00000001'],
+    });
+    await context.ctx.tasks.save(flagged);
+
+    await expect(claimNextTask(context.ctx, automaticOptions)).resolves.toBeNull();
+    await expect(claimTask(context.ctx, flagged.taskId, {
+      mode: 'manual',
+      agent: 'manual',
+      runId: 'run-manual-duplicate',
+    })).rejects.toThrowError(ClaimTaskNotEligibleError);
+    await expect(context.ctx.tasks.get(flagged.taskId)).resolves.toMatchObject({
+      status: 'agent_executable',
+      attempts: 0,
+      claim: null,
+    });
+
+    const resolved = {
+      ...flagged,
+      possibleDuplicateIds: [],
+      updatedAt: '2026-07-14T07:30:00.000Z',
+    };
+    await context.ctx.tasks.save(resolved);
+    await expect(claimNextTask(context.ctx, automaticOptions)).resolves
+      .toMatchObject({ taskId: flagged.taskId, attempts: 1 });
+  });
+
+  it('does not claim a ready task whose project is not registered', async () => {
+    const context = await makeContext();
+    const orphan = readyTask({
+      taskId: 'task-unregistered-project',
+      sourceKey: 'synthetic:unregistered-project',
+      projectId: 'project-ghost-unregistered',
+    });
+    await context.ctx.tasks.save(orphan);
+
+    await expect(claimNextTask(context.ctx, automaticOptions)).resolves.toBeNull();
+    await expect(claimTask(context.ctx, orphan.taskId, {
+      mode: 'manual',
+      agent: 'manual',
+      runId: 'run-manual-unregistered',
+    })).rejects.toThrowError(ClaimTaskNotEligibleError);
+
+    await createProject(context.ctx, {
+      projectId: 'project-ghost-unregistered',
+      name: 'Newly registered',
+      description: 'Synthetic project fixture.',
+      resources: [],
+    });
+    await expect(claimNextTask(context.ctx, automaticOptions)).resolves
+      .toMatchObject({ taskId: orphan.taskId, attempts: 1 });
+  });
+
+  it('does not claim an agent task carrying an unparseable claim lease', async () => {
+    const context = await makeContext();
+    const corrupted = readyTask({
+      taskId: 'task-invalid-lease',
+      sourceKey: 'synthetic:invalid-lease',
+      claim: {
+        runId: 'run-corrupted',
+        agent: 'synthetic-agent',
+        claimedAt: '2026-07-14T06:00:00.000Z',
+        leaseExpiresAt: 'not-a-timestamp',
+      },
+    });
+    await context.ctx.tasks.save(corrupted);
+
+    await expect(claimNextTask(context.ctx, automaticOptions)).resolves.toBeNull();
+    // The corrupt lease rides on a leftover claim, so the manual path
+    // surfaces the more specific unexpected_claim contradiction.
+    await expect(claimTask(context.ctx, corrupted.taskId, {
+      mode: 'manual',
+      agent: 'manual',
+      runId: 'run-manual-invalid-lease',
+    })).rejects.toMatchObject({ code: 'unexpected_claim' });
+  });
+
+  it('refuses to claim an agent task that already carries a claim (unexpected_claim)', async () => {
+    const context = await makeContext();
+    const alreadyClaimed = readyTask({
+      taskId: 'task-unexpected-claim',
+      sourceKey: 'synthetic:unexpected-claim',
+      claim: {
+        runId: 'run-pre-existing',
+        agent: 'synthetic-agent',
+        claimedAt: '2026-07-14T06:00:00.000Z',
+        leaseExpiresAt: '2026-07-14T09:00:00.000Z',
+      },
+    });
+    await context.ctx.tasks.save(alreadyClaimed);
+
+    await expect(claimNextTask(context.ctx, automaticOptions)).resolves.toBeNull();
+    await expect(claimTask(context.ctx, alreadyClaimed.taskId, {
+      mode: 'manual',
+      agent: 'manual',
+      runId: 'run-manual-unexpected-claim',
+    })).rejects.toMatchObject({ code: 'unexpected_claim' });
+    // The pre-existing claim must not be silently overwritten.
+    await expect(context.ctx.tasks.get(alreadyClaimed.taskId)).resolves.toMatchObject({
+      status: 'agent_executable',
+      claim: { runId: 'run-pre-existing' },
+      attempts: 0,
+    });
+
+    const released = {
+      ...alreadyClaimed,
+      claim: null,
+      updatedAt: '2026-07-14T07:30:00.000Z',
+    };
+    await context.ctx.tasks.save(released);
+    await expect(claimNextTask(context.ctx, automaticOptions)).resolves
+      .toMatchObject({ taskId: alreadyClaimed.taskId, attempts: 1 });
   });
 });

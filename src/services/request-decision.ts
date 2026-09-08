@@ -110,6 +110,13 @@ export async function requestDecision(
       throw new DecisionRequestAuditFailedError();
     }
     if (staleIndexError !== null) throw staleIndexError;
+    if (ctx.notifyDecision !== undefined) {
+      try {
+        await ctx.notifyDecision(saved);
+      } catch {
+        // Notification is a post-commit side effect; waiting state is authoritative.
+      }
+    }
     return saved;
   });
 }

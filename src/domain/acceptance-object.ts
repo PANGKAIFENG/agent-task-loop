@@ -5,7 +5,7 @@ export type AcceptanceObjectType = 'artifact' | 'weekly';
 export type AcceptanceObjectState = 'pending' | 'later' | 'rejected';
 
 export interface AcceptanceNotificationSnapshot {
-  status: 'sent' | 'failed' | 'conflict';
+  status: 'sent' | 'failed' | 'conflict' | 'unknown';
   attemptedAt: string;
   errorCode: string | null;
 }

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "event_id": "evt-fixture-0007",
+  "atl_task_id": "task-20260820-fixture01",
+  "state": "release_candidate_ready",
+  "summary": "RC 事件缺少不可变 head_sha，必须被拒绝",
+  "decision": null,
+  "recoverability": null,
+  "artifact_refs": [],
+  "release": {
+    "repository": "personal-ai-workbench",
+    "issue": "12",
+    "pr": "13",
+    "head_sha": null
+  },
+  "occurred_at": "2026-08-20T16:00:00.000Z"
+}

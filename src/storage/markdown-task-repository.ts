@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { basename, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -14,6 +15,18 @@ import {
   type TaskBrief,
   type TaskStatus,
 } from '../domain/task.js';
+import {
+  candidateUnderstandingRevisionSchema,
+  type CandidateUnderstandingRevision,
+} from '../domain/candidate-understanding.js';
+import {
+  executionLinkSchema,
+  type ExecutionLink,
+} from '../domain/execution-link.js';
+import {
+  actionRequestSchema,
+  type ActionRequest,
+} from '../domain/action-request.js';
 import type { TaskRepository } from './contracts.js';
 import {
   acquireSafeFileLock,
@@ -309,6 +322,101 @@ function mapTaskBrief(value: unknown): TaskBrief | null {
   return mapped;
 }
 
+function mapCandidateUnderstanding(value: unknown): CandidateUnderstandingRevision | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new InvalidTaskDataError('candidate_understanding');
+  }
+  const candidate = value as Record<string, unknown>;
+  const aliasedValue = (
+    record: Record<string, unknown>,
+    snakeCase: string,
+    camelCase: string,
+  ): unknown => Object.prototype.hasOwnProperty.call(record, snakeCase)
+    ? record[snakeCase]
+    : record[camelCase];
+  const suggestions = Array.isArray(candidate.suggestions)
+    ? candidate.suggestions.map((raw) => {
+        if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+          throw new InvalidTaskDataError('candidate_understanding');
+        }
+        const item = raw as Record<string, unknown>;
+        return {
+          field: item.field,
+          suggestedValue: item.suggested_value ?? item.suggestedValue,
+          attribution: item.attribution,
+          sourceRefIds: item.source_ref_ids ?? item.sourceRefIds,
+          reason: item.reason,
+          generationId: item.generation_id ?? item.generationId,
+        };
+      })
+    : [];
+  const rawSourceRefs = candidate.source_refs ?? candidate.sourceRefs;
+  const sourceRefs = Array.isArray(rawSourceRefs)
+    ? rawSourceRefs.map((raw) => {
+        if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+          throw new InvalidTaskDataError('candidate_understanding');
+        }
+        const item = raw as Record<string, unknown>;
+        const evidence = aliasedValue(item, 'last_verified_evidence', 'lastVerifiedEvidence');
+        let lastVerifiedEvidence: unknown = null;
+        if (typeof evidence === 'object' && evidence !== null && !Array.isArray(evidence)) {
+          const entry = evidence as Record<string, unknown>;
+          lastVerifiedEvidence = {
+            resolvedNote: aliasedValue(entry, 'resolved_note', 'resolvedNote'),
+            checkedCharacters: aliasedValue(entry, 'checked_characters', 'checkedCharacters'),
+            quoteMatched: aliasedValue(entry, 'quote_matched', 'quoteMatched'),
+            truncated: entry.truncated,
+          };
+        }
+        return {
+          sourceRefId: item.source_ref_id ?? item.sourceRefId,
+          sourceType: item.source_type ?? item.sourceType,
+          sourceKey: item.source_key ?? item.sourceKey,
+          sourceNote: aliasedValue(item, 'source_note', 'sourceNote'),
+          anchor: item.anchor,
+          quote: item.quote,
+          capturedAt: item.captured_at ?? item.capturedAt,
+          lastVerifiedAt: aliasedValue(item, 'last_verified_at', 'lastVerifiedAt'),
+          status: item.status,
+          failureReason: aliasedValue(item, 'failure_reason', 'failureReason'),
+          parentContext: aliasedValue(item, 'parent_context', 'parentContext'),
+          lastVerifiedEvidence,
+        };
+      })
+    : [];
+  const gaps = Array.isArray(candidate.gaps)
+    ? candidate.gaps.map((raw) => {
+        if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+          throw new InvalidTaskDataError('candidate_understanding');
+        }
+        const item = raw as Record<string, unknown>;
+        return {
+          gapId: item.gap_id ?? item.gapId,
+          field: item.field,
+          severity: item.severity,
+          reasonCode: item.reason_code ?? item.reasonCode,
+          question: item.question,
+          impact: item.impact,
+          sourceRefIds: item.source_ref_ids ?? item.sourceRefIds,
+        };
+      })
+    : [];
+  const result = candidateUnderstandingRevisionSchema.safeParse({
+    schemaVersion: candidate.schema_version ?? candidate.schemaVersion,
+    generationId: candidate.generation_id ?? candidate.generationId,
+    taskType: candidate.task_type ?? candidate.taskType,
+    suggestions,
+    sourceRefs,
+    gaps,
+    revision: candidate.revision,
+    confirmed: candidate.confirmed,
+    updatedAt: candidate.updated_at ?? candidate.updatedAt,
+  });
+  if (!result.success) throw new InvalidTaskDataError('candidate_understanding');
+  return result.data;
+}
+
 function mapPendingDecision(value: unknown): PendingDecision | null {
   if (value === null || value === undefined) return null;
   if (typeof value !== 'object' || Array.isArray(value)) {
@@ -337,6 +445,193 @@ function mapPendingDecision(value: unknown): PendingDecision | null {
   });
   if (!result.success) throw new InvalidTaskDataError('pending_decision');
   return result.data;
+}
+
+// PAW-GOAL-003 T1: execution_link frontmatter follows the TECH §2 snake_case
+// contract; an unparseable link fails closed instead of silently dropping the
+// dispatch ledger state.
+function mapExecutionLink(value: unknown): ExecutionLink | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new InvalidTaskDataError('execution_link');
+  }
+  const link = value as Record<string, unknown>;
+  const result = executionLinkSchema.safeParse({
+    schemaVersion: link.schema_version ?? link.schemaVersion,
+    provider: link.provider,
+    idempotencyKey: link.idempotency_key ?? link.idempotencyKey,
+    workspaceId: link.workspace_id ?? link.workspaceId,
+    projectId: link.project_id ?? link.projectId,
+    issueId: link.issue_id ?? link.issueId ?? null,
+    issueIdentifier: link.issue_identifier ?? link.issueIdentifier ?? null,
+    ...(link.activation_assignee_id === undefined && link.activationAssigneeId === undefined
+      ? {}
+      : { activationAssigneeId: link.activation_assignee_id ?? link.activationAssigneeId ?? null }),
+    ...(link.activation_run_id === undefined && link.activationRunId === undefined
+      ? {}
+      : { activationRunId: link.activation_run_id ?? link.activationRunId ?? null }),
+    ...(link.context_manifest_id === undefined && link.contextManifestId === undefined
+      ? {}
+      : { contextManifestId: link.context_manifest_id ?? link.contextManifestId ?? null }),
+    ...(link.context_manifest_sha256 === undefined && link.contextManifestSha256 === undefined
+      ? {}
+      : { contextManifestSha256: link.context_manifest_sha256 ?? link.contextManifestSha256 ?? null }),
+    ...(link.execution_binding_receipt_id === undefined && link.executionBindingReceiptId === undefined
+      ? {}
+      : { executionBindingReceiptId: link.execution_binding_receipt_id ?? link.executionBindingReceiptId ?? null }),
+    ...(link.remote_artifact_receipt_ids === undefined && link.remoteArtifactReceiptIds === undefined
+      ? {}
+      : { remoteArtifactReceiptIds: stringArray(link.remote_artifact_receipt_ids ?? link.remoteArtifactReceiptIds) }),
+    ...(link.activation_agent_model === undefined && link.activationAgentModel === undefined
+      ? {}
+      : { activationAgentModel: link.activation_agent_model ?? link.activationAgentModel ?? null }),
+    ...(link.activation_agent_max_concurrent_tasks === undefined && link.activationAgentMaxConcurrentTasks === undefined
+      ? {}
+      : { activationAgentMaxConcurrentTasks: link.activation_agent_max_concurrent_tasks ?? link.activationAgentMaxConcurrentTasks ?? null }),
+    ...(link.activation_agent_runtime_id === undefined && link.activationAgentRuntimeId === undefined
+      ? {}
+      : { activationAgentRuntimeId: link.activation_agent_runtime_id ?? link.activationAgentRuntimeId ?? null }),
+    ...(link.activation_run_status === undefined && link.activationRunStatus === undefined
+      ? {}
+      : { activationRunStatus: link.activation_run_status ?? link.activationRunStatus ?? null }),
+    ...(link.activation_run_runtime_id === undefined && link.activationRunRuntimeId === undefined
+      ? {}
+      : { activationRunRuntimeId: link.activation_run_runtime_id ?? link.activationRunRuntimeId ?? null }),
+    dispatchState: link.dispatch_state ?? link.dispatchState,
+    remoteState: link.remote_state ?? link.remoteState ?? null,
+    lastCommentId: link.last_comment_id ?? link.lastCommentId ?? null,
+    lastEventId: link.last_event_id ?? link.lastEventId ?? null,
+    summary: link.summary ?? null,
+    artifactRefs: stringArray(link.artifact_refs ?? link.artifactRefs),
+    lastAttemptAt: link.last_attempt_at ?? link.lastAttemptAt ?? null,
+    lastSyncedAt: link.last_synced_at ?? link.lastSyncedAt ?? null,
+  });
+  if (!result.success) throw new InvalidTaskDataError('execution_link');
+  return result.data;
+}
+
+function executionLinkFrontmatter(
+  link: Task['executionLink'],
+): Record<string, unknown> | null {
+  if (link === null || link === undefined) return null;
+  return {
+    schema_version: link.schemaVersion,
+    provider: link.provider,
+    idempotency_key: link.idempotencyKey,
+    workspace_id: link.workspaceId,
+    project_id: link.projectId,
+    issue_id: link.issueId,
+    issue_identifier: link.issueIdentifier,
+    ...(link.activationAssigneeId === undefined
+      ? {}
+      : { activation_assignee_id: link.activationAssigneeId }),
+    ...(link.activationRunId === undefined
+      ? {}
+      : { activation_run_id: link.activationRunId }),
+    ...(link.contextManifestId === undefined
+      ? {}
+      : { context_manifest_id: link.contextManifestId }),
+    ...(link.contextManifestSha256 === undefined
+      ? {}
+      : { context_manifest_sha256: link.contextManifestSha256 }),
+    ...(link.executionBindingReceiptId === undefined
+      ? {}
+      : { execution_binding_receipt_id: link.executionBindingReceiptId }),
+    ...(link.remoteArtifactReceiptIds === undefined
+      ? {}
+      : { remote_artifact_receipt_ids: link.remoteArtifactReceiptIds }),
+    ...(link.activationAgentModel === undefined
+      ? {}
+      : { activation_agent_model: link.activationAgentModel }),
+    ...(link.activationAgentMaxConcurrentTasks === undefined
+      ? {}
+      : { activation_agent_max_concurrent_tasks: link.activationAgentMaxConcurrentTasks }),
+    ...(link.activationAgentRuntimeId === undefined
+      ? {}
+      : { activation_agent_runtime_id: link.activationAgentRuntimeId }),
+    ...(link.activationRunStatus === undefined
+      ? {}
+      : { activation_run_status: link.activationRunStatus }),
+    ...(link.activationRunRuntimeId === undefined
+      ? {}
+      : { activation_run_runtime_id: link.activationRunRuntimeId }),
+    dispatch_state: link.dispatchState,
+    remote_state: link.remoteState,
+    last_comment_id: link.lastCommentId,
+    last_event_id: link.lastEventId,
+    summary: link.summary,
+    artifact_refs: link.artifactRefs,
+    last_attempt_at: link.lastAttemptAt,
+    last_synced_at: link.lastSyncedAt,
+  };
+}
+
+// PAW-GOAL-003 T2: action_request frontmatter follows the TECH §2 snake_case
+// contract; an unparseable request fails closed instead of silently dropping
+// the pending human decision.
+function mapActionRequest(value: unknown): ActionRequest | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new InvalidTaskDataError('action_request');
+  }
+  const request = value as Record<string, unknown>;
+  const result = actionRequestSchema.safeParse({
+    schemaVersion: request.schema_version ?? request.schemaVersion,
+    actionId: request.action_id ?? request.actionId,
+    eventId: request.event_id ?? request.eventId,
+    type: request.type,
+    status: request.status,
+    title: request.title,
+    summary: request.summary,
+    allowedActions: stringArray(request.allowed_actions ?? request.allowedActions),
+    multicaIssue: request.multica_issue ?? request.multicaIssue,
+    githubPr: request.github_pr ?? request.githubPr ?? null,
+    headSha: request.head_sha ?? request.headSha ?? null,
+    notificationId: request.notification_id ?? request.notificationId ?? null,
+    handledStreamEventId: request.handled_stream_event_id ?? request.handledStreamEventId ?? null,
+    handledTerminalStep: request.handled_terminal_step ?? request.handledTerminalStep ?? null,
+  });
+  if (!result.success) throw new InvalidTaskDataError('action_request');
+  return result.data;
+}
+
+function actionRequestFrontmatter(
+  request: Task['actionRequest'],
+): Record<string, unknown> | null {
+  if (request === null || request === undefined) return null;
+  return {
+    schema_version: request.schemaVersion,
+    action_id: request.actionId,
+    event_id: request.eventId,
+    type: request.type,
+    status: request.status,
+    title: request.title,
+    summary: request.summary,
+    allowed_actions: request.allowedActions,
+    multica_issue: request.multicaIssue,
+    github_pr: request.githubPr,
+    head_sha: request.headSha,
+    notification_id: request.notificationId,
+    handled_stream_event_id: request.handledStreamEventId,
+    handled_terminal_step: request.handledTerminalStep,
+  };
+}
+
+// TEP-50 fix 1: the retained handled history round-trips under
+// `handled_action_requests`; an unparseable or null entry fails closed exactly
+// like the current request.
+function mapHandledActionRequests(value: unknown): ActionRequest[] {
+  if (value === null || value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new InvalidTaskDataError('handled_action_requests');
+  }
+  return value.flatMap((entry) => {
+    const request = mapActionRequest(entry);
+    if (request === null) {
+      throw new InvalidTaskDataError('handled_action_requests');
+    }
+    return [request];
+  });
 }
 
 function mapDecisionContext(value: unknown): DecisionContext | null {
@@ -380,6 +675,7 @@ export function taskFromDocument(
 ): Task {
   const data = record.data;
   const taskBrief = mapTaskBrief(data.task_brief);
+  const candidateUnderstanding = mapCandidateUnderstanding(data.candidate_understanding);
   const pendingDecision = mapPendingDecision(data.pending_decision);
   const lastDecision = mapDecisionContext(data.last_decision);
   const reviewState = legacyEnum(data, 'review_state', [
@@ -387,12 +683,16 @@ export function taskFromDocument(
     'ready_for_confirm',
     'confirmed',
   ], 'candidate');
-  const taskType = legacyNullableEnum(data, 'task_type', ['research']);
+  const taskType = legacyNullableEnum(data, 'task_type', ['research', 'development']);
   const permissionProfile = legacyNullableEnum(
     data,
     'permission_profile',
-    ['read_only_research'],
+    ['read_only_research', 'repo_delivery'],
   );
+  const executionTarget = legacyNullableEnum(data, 'execution_target', ['multica']);
+  const executionLink = mapExecutionLink(data.execution_link);
+  const actionRequest = mapActionRequest(data.action_request);
+  const handledActionRequests = mapHandledActionRequests(data.handled_action_requests);
   const task: Task = {
     schemaVersion: 1,
     taskId: stringValue(data.task_id, basename(record.path, '.md')),
@@ -406,6 +706,11 @@ export function taskFromDocument(
     acceptanceCriteria: stringArray(data.acceptance_criteria),
     autoExecutable: legacyBoolean(data, 'auto_executable', false),
     permissionProfile,
+    ...(executionTarget === null ? {} : { executionTarget }),
+    ...(Array.isArray(data.context_refs) ? { contextRefs: stringArray(data.context_refs) } : {}),
+    ...(executionLink === null ? {} : { executionLink }),
+    ...(actionRequest === null ? {} : { actionRequest }),
+    ...(handledActionRequests.length === 0 ? {} : { handledActionRequests }),
     origin: stringValue(data.origin, 'legacy'),
     sourceDate: nullableString(data.source_date),
     sourceNote: nullableString(data.source_note),
@@ -425,6 +730,7 @@ export function taskFromDocument(
     ...(pendingDecision === null ? {} : { pendingDecision }),
     ...(lastDecision === null ? {} : { lastDecision }),
     ...(taskBrief === null ? {} : { taskBrief }),
+    ...(candidateUnderstanding === null ? {} : { candidateUnderstanding }),
     createdAt: stringValue(data.created_at, '1970-01-01T00:00:00.000Z'),
     updatedAt: stringValue(data.updated_at, '1970-01-01T00:00:00.000Z'),
   };
@@ -458,6 +764,58 @@ function taskBriefFrontmatter(brief: Task['taskBrief']): Record<string, unknown>
     next_action: brief.nextAction,
     completion_criteria: brief.completionCriteria,
     updated_at: brief.updatedAt,
+  };
+}
+
+function candidateUnderstandingFrontmatter(
+  candidate: Task['candidateUnderstanding'],
+): Record<string, unknown> | null {
+  if (candidate === null || candidate === undefined) return null;
+  return {
+    schema_version: candidate.schemaVersion,
+    generation_id: candidate.generationId,
+    task_type: candidate.taskType,
+    revision: candidate.revision,
+    confirmed: candidate.confirmed,
+    updated_at: candidate.updatedAt,
+    suggestions: candidate.suggestions.map((item) => ({
+      field: item.field,
+      suggested_value: item.suggestedValue,
+      attribution: item.attribution,
+      source_ref_ids: item.sourceRefIds,
+      reason: item.reason,
+      generation_id: item.generationId,
+    })),
+    source_refs: candidate.sourceRefs.map((item) => ({
+      source_ref_id: item.sourceRefId,
+      source_type: item.sourceType,
+      source_key: item.sourceKey,
+      source_note: item.sourceNote,
+      anchor: item.anchor,
+      quote: item.quote,
+      captured_at: item.capturedAt,
+      last_verified_at: item.lastVerifiedAt,
+      status: item.status,
+      failure_reason: item.failureReason,
+      parent_context: item.parentContext,
+      last_verified_evidence: item.lastVerifiedEvidence === null
+        ? null
+        : {
+            resolved_note: item.lastVerifiedEvidence.resolvedNote,
+            checked_characters: item.lastVerifiedEvidence.checkedCharacters,
+            quote_matched: item.lastVerifiedEvidence.quoteMatched,
+            truncated: item.lastVerifiedEvidence.truncated,
+          },
+    })),
+    gaps: candidate.gaps.map((item) => ({
+      gap_id: item.gapId,
+      field: item.field,
+      severity: item.severity,
+      reason_code: item.reasonCode,
+      question: item.question,
+      impact: item.impact,
+      source_ref_ids: item.sourceRefIds,
+    })),
   };
 }
 
@@ -508,17 +866,36 @@ function mergeTaskData(
   task: Task,
 ): Record<string, unknown> {
   const taskBrief = taskBriefFrontmatter(task.taskBrief);
+  const candidateUnderstanding = candidateUnderstandingFrontmatter(
+    task.candidateUnderstanding,
+  );
   const pendingDecision = pendingDecisionFrontmatter(task.pendingDecision);
   const lastDecision = decisionContextFrontmatter(task.lastDecision);
+  const executionLink = executionLinkFrontmatter(task.executionLink);
+  const actionRequest = actionRequestFrontmatter(task.actionRequest);
+  const handledActionRequests = (task.handledActionRequests ?? [])
+    .map((request) => actionRequestFrontmatter(request));
   const base = { ...original };
   if (task.taskBrief === null) {
     delete base.task_brief;
+  }
+  if (task.candidateUnderstanding === null) {
+    delete base.candidate_understanding;
   }
   if (task.pendingDecision === null) {
     delete base.pending_decision;
   }
   if (task.lastDecision === null) {
     delete base.last_decision;
+  }
+  if (executionLink === null) {
+    delete base.execution_link;
+  }
+  if (actionRequest === null) {
+    delete base.action_request;
+  }
+  if (handledActionRequests.length === 0) {
+    delete base.handled_action_requests;
   }
   return {
     ...base,
@@ -534,6 +911,13 @@ function mergeTaskData(
     acceptance_criteria: task.acceptanceCriteria,
     auto_executable: task.autoExecutable,
     permission_profile: task.permissionProfile,
+    execution_target: task.executionTarget ?? null,
+    ...(task.contextRefs === undefined ? {} : { context_refs: task.contextRefs }),
+    execution_link: executionLink,
+    ...(actionRequest === null ? {} : { action_request: actionRequest }),
+    ...(handledActionRequests.length === 0
+      ? {}
+      : { handled_action_requests: handledActionRequests }),
     origin: task.origin,
     source_date: task.sourceDate,
     source_note: task.sourceNote,
@@ -549,6 +933,9 @@ function mergeTaskData(
     ...(pendingDecision === null ? {} : { pending_decision: pendingDecision }),
     ...(lastDecision === null ? {} : { last_decision: lastDecision }),
     ...(taskBrief === null ? {} : { task_brief: taskBrief }),
+    ...(candidateUnderstanding === null
+      ? {}
+      : { candidate_understanding: candidateUnderstanding }),
     created_at: task.createdAt,
     updated_at: task.updatedAt,
   };
@@ -568,6 +955,7 @@ export class MarkdownTaskRepository implements TaskRepository {
   private readonly sourceClaim: SourceClaimOptions;
   private readonly taskLock: SourceClaimOptions;
   private readonly writeAuthorization: VaultWriteAuthorization | undefined;
+  private readonly heldTaskLocks = new AsyncLocalStorage<ReadonlySet<string>>();
 
   constructor(root?: string, options: MarkdownTaskRepositoryOptions = {}) {
     this.root = vaultRoot(root);
@@ -613,6 +1001,10 @@ export class MarkdownTaskRepository implements TaskRepository {
     if (!isSafePathSegment(taskId)) {
       throw new InvalidTaskDataError();
     }
+    const inheritedLocks = this.heldTaskLocks.getStore();
+    if (inheritedLocks?.has(taskId) === true) {
+      return operation();
+    }
     const lockRoot = join(this.tasksRoot, '.atl', 'task-locks');
     const lockKey = createHash('sha256').update(taskId).digest('hex');
     const lockPath = join(lockRoot, `${lockKey}.lock`);
@@ -647,7 +1039,10 @@ export class MarkdownTaskRepository implements TaskRepository {
         }
       }
       try {
-        return await operation();
+        return await this.heldTaskLocks.run(
+          new Set([...(inheritedLocks ?? []), taskId]),
+          operation,
+        );
       } finally {
         await lock.release();
       }
@@ -740,11 +1135,11 @@ export class MarkdownTaskRepository implements TaskRepository {
   }
 
   async save(task: Task): Promise<Task> {
-    return this.saveTask(task, true);
+    return this.withTaskLock(task.taskId, () => this.saveTask(task, true));
   }
 
   async saveBody(task: Task): Promise<Task> {
-    return this.saveTask(task, false);
+    return this.withTaskLock(task.taskId, () => this.saveTask(task, false));
   }
 
   private async saveTask(task: Task, preserveExistingBody: boolean): Promise<Task> {

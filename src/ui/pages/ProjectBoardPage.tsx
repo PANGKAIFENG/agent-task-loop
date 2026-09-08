@@ -15,6 +15,7 @@ const knownColumns: Array<{ status: TaskStatus; label: string }> = [
   { status: 'ready', label: '待办' },
   { status: 'agent_executable', label: 'Agent 待执行' },
   { status: 'in_progress', label: '进行中' },
+  { status: 'waiting_for_decision', label: '待决策' },
   { status: 'review', label: '审核中' },
   { status: 'done', label: '已完成' },
   { status: 'blocked', label: '已阻塞' },
@@ -23,6 +24,16 @@ const knownColumns: Array<{ status: TaskStatus; label: string }> = [
 
 const priorityLabels: Record<Priority, string> = {
   urgent: '紧急', high: '高', normal: '普通', low: '低',
+};
+
+// PAW-GOAL-003 T2 (PRD 7.1): the board only surfaces the action signal and
+// the Multica issue of a pending action_request; the original task stays the
+// single durable entry point for the decision itself.
+const actionSignalLabels: Record<string, string> = {
+  needs_decision: '需要决策',
+  blocked: '需要处理·阻塞',
+  failed: '需要处理·失败',
+  release_candidate_ready: 'RC 待验收',
 };
 
 interface ProjectBoardPageProps {
@@ -96,6 +107,14 @@ export function ProjectBoardPage({ projectId, navigate }: ProjectBoardPageProps)
                     {columnTasks.map((task: TaskDto) => (
                       <article className="task-card" key={task.taskId}>
                         <h3>{task.title}</h3><p>{task.origin}</p>
+                        {task.actionRequest?.status === 'pending' && (
+                          <p className="task-card-action" data-action-type={task.actionRequest.type}>
+                            <span className={`signal signal-${task.actionRequest.type === 'release_candidate_ready' ? 'success' : 'warning'}`}>
+                              {actionSignalLabels[task.actionRequest.type] ?? task.actionRequest.type}
+                            </span>
+                            <span className="task-card-issue">{task.actionRequest.multicaIssue}</span>
+                          </p>
+                        )}
                         <footer><span className={`priority priority-${task.priority}`}>{priorityLabels[task.priority]}</span>{task.status === 'agent_executable' && <span className="signal signal-success">Agent</span>}</footer>
                       </article>
                     ))}

@@ -1,12 +1,18 @@
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Project } from '../../../src/domain/project.js';
+import {
+  projectContextSha256,
+  type ResolvedProjectContext,
+} from '../../../src/domain/project-context-resolution.js';
 import type { Task } from '../../../src/domain/task.js';
 import type { AcceptanceObject } from '../../../src/domain/acceptance-object.js';
 import { ClaudeDriverError } from '../../../src/runner/claude-driver.js';
+import { createArtifactChainContextPlanner } from '../../../src/runner/artifact-chain-runtime.js';
 import type { ResearchDriver } from '../../../src/runner/research-driver.js';
 import {
   createRunnerController,
@@ -15,6 +21,13 @@ import {
 } from '../../../src/runner/runner-controller.js';
 import type { ResearchResult } from '../../../src/runner/result-contract.js';
 import { recordDecision } from '../../../src/services/record-decision.js';
+import { bindCodexTask } from '../../../src/services/bind-codex-task.js';
+import {
+  queryCodexFeedbackCandidates,
+  selectCodexFeedbackContext,
+} from '../../../src/services/select-codex-feedback-context.js';
+import { settleCodexFeedback } from '../../../src/services/settle-codex-feedback.js';
+import { snapshotCodexArtifact } from '../../../src/services/snapshot-codex-artifact.js';
 import { queryEvalSamples } from '../../../src/services/query-eval-samples.js';
 import { reviewArtifactFromExternalReply } from '../../../src/services/review-artifact-from-external-reply.js';
 import { reviewTask } from '../../../src/services/review-task.js';
@@ -22,6 +35,8 @@ import {
   createTestServiceContext,
   type TestServiceContext,
 } from '../../helpers/service-context.js';
+import { FileCodexFeedbackStateRepository } from '../../../src/storage/file-codex-feedback-state-repository.js';
+import { MarkdownCodexFeedbackRepository } from '../../../src/storage/markdown-codex-feedback-repository.js';
 
 const NOW = '2026-07-15T00:00:00.000Z';
 const contexts: TestServiceContext[] = [];
@@ -110,13 +125,20 @@ function controller(
   context: TestServiceContext,
   driver: ResearchDriver,
   runIds: string[] = ['run-runner-001'],
+  options: {
+    allowedLocalRoots?: string[];
+    artifactChainContextPlanner?: Parameters<typeof createRunnerController>[0]['artifactChainContextPlanner'];
+  } = {},
 ) {
   let nextRun = 0;
   return createRunnerController({
     ctx: context.ctx,
     driver,
     runtimeRoot: join(context.root, '.atl-runtime'),
-    allowedLocalRoots: [],
+    allowedLocalRoots: options.allowedLocalRoots ?? [],
+    ...(options.artifactChainContextPlanner === undefined
+      ? {}
+      : { artifactChainContextPlanner: options.artifactChainContextPlanner }),
     leaseMinutes: 60,
     timeoutMs: 30 * 60 * 1000,
     agent: 'synthetic-runner',
@@ -216,9 +238,9 @@ describe('bounded run-once orchestration', () => {
 
   it('freezes one Runtime Pack before execution and binds it to the Artifact and audit', async () => {
     const context = await setup();
-    const execute = vi.fn<ResearchDriver['execute']>().mockImplementation(async ({ context: bundle }) => {
+    const execute = vi.fn<ResearchDriver['execute']>().mockImplementation(async () => {
       const files = await readdir(join(context.root, '.atl-runtime', 'context-packs'));
-      expect(files).toEqual([`${bundle.packId}.json`]);
+      expect(files).toEqual([expect.stringMatching(/^rpr_[0-9a-f]{24}\.json$/)]);
       return result();
     });
 
@@ -254,6 +276,514 @@ describe('bounded run-once orchestration', () => {
           details: expect.objectContaining({ packId: bundle?.packId }),
         }),
       ]));
+  });
+
+  it('freezes actual selected context in a Manifest before the driver starts', async () => {
+    const context = await setup();
+    const assistantContextRoot = join(context.root, 'synthetic-assistant-context');
+    const feedbackPath = join(assistantContextRoot, 'confirmed-feedback.md');
+    await mkdir(assistantContextRoot);
+    await writeFile(
+      feedbackPath,
+      'Produce a decision-ready first artifact before requesting refinement.\n',
+    );
+    const resolvedProject: ResolvedProjectContext = {
+      status: 'resolved',
+      projectId: 'project-runner',
+      match: {
+        kind: 'explicit_project_id',
+        value: 'project-runner',
+        sourceRef: null,
+      },
+      registry: {
+        projectId: 'project-runner',
+        aliases: ['synthetic runner'],
+        verification: 'verified',
+        canonicalProjectRef: 'projects://synthetic/runner',
+        atlProjectId: 'project-runner',
+        repoRefs: ['repo://personal-ai-workbench'],
+      },
+      canonical: {
+        projectId: 'project-runner',
+        ref: 'projects://synthetic/runner',
+        atlProjectId: 'project-runner',
+        repoRefs: ['repo://personal-ai-workbench'],
+        version: 'v1',
+        sha256: 'a'.repeat(64),
+      },
+      atl: {
+        project: project(),
+        ref: 'atl-project://project-runner',
+        canonicalProjectRef: 'projects://synthetic/runner',
+        repoRefs: ['repo://personal-ai-workbench'],
+        sha256: projectContextSha256(project()),
+      },
+    };
+    const execute = vi.fn<ResearchDriver['execute']>().mockImplementation(async ({ context: bundle }) => {
+      expect(bundle.blocks).toContainEqual(expect.objectContaining({
+        label: 'feedback_decision_ready',
+        kind: 'feedback',
+        content: expect.stringContaining('decision-ready first artifact'),
+      }));
+      const manifestFiles = await readdir(join(
+        context.root,
+        '.atl-runtime',
+        'context-manifests',
+      ));
+      expect(manifestFiles).toHaveLength(1);
+      return result();
+    });
+
+    const outcome = await controller(
+      context,
+      fakeDriver(execute),
+      ['run-runner-manifest-001'],
+      {
+        allowedLocalRoots: [assistantContextRoot],
+        artifactChainContextPlanner: async ({ task, project: currentProject }) => ({
+          projectContext: {
+            requestedProjectId: resolvedProject.projectId,
+            sourceSignals: [],
+            registry: [resolvedProject.registry],
+            canonicalProjects: [resolvedProject.canonical],
+            atlProjects: [resolvedProject.atl],
+          },
+          additionalLocalContexts: [{
+            label: 'feedback_decision_ready',
+            kind: 'feedback',
+            path: feedbackPath,
+            sourceRef: 'feedback://synthetic/decision-ready',
+            version: 'v1',
+          }],
+          candidates: [
+            {
+              candidateId: 'task-current',
+              category: 'task',
+              sourceRef: `task://${task.taskId}`,
+              version: task.updatedAt,
+              expectedSha256: null,
+              selection: 'selected',
+              selectionReason: 'The claimed task defines the current objective.',
+              blockLabel: 'task',
+            },
+            {
+              candidateId: 'project-current',
+              category: 'project',
+              sourceRef: `atl-project://${currentProject.projectId}`,
+              version: currentProject.updatedAt,
+              expectedSha256: null,
+              selection: 'selected',
+              selectionReason: 'The resolved ATL project owns this task.',
+              blockLabel: 'project',
+            },
+            {
+              candidateId: 'feedback-decision-ready',
+              category: 'feedback',
+              sourceRef: 'feedback://synthetic/decision-ready',
+              version: 'v1',
+              expectedSha256: null,
+              selection: 'selected',
+              selectionReason: 'Confirmed feedback applies to decision-input research.',
+              blockLabel: 'feedback_decision_ready',
+            },
+          ],
+        }),
+      },
+    ).runAndWait({ mode: 'automatic' });
+
+    expect(outcome).toMatchObject({ status: 'submitted' });
+    const [packFile] = await readdir(join(context.root, '.atl-runtime', 'context-packs'));
+    const pack = JSON.parse(await readFile(join(
+      context.root,
+      '.atl-runtime',
+      'context-packs',
+      packFile!,
+    ), 'utf8')) as Record<string, unknown>;
+    expect(pack).toMatchObject({
+      contextManifestId: expect.stringMatching(/^cm_[0-9a-f]{24}$/),
+      contextManifestSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    await expect(context.ctx.audit.listForTask('task-runner-default')).resolves
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: 'context_manifest.frozen',
+          runId: 'run-runner-manifest-001',
+          details: expect.objectContaining({
+            status: 'ready',
+            consumedCount: 3,
+          }),
+        }),
+    ]));
+  });
+
+  it.each(['selected', 'excluded'] as const)(
+    'injects only the active %s selection through the production planner', async (finalDecision) => {
+    const context = await setup();
+    const feedbackState = new FileCodexFeedbackStateRepository(
+      join(context.root, '.atl-runtime', 'codex-feedback'),
+    );
+    const feedbackVisible = new MarkdownCodexFeedbackRepository(context.root);
+    const sourceRoot = join(context.root, 'codex-feedback-fixtures');
+    const sourcePath = join(sourceRoot, 'source-artifact.md');
+    const targetPath = join(sourceRoot, 'target-artifact.md');
+    const sourceNotePath = join(context.root, '笔记同步助手', '2026-09-07', 'source.md');
+    await mkdir(sourceRoot, { recursive: true });
+    await mkdir(join(sourceNotePath, '..'), { recursive: true });
+    await writeFile(sourcePath, '# Source artifact\n', 'utf8');
+    await writeFile(targetPath, '# Target artifact\n', 'utf8');
+    await writeFile(sourceNotePath, '# Source note\n', 'utf8');
+
+    const sourceBinding = (await bindCodexTask({
+      repository: feedbackState,
+      clock: () => new Date(NOW),
+    }, {
+      threadId: 'thread-feedback-source',
+      taskId: 'task-feedback-source',
+      sourceRef: '笔记同步助手/2026-09-07/source.md#feedback',
+      sourceSha256: createHash('sha256').update('# Source note\n').digest('hex'),
+      artifactRoot: sourceRoot,
+      artifactPath: sourcePath,
+      experimentId: 'experiment-production-feedback',
+    })).binding;
+    await snapshotCodexArtifact({ repository: feedbackState, clock: () => new Date(NOW) }, {
+      bindingId: sourceBinding.bindingId,
+      artifactVersion: 1,
+    });
+    await settleCodexFeedback({
+      stateRepository: feedbackState,
+      visibleRepository: feedbackVisible,
+      clock: () => new Date(NOW),
+    }, {
+      bindingId: sourceBinding.bindingId,
+      messageId: 'message-production-feedback',
+      messageContent: 'Make the report decision-oriented.',
+      artifactVersion: 1,
+      classification: 'reusable_correction',
+      summary: 'Lead with the decision and make trade-offs explicit.',
+      applicabilityLabels: ['research_report'],
+      guidance: 'Put evidence after the decision and trade-offs.',
+      captureMode: 'automatic',
+    });
+
+    const targetBinding = (await bindCodexTask({
+      repository: feedbackState,
+      clock: () => new Date(NOW),
+    }, {
+      threadId: 'thread-task-runner-default',
+      taskId: 'task-runner-default',
+      sourceRef: '笔记同步助手/2026-09-07/source.md#target',
+      sourceSha256: createHash('sha256').update('# Source note\n').digest('hex'),
+      artifactRoot: sourceRoot,
+      artifactPath: targetPath,
+      experimentId: 'experiment-production-feedback',
+    })).binding;
+    await snapshotCodexArtifact({ repository: feedbackState, clock: () => new Date(NOW) }, {
+      bindingId: targetBinding.bindingId,
+      artifactVersion: 1,
+    });
+    const candidates = await queryCodexFeedbackCandidates({
+      stateRepository: feedbackState,
+      visibleRepository: feedbackVisible,
+    }, { targetBindingId: targetBinding.bindingId });
+    const exclusions = candidates.map((candidate) => ({
+      feedbackId: candidate.feedbackId,
+      expectedDocumentSha256: candidate.documentSha256,
+      decision: 'excluded' as const,
+      reason: 'Not applicable to this research report.',
+    }));
+    await selectCodexFeedbackContext({
+      stateRepository: feedbackState,
+      visibleRepository: feedbackVisible,
+      clock: () => new Date(NOW),
+    }, { targetBindingId: targetBinding.bindingId, decisions: exclusions });
+    await selectCodexFeedbackContext({
+      stateRepository: feedbackState,
+      visibleRepository: feedbackVisible,
+      clock: () => new Date(NOW),
+    }, {
+      targetBindingId: targetBinding.bindingId,
+      decisions: candidates.map((candidate) => ({
+        feedbackId: candidate.feedbackId,
+        expectedDocumentSha256: candidate.documentSha256,
+        decision: 'selected' as const,
+        reason: 'Confirmed correction applies to this research report.',
+      })),
+    });
+
+    if (finalDecision === 'excluded') {
+      await selectCodexFeedbackContext({
+        stateRepository: feedbackState,
+        visibleRepository: feedbackVisible,
+        clock: () => new Date(NOW),
+      }, { targetBindingId: targetBinding.bindingId, decisions: exclusions });
+    }
+
+    const execute = vi.fn<ResearchDriver['execute']>().mockImplementation(async ({ context: bundle }) => {
+      const feedbackBlocks = bundle.blocks.filter((block) => block.kind === 'feedback');
+      if (finalDecision === 'selected') {
+        expect(feedbackBlocks).toEqual([expect.objectContaining({
+          content: expect.stringContaining('Lead with the decision'),
+        })]);
+      } else {
+        expect(feedbackBlocks).toEqual([]);
+      }
+      return result();
+    });
+    await expect(controller(
+      context,
+      fakeDriver(execute),
+      ['run-production-feedback-001'],
+      {
+        allowedLocalRoots: [context.root],
+        artifactChainContextPlanner: createArtifactChainContextPlanner({
+          vaultRoot: context.root,
+        }),
+      },
+    ).runAndWait({ mode: 'automatic' })).resolves.toMatchObject({
+      status: 'submitted',
+      taskId: 'task-runner-default',
+      runId: 'run-production-feedback-001',
+    });
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it('blocks a Run before driver execution when selected context lacks read evidence', async () => {
+    const context = await setup();
+    const execute = vi.fn<ResearchDriver['execute']>().mockResolvedValue(result());
+    const currentProject = project();
+    const resolvedProject: ResolvedProjectContext = {
+      status: 'resolved',
+      projectId: currentProject.projectId,
+      match: {
+        kind: 'explicit_project_id',
+        value: currentProject.projectId,
+        sourceRef: null,
+      },
+      registry: {
+        projectId: currentProject.projectId,
+        aliases: [],
+        verification: 'verified',
+        canonicalProjectRef: 'projects://synthetic/runner',
+        atlProjectId: currentProject.projectId,
+        repoRefs: [],
+      },
+      canonical: {
+        projectId: currentProject.projectId,
+        ref: 'projects://synthetic/runner',
+        atlProjectId: currentProject.projectId,
+        repoRefs: [],
+        version: 'v1',
+        sha256: 'a'.repeat(64),
+      },
+      atl: {
+        project: currentProject,
+        ref: `atl-project://${currentProject.projectId}`,
+        canonicalProjectRef: 'projects://synthetic/runner',
+        repoRefs: [],
+        sha256: projectContextSha256(currentProject),
+      },
+    };
+
+    const outcome = await controller(
+      context,
+      fakeDriver(execute),
+      ['run-runner-manifest-blocked'],
+      {
+        artifactChainContextPlanner: async () => ({
+          projectContext: {
+            requestedProjectId: resolvedProject.projectId,
+            sourceSignals: [],
+            registry: [resolvedProject.registry],
+            canonicalProjects: [resolvedProject.canonical],
+            atlProjects: [resolvedProject.atl],
+          },
+          additionalLocalContexts: [],
+          candidates: [
+            {
+              candidateId: 'task-current',
+              category: 'task',
+              sourceRef: 'task://task-runner-default',
+              version: NOW,
+              expectedSha256: null,
+              selection: 'selected',
+              selectionReason: 'Current task.',
+              blockLabel: 'task',
+            },
+            {
+              candidateId: 'project-current',
+              category: 'project',
+              sourceRef: 'atl-project://project-runner',
+              version: NOW,
+              expectedSha256: null,
+              selection: 'selected',
+              selectionReason: 'Current project.',
+              blockLabel: 'project',
+            },
+            {
+              candidateId: 'feedback-required',
+              category: 'feedback',
+              sourceRef: 'feedback://synthetic/required',
+              version: 'v1',
+              expectedSha256: null,
+              selection: 'selected',
+              selectionReason: 'Confirmed feedback applies.',
+              blockLabel: 'feedback_required',
+            },
+          ],
+        }),
+      },
+    ).runAndWait({ mode: 'automatic' });
+
+    expect(outcome).toEqual({
+      status: 'requeued',
+      taskId: 'task-runner-default',
+      runId: 'run-runner-manifest-blocked',
+      errorCode: 'context_manifest_blocked',
+    });
+    expect(execute).not.toHaveBeenCalled();
+    const files = await readdir(join(context.root, '.atl-runtime', 'context-manifests'));
+    expect(files).toHaveLength(1);
+  });
+
+  it('rejects Planner project evidence that does not match the persisted Project readback', async () => {
+    const context = await setup();
+    const execute = vi.fn<ResearchDriver['execute']>().mockResolvedValue(result());
+    const forgedProject = {
+      ...project(),
+      description: 'Planner-only content that was never persisted.',
+    };
+
+    const outcome = await controller(
+      context,
+      fakeDriver(execute),
+      ['run-runner-project-readback-conflict'],
+      {
+        artifactChainContextPlanner: async ({ task, project: persistedProject }) => {
+          expect(projectContextSha256(persistedProject))
+            .not.toBe(projectContextSha256(forgedProject));
+          return {
+            projectContext: {
+            requestedProjectId: 'project-runner',
+            sourceSignals: [],
+            registry: [{
+              projectId: 'project-runner',
+              aliases: [],
+              verification: 'verified',
+              canonicalProjectRef: 'projects://synthetic/runner',
+              atlProjectId: 'project-runner',
+              repoRefs: [],
+            }],
+            canonicalProjects: [{
+              projectId: 'project-runner',
+              ref: 'projects://synthetic/runner',
+              atlProjectId: 'project-runner',
+              repoRefs: [],
+              version: 'v1',
+              sha256: 'a'.repeat(64),
+            }],
+            atlProjects: [{
+              project: forgedProject,
+              ref: 'atl-project://project-runner',
+              canonicalProjectRef: 'projects://synthetic/runner',
+              repoRefs: [],
+              sha256: projectContextSha256(forgedProject),
+            }],
+          },
+          additionalLocalContexts: [],
+            candidates: [{
+            candidateId: 'task-current',
+            category: 'task',
+            sourceRef: `task://${task.taskId}`,
+            version: task.updatedAt,
+            expectedSha256: null,
+            selection: 'selected',
+            selectionReason: 'Current task.',
+            blockLabel: 'task',
+            }],
+          };
+        },
+      },
+    ).runAndWait({ mode: 'automatic' });
+
+    expect(outcome).toEqual({
+      status: 'requeued',
+      taskId: 'task-runner-default',
+      runId: 'run-runner-project-readback-conflict',
+      errorCode: 'invalid_runner_input',
+    });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('rejects cross-project reuse of a stable project identity before driver execution', async () => {
+    const context = await setup();
+    const execute = vi.fn<ResearchDriver['execute']>().mockResolvedValue(result());
+    const currentProject = project();
+
+    const outcome = await controller(
+      context,
+      fakeDriver(execute),
+      ['run-runner-cross-project-identity'],
+      {
+        artifactChainContextPlanner: async ({ task }) => ({
+          projectContext: {
+            requestedProjectId: currentProject.projectId,
+            sourceSignals: [],
+            registry: [
+              {
+                projectId: currentProject.projectId,
+                aliases: [],
+                verification: 'verified',
+                canonicalProjectRef: 'projects://synthetic/runner',
+                atlProjectId: currentProject.projectId,
+                repoRefs: [],
+              },
+              {
+                projectId: 'project-other',
+                aliases: [],
+                verification: 'verified',
+                canonicalProjectRef: 'projects://synthetic/runner',
+                atlProjectId: 'project-other',
+                repoRefs: [],
+              },
+            ],
+            canonicalProjects: [{
+              projectId: currentProject.projectId,
+              ref: 'projects://synthetic/runner',
+              atlProjectId: currentProject.projectId,
+              repoRefs: [],
+              version: 'v1',
+              sha256: 'a'.repeat(64),
+            }],
+            atlProjects: [{
+              project: currentProject,
+              ref: `atl-project://${currentProject.projectId}`,
+              canonicalProjectRef: 'projects://synthetic/runner',
+              repoRefs: [],
+              sha256: projectContextSha256(currentProject),
+            }],
+          },
+          additionalLocalContexts: [],
+          candidates: [{
+            candidateId: 'task-current',
+            category: 'task',
+            sourceRef: `task://${task.taskId}`,
+            version: task.updatedAt,
+            expectedSha256: null,
+            selection: 'selected',
+            selectionReason: 'Current task.',
+            blockLabel: 'task',
+          }],
+        }),
+      },
+    ).runAndWait({ mode: 'automatic' });
+
+    expect(outcome).toEqual({
+      status: 'requeued',
+      taskId: 'task-runner-default',
+      runId: 'run-runner-cross-project-identity',
+      errorCode: 'invalid_runner_input',
+    });
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it('records a pending capability Eval sample when a frozen run is approved', async () => {
@@ -438,6 +968,8 @@ describe('bounded run-once orchestration', () => {
 
   it('pauses a task when the driver requests a user decision', async () => {
     const context = await setup();
+    const notifyDecision = vi.fn().mockResolvedValue({ status: 'sent' });
+    context.ctx.notifyDecision = notifyDecision;
     const execute = vi.fn<ResearchDriver['execute']>().mockResolvedValue({
       kind: 'decision_request',
       decisionRequestId: 'decision-runner-001',
@@ -462,12 +994,43 @@ describe('bounded run-once orchestration', () => {
         claim: null,
         pendingDecision: { requestId: 'decision-runner-001' },
       });
+    expect(notifyDecision).toHaveBeenCalledOnce();
+    expect(notifyDecision).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'task-runner-default',
+      status: 'waiting_for_decision',
+      pendingDecision: expect.objectContaining({ requestId: 'decision-runner-001' }),
+    }));
     const audit = await context.ctx.audit.listForTask('task-runner-default');
     expect(audit.map(({ event }) => event)).toEqual([
       'task.claimed',
       'context_pack.frozen',
       'decision.requested',
     ]);
+  });
+
+  it('keeps the durable decision state when DingTalk notification fails', async () => {
+    const context = await setup();
+    context.ctx.notifyDecision = vi.fn().mockRejectedValue(
+      new Error('synthetic notification failure'),
+    );
+    const execute = vi.fn<ResearchDriver['execute']>().mockResolvedValue({
+      kind: 'decision_request',
+      decisionRequestId: 'decision-runner-notify-failure',
+      question: 'Which direction should continue?',
+      options: [{ id: 'option-a', label: 'Option A' }],
+    } as never);
+
+    await expect(controller(context, fakeDriver(execute)).runAndWait({
+      mode: 'automatic',
+    })).resolves.toMatchObject({
+      status: 'waiting_for_decision',
+      decisionRequestId: 'decision-runner-notify-failure',
+    });
+    await expect(context.ctx.tasks.get('task-runner-default')).resolves
+      .toMatchObject({
+        status: 'waiting_for_decision',
+        pendingDecision: { requestId: 'decision-runner-notify-failure' },
+      });
   });
 
   it('continues the same task with a new run after one exact decision event', async () => {

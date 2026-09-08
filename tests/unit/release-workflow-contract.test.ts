@@ -40,4 +40,14 @@ describe('release workflow contract', () => {
       'build/obsidian-plugin/atl-dingtalk-bridge.mjs#atl-dingtalk-bridge.mjs',
     );
   });
+
+  it('ships the DingTalk Stream listener in both the installable ZIP and release assets', async () => {
+    const workflow = await readFile('.github/workflows/release.yml', 'utf8');
+
+    expect(workflow).toContain('test -f build/obsidian-plugin/atl-dingtalk-stream.mjs');
+    expect(workflow).toMatch(/zip[^\n]*atl-dingtalk-stream\.mjs/u);
+    expect(workflow).toContain(
+      'build/obsidian-plugin/atl-dingtalk-stream.mjs#atl-dingtalk-stream.mjs',
+    );
+  });
 });

@@ -13,14 +13,19 @@ import {
   unlink,
 } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { delimiter, dirname, isAbsolute, join } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { optionalDingTalkProfile } from '../dingtalk-profile.js';
+import {
+  optionalDingTalkProfile,
+  optionalDingTalkRobotCode,
+} from '../dingtalk-profile.js';
 
 export const LAUNCH_AGENT_LABEL = 'ai.agent-task-loop.runner';
 export const LAUNCH_AGENT_FILE_NAME = `${LAUNCH_AGENT_LABEL}.plist`;
+export const DINGTALK_STREAM_LAUNCH_AGENT_LABEL = 'ai.agent-task-loop.dingtalk-stream';
+export const DINGTALK_STREAM_LAUNCH_AGENT_FILE_NAME = `${DINGTALK_STREAM_LAUNCH_AGENT_LABEL}.plist`;
 const MINIMAL_PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
 const TIME_ZONE = 'Asia/Shanghai';
 const RUNNER_INTERVAL_SECONDS = 15 * 60;
@@ -38,9 +43,16 @@ export interface RenderLaunchAgentOptions {
   environment?: NodeJS.ProcessEnv;
   homeDirectory?: string;
   nodeExecutable?: string;
+  processArguments?: readonly string[];
   repositoryRoot?: string;
   runnerEntry?: string;
   systemTimeZone?: () => string | Promise<string>;
+}
+
+export interface RenderDingTalkStreamLaunchAgentOptions extends RenderLaunchAgentOptions {
+  streamEntry?: string;
+  bridgeEntry?: string;
+  dwsExecutable?: string;
 }
 
 export interface LaunchAgentCommandAdapter {
@@ -95,10 +107,23 @@ export interface RenderedLaunchAgent {
     ATL_CLAUDE_MODEL?: string;
     ANTHROPIC_BASE_URL?: string;
     ATL_DINGTALK_PROFILE?: string;
+    ATL_DINGTALK_ROBOT_CODE?: string;
+    ATL_DWS_EXECUTABLE?: string;
     ATL_ALLOWED_LOCAL_ROOTS: string;
     HOME: string;
     PATH: string;
   }>;
+  workingDirectory: string;
+  standardOutPath: string;
+  standardErrorPath: string;
+}
+
+export interface RenderedDingTalkStreamLaunchAgent {
+  label: typeof DINGTALK_STREAM_LAUNCH_AGENT_LABEL;
+  path: string;
+  plist: string;
+  programArguments: readonly string[];
+  environmentVariables: Readonly<Record<string, string>>;
   workingDirectory: string;
   standardOutPath: string;
   standardErrorPath: string;
@@ -328,6 +353,16 @@ function dingtalkProfile(value: string | undefined): string | undefined {
   return profile ?? undefined;
 }
 
+function dingtalkRobotCode(value: string | undefined): string | undefined {
+  const robotCode = optionalDingTalkRobotCode(value);
+  if (value !== undefined && value !== '' && robotCode === null) {
+    throw new LaunchAgentError(
+      'ATL_DINGTALK_ROBOT_CODE must contain one explicit DingTalk robot code',
+    );
+  }
+  return robotCode ?? undefined;
+}
+
 function plistArray(values: readonly string[], indent: string): string[] {
   return [
     `${indent}<array>`,
@@ -389,9 +424,15 @@ export async function renderLaunchAgent(
     'Node executable',
     true,
   );
-  const runnerEntry = options.runnerEntry === undefined
+  const invokedEntry = options.processArguments?.[1] ?? process.argv[1];
+  const configuredRunnerEntry = options.runnerEntry ?? (
+    invokedEntry !== undefined && basename(invokedEntry) === 'atl-runner.mjs'
+      ? invokedEntry
+      : undefined
+  );
+  const runnerEntry = configuredRunnerEntry === undefined
     ? null
-    : await existingFile(options.runnerEntry, 'packaged runner', false);
+    : await existingFile(configuredRunnerEntry, 'packaged runner', false);
   const repositoryRoot = runnerEntry === null
     ? await existingDirectory(
       options.repositoryRoot ?? await resolveRepositoryRoot(),
@@ -425,6 +466,17 @@ export async function renderLaunchAgent(
   const model = modelName(environment.ATL_CLAUDE_MODEL);
   const anthropicBaseUrl = baseUrl(environment.ANTHROPIC_BASE_URL);
   const notificationProfile = dingtalkProfile(environment.ATL_DINGTALK_PROFILE);
+  const notificationRobotCode = dingtalkRobotCode(
+    environment.ATL_DINGTALK_ROBOT_CODE,
+  );
+  const dwsExecutable = notificationProfile !== undefined
+    && notificationRobotCode !== undefined
+    ? await existingFile(
+        environment.ATL_DWS_EXECUTABLE,
+        'ATL_DWS_EXECUTABLE',
+        true,
+      )
+    : undefined;
   const result = {
     label: LAUNCH_AGENT_LABEL,
     programArguments: [
@@ -448,11 +500,17 @@ export async function renderLaunchAgent(
       ...(notificationProfile === undefined
         ? {}
         : { ATL_DINGTALK_PROFILE: notificationProfile }),
+      ...(notificationRobotCode === undefined
+        ? {}
+        : { ATL_DINGTALK_ROBOT_CODE: notificationRobotCode }),
+      ...(dwsExecutable === undefined
+        ? {}
+        : { ATL_DWS_EXECUTABLE: dwsExecutable }),
       ATL_ALLOWED_LOCAL_ROOTS: await allowedLocalRoots(
         environment.ATL_ALLOWED_LOCAL_ROOTS,
       ),
       HOME: homeDirectory,
-      PATH: MINIMAL_PATH,
+      PATH: [dirname(nodeExecutable), MINIMAL_PATH].join(delimiter),
     },
     workingDirectory: repositoryRoot,
     standardOutPath: join(stateDirectory, 'runner.stdout.log'),
@@ -467,6 +525,139 @@ export async function renderLaunchAgent(
       LAUNCH_AGENT_FILE_NAME,
     ),
     plist: renderPlist(result),
+  };
+}
+
+function requiredLaunchIdentifier(
+  value: string | undefined,
+  name: string,
+): string {
+  if (
+    value === undefined
+    || !/^[A-Za-z0-9_:+./=-]{1,256}$/u.test(value)
+  ) throw new LaunchAgentError(`${name} must contain one explicit identifier`);
+  return value;
+}
+
+function requiredUnifiedAppId(value: string | undefined): string {
+  if (
+    value === undefined
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value)
+  ) throw new LaunchAgentError('ATL_DINGTALK_UNIFIED_APP_ID must be a UUID');
+  return value;
+}
+
+function renderDingTalkStreamPlist(
+  input: Omit<RenderedDingTalkStreamLaunchAgent, 'path' | 'plist'>,
+): string {
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+    '<plist version="1.0">',
+    '<dict>',
+    '  <key>Label</key>',
+    `  <string>${xml(input.label)}</string>`,
+    '  <key>ProgramArguments</key>',
+    ...plistArray(input.programArguments, '  '),
+    '  <key>WorkingDirectory</key>',
+    `  <string>${xml(input.workingDirectory)}</string>`,
+    '  <key>StandardOutPath</key>',
+    `  <string>${xml(input.standardOutPath)}</string>`,
+    '  <key>StandardErrorPath</key>',
+    `  <string>${xml(input.standardErrorPath)}</string>`,
+    '  <key>EnvironmentVariables</key>',
+    '  <dict>',
+    ...Object.entries(input.environmentVariables).flatMap(([key, value]) => [
+      `    <key>${xml(key)}</key>`,
+      `    <string>${xml(value)}</string>`,
+    ]),
+    '  </dict>',
+    '  <key>RunAtLoad</key>',
+    '  <true/>',
+    '  <key>KeepAlive</key>',
+    '  <true/>',
+    '  <key>ProcessType</key>',
+    '  <string>Background</string>',
+    '  <key>ThrottleInterval</key>',
+    '  <integer>15</integer>',
+    '</dict>',
+    '</plist>',
+    '',
+  ].join('\n');
+}
+
+export async function renderDingTalkStreamLaunchAgent(
+  options: RenderDingTalkStreamLaunchAgentOptions = {},
+): Promise<RenderedDingTalkStreamLaunchAgent> {
+  const environment = options.environment ?? process.env;
+  const runner = await renderLaunchAgent(options);
+  const runnerEntry = runner.programArguments[1];
+  if (runnerEntry === undefined) {
+    throw new LaunchAgentError('packaged runner could not be resolved');
+  }
+  const pluginDirectory = basename(runnerEntry) === 'atl-runner.mjs'
+    ? dirname(runnerEntry)
+    : join(dirname(dirname(runnerEntry)), 'obsidian-plugin');
+  const streamEntry = await existingFile(
+    options.streamEntry ?? join(pluginDirectory, 'atl-dingtalk-stream.mjs'),
+    'packaged DingTalk Stream listener',
+    false,
+  );
+  const bridgeEntry = await existingFile(
+    options.bridgeEntry ?? join(pluginDirectory, 'atl-dingtalk-bridge.mjs'),
+    'packaged DingTalk bridge',
+    false,
+  );
+  const dwsExecutable = await existingFile(
+    options.dwsExecutable ?? environment.ATL_DWS_EXECUTABLE,
+    'DWS executable',
+    true,
+  );
+  const profile = runner.environmentVariables.ATL_DINGTALK_PROFILE;
+  const robotCode = runner.environmentVariables.ATL_DINGTALK_ROBOT_CODE;
+  const profileParts = profile?.split(':') ?? [];
+  if (
+    profileParts.length !== 2
+    || !/^[A-Za-z0-9_-]{1,128}$/u.test(profileParts[0] ?? '')
+    || !/^[A-Za-z0-9_-]{1,128}$/u.test(profileParts[1] ?? '')
+  ) throw new LaunchAgentError('ATL_DINGTALK_PROFILE must be corpId:userId');
+  if (robotCode === undefined) {
+    throw new LaunchAgentError('ATL_DINGTALK_ROBOT_CODE is required');
+  }
+  const trustedSenderUserId = profileParts[1] as string;
+  const homeDirectory = runner.environmentVariables.HOME;
+  const stateDirectory = join(homeDirectory, '.local', 'state', 'agent-task-loop');
+  const result = {
+    label: DINGTALK_STREAM_LAUNCH_AGENT_LABEL,
+    programArguments: [runner.programArguments[0] as string, streamEntry],
+    environmentVariables: {
+      ...runner.environmentVariables,
+      ATL_DINGTALK_UNIFIED_APP_ID: requiredUnifiedAppId(
+        environment.ATL_DINGTALK_UNIFIED_APP_ID,
+      ),
+      ATL_DINGTALK_TRUSTED_CONVERSATION_ID: requiredLaunchIdentifier(
+        environment.ATL_DINGTALK_TRUSTED_CONVERSATION_ID,
+        'ATL_DINGTALK_TRUSTED_CONVERSATION_ID',
+      ),
+      ATL_DINGTALK_TRUSTED_SENDER_USER_ID: trustedSenderUserId,
+      ATL_DINGTALK_BRIDGE_ENTRY: bridgeEntry,
+      ATL_DWS_EXECUTABLE: dwsExecutable,
+      ATL_NODE_EXECUTABLE: runner.programArguments[0] as string,
+      ATL_RUNNER_ENTRY: runnerEntry,
+    },
+    workingDirectory: runner.workingDirectory,
+    standardOutPath: join(stateDirectory, 'dingtalk-stream.stdout.log'),
+    standardErrorPath: join(stateDirectory, 'dingtalk-stream.stderr.log'),
+  } satisfies Omit<RenderedDingTalkStreamLaunchAgent, 'path' | 'plist'>;
+  return {
+    ...result,
+    path: join(
+      homeDirectory,
+      'Library',
+      'LaunchAgents',
+      DINGTALK_STREAM_LAUNCH_AGENT_FILE_NAME,
+    ),
+    plist: renderDingTalkStreamPlist(result),
   };
 }
 
@@ -587,7 +778,7 @@ function missingLaunchAgentService(error: unknown): boolean {
     error.message,
     'stderr' in error && typeof error.stderr === 'string' ? error.stderr : '',
   ].join('\n');
-  return /could not find service|service not found|no such process/iu.test(details);
+  return /could not find service|service not found|no such process|boot-out failed:\s*5:\s*input\/output error/iu.test(details);
 }
 
 function targetDomain(uid: number | undefined): string {
@@ -635,7 +826,7 @@ export async function kickstartLaunchAgent(
 }
 
 async function restoreAfterFailedInstall(
-  rendered: RenderedLaunchAgent,
+  rendered: Pick<RenderedLaunchAgent, 'path' | 'plist'>,
   previous: string | null,
 ): Promise<void> {
   const current = await readExactFile(rendered.path);
@@ -756,5 +947,153 @@ export async function uninstallLaunchAgent(
     installed: false,
     managed: true,
     label: LAUNCH_AGENT_LABEL,
+  };
+}
+
+async function inspectDingTalkStreamInternal(
+  options: InspectLaunchAgentOptions,
+): Promise<LaunchAgentStatus & { content: string | null }> {
+  const homeDirectory = await existingDirectory(
+    options.homeDirectory ?? homedir(),
+    'HOME',
+  );
+  const path = join(
+    homeDirectory,
+    'Library',
+    'LaunchAgents',
+    DINGTALK_STREAM_LAUNCH_AGENT_FILE_NAME,
+  );
+  const content = await readExactFile(path);
+  if (content === null) {
+    return { path, installed: false, managed: false, label: null, content };
+  }
+  const label = parseTopLevelLabel(content);
+  return {
+    path,
+    installed: true,
+    managed: label === DINGTALK_STREAM_LAUNCH_AGENT_LABEL,
+    label,
+    content,
+  };
+}
+
+export async function inspectDingTalkStreamLaunchAgent(
+  options: InspectLaunchAgentOptions = {},
+): Promise<LaunchAgentStatus> {
+  const inspected = await inspectDingTalkStreamInternal(options);
+  return {
+    path: inspected.path,
+    installed: inspected.installed,
+    managed: inspected.managed,
+    label: inspected.label,
+  };
+}
+
+export async function inspectDingTalkStreamLaunchAgentProcess(
+  options: LaunchAgentProcessOptions = {},
+): Promise<LaunchAgentProcessStatus> {
+  const commands = options.commandAdapter ?? defaultCommandAdapter;
+  try {
+    const result = await commands.execute('/bin/launchctl', [
+      'print',
+      `${targetDomain(options.uid)}/${DINGTALK_STREAM_LAUNCH_AGENT_LABEL}`,
+    ]);
+    return {
+      loaded: true,
+      running: /^\s*state\s*=\s*running\s*$/imu.test(result.stdout),
+    };
+  } catch (error) {
+    if (missingLaunchAgentService(error)) return { loaded: false, running: false };
+    throw error;
+  }
+}
+
+export async function installDingTalkStreamLaunchAgent(
+  options: RenderDingTalkStreamLaunchAgentOptions & {
+    commandAdapter?: LaunchAgentCommandAdapter;
+    uid?: number;
+  } = {},
+): Promise<LaunchAgentStatus> {
+  const rendered = await renderDingTalkStreamLaunchAgent(options);
+  const domain = targetDomain(options.uid);
+  const previous = await readExactFile(rendered.path);
+  if (
+    previous !== null
+    && parseTopLevelLabel(previous) !== DINGTALK_STREAM_LAUNCH_AGENT_LABEL
+  ) {
+    throw new LaunchAgentError(
+      'Refusing to overwrite a LaunchAgent with a different Label',
+    );
+  }
+  await mkdir(dirname(rendered.path), { recursive: true, mode: 0o700 });
+  await mkdir(dirname(rendered.standardOutPath), { recursive: true, mode: 0o700 });
+  await atomicWrite(rendered.path, rendered.plist, previous === null);
+  const commands = options.commandAdapter ?? defaultCommandAdapter;
+  let previousServiceWasLoaded = false;
+  try {
+    await commands.execute('/usr/bin/plutil', ['-lint', rendered.path]);
+    if (previous !== null) {
+      try {
+        await commands.execute('/bin/launchctl', ['bootout', domain, rendered.path]);
+        previousServiceWasLoaded = true;
+      } catch (error) {
+        if (!missingLaunchAgentService(error)) throw error;
+      }
+    }
+    await commands.execute('/bin/launchctl', ['bootstrap', domain, rendered.path]);
+  } catch (error) {
+    await restoreAfterFailedInstall(rendered, previous);
+    if (previous !== null && previousServiceWasLoaded) {
+      try {
+        await commands.execute('/bin/launchctl', ['bootstrap', domain, rendered.path]);
+      } catch (rollbackError) {
+        const installMessage = error instanceof Error
+          ? error.message
+          : 'DingTalk Stream LaunchAgent update failed';
+        const rollbackMessage = rollbackError instanceof Error
+          ? rollbackError.message
+          : 'previous service reload failed';
+        throw new LaunchAgentError(
+          `${installMessage}; rollback failed: ${rollbackMessage}`,
+        );
+      }
+    }
+    throw error;
+  }
+  return {
+    path: rendered.path,
+    installed: true,
+    managed: true,
+    label: DINGTALK_STREAM_LAUNCH_AGENT_LABEL,
+  };
+}
+
+export async function uninstallDingTalkStreamLaunchAgent(
+  options: UninstallLaunchAgentOptions = {},
+): Promise<LaunchAgentStatus> {
+  const inspected = await inspectDingTalkStreamInternal(options);
+  if (!inspected.installed) {
+    return { path: inspected.path, installed: false, managed: false, label: null };
+  }
+  if (!inspected.managed || inspected.content === null) {
+    throw new LaunchAgentError(
+      'Refusing to remove a LaunchAgent with a different Label',
+    );
+  }
+  const commands = options.commandAdapter ?? defaultCommandAdapter;
+  await commands.execute('/bin/launchctl', [
+    'bootout',
+    targetDomain(options.uid),
+    inspected.path,
+  ]);
+  if (await readExactFile(inspected.path) !== inspected.content) {
+    throw new LaunchAgentError('LaunchAgent changed during uninstall');
+  }
+  await unlink(inspected.path);
+  return {
+    path: inspected.path,
+    installed: false,
+    managed: true,
+    label: DINGTALK_STREAM_LAUNCH_AGENT_LABEL,
   };
 }

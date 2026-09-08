@@ -60,6 +60,23 @@ describe('FileAcceptanceNotificationLedger', () => {
     expect(JSON.parse(raw)).toEqual({ schemaVersion: 1, records: [sent] });
   });
 
+  it('persists an uncertain delivery state for manual reconciliation', async () => {
+    const root = await runtimeRoot();
+    const ledger = new FileAcceptanceNotificationLedger(root);
+    const unknown = record({
+      status: 'unknown',
+      errorCode: 'acceptance_delivery_unknown',
+      taskId: null,
+      messageId: null,
+    });
+
+    await ledger.withLock(async () => ledger.save(unknown));
+
+    await expect(new FileAcceptanceNotificationLedger(root).get(
+      unknown.idempotencyKey,
+    )).resolves.toEqual(unknown);
+  });
+
   it('serializes operations across ledger instances', async () => {
     const root = await runtimeRoot();
     const left = new FileAcceptanceNotificationLedger(root);

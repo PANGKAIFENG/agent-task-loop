@@ -390,6 +390,16 @@ describe('WorkProgressView', () => {
           errorCode: 'acceptance_location_conflict',
         },
       },
+      {
+        ...base,
+        objectId: 'weekly-unknown',
+        title: '结果不确定对象',
+        notification: {
+          status: 'unknown',
+          attemptedAt: '2026-08-11T14:03:00.000Z',
+          errorCode: 'acceptance_delivery_unknown',
+        },
+      },
     ];
 
     const { view } = setup(state);
@@ -399,6 +409,7 @@ describe('WorkProgressView', () => {
     expect(view.contentEl.textContent).toContain('钉钉通知：已发送');
     expect(view.contentEl.textContent).toContain('钉钉通知：发送失败（dingtalk_delivery_failed）');
     expect(view.contentEl.textContent).toContain('钉钉通知：定位冲突');
+    expect(view.contentEl.textContent).toContain('钉钉通知：结果不确定，请人工核对');
   });
 
   it('keeps source failure visible and offers a service-backed retry', async () => {

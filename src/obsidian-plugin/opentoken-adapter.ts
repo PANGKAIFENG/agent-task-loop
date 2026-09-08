@@ -105,6 +105,15 @@ function parseVersion(stdout: string): string {
   return version;
 }
 
+function parsePreviewJson(stdout: string): unknown {
+  const start = stdout.indexOf('{');
+  const end = stdout.lastIndexOf('}');
+  if (start < 0 || end <= start) {
+    throw new OpenTokenAdapterError('invalid_output');
+  }
+  return JSON.parse(stdout.slice(start, end + 1)) as unknown;
+}
+
 function mapExecutionError(error: unknown): OpenTokenAdapterError {
   if (typeof error === 'object' && error !== null) {
     const processError = error as {
@@ -154,7 +163,7 @@ export class OpenTokenAdapter {
     const version = parseVersion(versionOutput.stdout);
     let parsed: z.infer<typeof previewSchema>;
     try {
-      parsed = previewSchema.parse(JSON.parse(previewOutput.stdout) as unknown);
+      parsed = previewSchema.parse(parsePreviewJson(previewOutput.stdout));
       if (parsed.rows.some((row) => !validDate(row.date))) {
         throw new Error('invalid date');
       }

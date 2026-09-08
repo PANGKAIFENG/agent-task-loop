@@ -31,6 +31,7 @@ export default defineConfig({
     rollupOptions: {
       external: (id) => nodeModules.has(id),
       output: {
+        codeSplitting: false,
         banner: [
           "import { createRequire as __atlCreateRequire } from 'node:module';",
           'const require = __atlCreateRequire(import.meta.url);',

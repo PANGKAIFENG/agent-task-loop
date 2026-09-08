@@ -1,5 +1,5 @@
 import type { Project } from '../domain/project.js';
-import type { Task } from '../domain/task.js';
+import { isExternalExecutionTask, type Task } from '../domain/task.js';
 import {
   confirmTask,
   ConfirmTaskInvalidStateError,
@@ -38,7 +38,21 @@ export class ConfirmationController {
     ]);
     const confirmsReadyCandidate = task.status === 'ready'
       && task.reviewState !== 'confirmed';
-    if (task.status !== 'inbox' && !confirmsReadyCandidate) {
+    // PAW-GOAL-003-V0.5 D2 (PRD 4.5): the补投入口 prepares an already
+    // confirmed development declaration (ready undelivered, or
+    // agent_executable after a failed dispatch) so the Contract step can
+    // render from the persisted task. Research tasks keep the exact
+    // previous guard.
+    const reviewsConfirmedDevelopment = (task.status === 'ready'
+      || task.status === 'agent_executable')
+      && task.reviewState === 'confirmed'
+      && task.taskType === 'development'
+      && isExternalExecutionTask(task);
+    if (
+      task.status !== 'inbox'
+      && !confirmsReadyCandidate
+      && !reviewsConfirmedDevelopment
+    ) {
       throw new ConfirmTaskInvalidStateError();
     }
     return {
@@ -70,17 +84,34 @@ export class ConfirmationController {
 
     const hasExecutionDetails = value.objective !== null
       || value.acceptanceCriteria.length > 0;
+    const isDevelopment = value.taskKind === 'development';
+    const isCompleteResearch = !isDevelopment
+      && projectId !== undefined
+      && value.objective !== null
+      && value.acceptanceCriteria.length > 0;
 
+    // PAW-GOAL-003-V0.5 D1 (PRD 4.1): a development declaration persists the
+    // full dispatch contract (task type, permission profile, execution
+    // target, context refs) alongside the shared fields; the research branch
+    // keeps the exact previous input shape.
     return confirmTask(this.ctx, taskId, {
       ...(projectId === undefined ? {} : { projectId }),
-      ...(hasExecutionDetails
-        ? { taskType: 'research' as const }
-        : {}),
+      ...(isDevelopment
+        ? {
+            taskType: 'development' as const,
+            permissionProfile: 'repo_delivery' as const,
+            executionTarget: 'multica' as const,
+            contextRefs: value.contextRefs ?? [],
+          }
+        : {
+            ...(hasExecutionDetails ? { taskType: 'research' as const } : {}),
+            ...(hasExecutionDetails
+              ? { permissionProfile: 'read_only_research' as const }
+              : {}),
+            ...(isCompleteResearch ? { executionTarget: 'multica' as const } : {}),
+          }),
       ...(value.objective === null ? {} : { objective: value.objective }),
       acceptanceCriteria: value.acceptanceCriteria,
-      ...(hasExecutionDetails
-        ? { permissionProfile: 'read_only_research' as const }
-        : {}),
       priority: value.priority,
     });
   }

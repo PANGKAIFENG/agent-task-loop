@@ -1,6 +1,7 @@
 import type { Project } from '../domain/project.js';
 import type { Task } from '../domain/task.js';
 import type { ArtifactResult } from '../domain/artifact.js';
+import type { ArtifactIdentity } from '../domain/artifact-identity.js';
 
 export class ProjectCreateConflictError extends Error {
   readonly code = 'project_create_conflict';
@@ -43,9 +44,15 @@ export interface ArtifactRepository {
     };
     sha256: string;
   }>;
+  readProductionEvidence(ref: string): Promise<{
+    identity: ArtifactIdentity;
+    runId: string;
+    packId: string;
+  }>;
 }
 
 export interface ProjectRepository {
+  withProjectLock<T>(projectId: string, operation: () => Promise<T>): Promise<T>;
   list(): Promise<Project[]>;
   get(projectId: string): Promise<Project>;
   create(project: Project): Promise<Project>;
@@ -56,6 +63,7 @@ export interface AuditEvent {
   event: string;
   at: string;
   taskId?: string;
+  admissionInputFingerprint?: string;
   projectId?: string;
   runId?: string;
   details?: Record<string, string | number | boolean | null>;

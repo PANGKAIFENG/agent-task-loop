@@ -1,4 +1,8 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { createHash } from 'node:crypto';
 import { basename } from 'node:path';
+import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { projectSchema, type Project } from '../domain/project.js';
 import {
@@ -8,8 +12,10 @@ import {
 import {
   atomicCreateTextFile,
   atomicWriteTextFile,
+  acquireSafeFileLock,
   listSafeRegularFiles,
   readSafeTextFile,
+  reclaimExpiredSafeFileLock,
 } from './file-io.js';
 import { parseTaskDocument, serializeTaskDocument } from './frontmatter.js';
 import {
@@ -69,6 +75,48 @@ export class ProjectIntegrityError extends Error {
   }
 }
 
+export class ProjectLockTimeoutError extends Error {
+  readonly code = 'project_lock_timeout';
+
+  constructor() {
+    super('Project lock timed out');
+    this.name = 'ProjectLockTimeoutError';
+  }
+}
+
+const PROJECT_LOCK_ATTEMPTS = 3_100;
+const PROJECT_LOCK_RETRY_MS = 10;
+const PROJECT_LOCK_LEASE_MS = 30_000;
+
+interface ProjectLockOptions {
+  attempts: number;
+  retryMs: number;
+  leaseMs: number;
+  clock: () => Date;
+}
+
+function nonNegativeInteger(value: number | undefined, fallback: number): number {
+  return value !== undefined && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : fallback;
+}
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+  return value !== undefined && Number.isSafeInteger(value) && value > 0
+    ? value
+    : fallback;
+}
+
+export interface MarkdownProjectRepositoryOptions {
+  writeAuthorization?: VaultWriteAuthorization;
+  projectLock?: {
+    attempts?: number;
+    retryMs?: number;
+    leaseMs?: number;
+    clock?: () => Date;
+  };
+}
+
 function stringValue(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
@@ -117,14 +165,77 @@ export class MarkdownProjectRepository implements ProjectRepository {
   readonly projectsRoot: string;
   readonly records = new Map<string, ProjectRecord>();
   private readonly writeAuthorization: VaultWriteAuthorization | undefined;
+  private readonly projectLock: ProjectLockOptions;
+  private readonly heldProjectLocks = new AsyncLocalStorage<ReadonlySet<string>>();
 
-  constructor(root?: string, options: {
-    writeAuthorization?: VaultWriteAuthorization;
-  } = {}) {
+  constructor(root?: string, options: MarkdownProjectRepositoryOptions = {}) {
     this.root = vaultRoot(root);
     this.tasksRoot = taskStorageRoot(this.root);
     this.projectsRoot = `${this.tasksRoot}/Projects`;
     this.writeAuthorization = options.writeAuthorization;
+    this.projectLock = {
+      attempts: positiveInteger(options.projectLock?.attempts, PROJECT_LOCK_ATTEMPTS),
+      retryMs: nonNegativeInteger(options.projectLock?.retryMs, PROJECT_LOCK_RETRY_MS),
+      leaseMs: positiveInteger(options.projectLock?.leaseMs, PROJECT_LOCK_LEASE_MS),
+      clock: options.projectLock?.clock ?? (() => new Date()),
+    };
+  }
+
+  async withProjectLock<T>(
+    projectId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    assertVaultWriteAllowed(this.root, this.writeAuthorization);
+    if (!isSafePathSegment(projectId)) {
+      throw new InvalidProjectDataError();
+    }
+    const inheritedLocks = this.heldProjectLocks.getStore();
+    if (inheritedLocks?.has(projectId) === true) {
+      return operation();
+    }
+    const lockRoot = join(this.tasksRoot, '.atl', 'project-locks');
+    const lockKey = createHash('sha256').update(projectId).digest('hex');
+    const lockPath = join(lockRoot, `${lockKey}.lock`);
+    const boundary = {
+      vaultRoot: this.root,
+      tasksRoot: this.tasksRoot,
+      subtree: lockRoot,
+    };
+
+    for (let attempt = 0; attempt < this.projectLock.attempts; attempt += 1) {
+      let lock = await acquireSafeFileLock(lockPath, boundary, {
+        acquiredAt: this.projectLock.clock(),
+        leaseMs: this.projectLock.leaseMs,
+      });
+      if (lock === null) {
+        const reclaimed = await reclaimExpiredSafeFileLock(
+          lockPath,
+          boundary,
+          this.projectLock.clock(),
+        );
+        if (reclaimed) {
+          lock = await acquireSafeFileLock(lockPath, boundary, {
+            acquiredAt: this.projectLock.clock(),
+            leaseMs: this.projectLock.leaseMs,
+          });
+        }
+        if (lock === null) {
+          if (attempt + 1 < this.projectLock.attempts) {
+            await delay(this.projectLock.retryMs);
+          }
+          continue;
+        }
+      }
+      try {
+        return await this.heldProjectLocks.run(
+          new Set([...(inheritedLocks ?? []), projectId]),
+          operation,
+        );
+      } finally {
+        await lock.release();
+      }
+    }
+    throw new ProjectLockTimeoutError();
   }
 
   async list(): Promise<Project[]> {
@@ -180,6 +291,10 @@ export class MarkdownProjectRepository implements ProjectRepository {
   }
 
   async save(project: Project): Promise<Project> {
+    return this.withProjectLock(project.projectId, () => this.saveUnlocked(project));
+  }
+
+  private async saveUnlocked(project: Project): Promise<Project> {
     assertVaultWriteAllowed(this.root, this.writeAuthorization);
     const result = projectSchema.safeParse(project);
     if (!result.success) {

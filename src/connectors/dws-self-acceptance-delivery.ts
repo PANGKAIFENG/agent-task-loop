@@ -1,20 +1,33 @@
 import { execFile } from 'node:child_process';
 
-import { isValidDingTalkProfile } from '../dingtalk-profile.js';
+import {
+  embeddedDingTalkUserId,
+  isValidDingTalkProfile,
+} from '../dingtalk-profile.js';
 import type { AcceptanceDelivery } from '../services/notify-acceptance.js';
 
 export interface DwsCommandResult {
   exitCode: number;
   stdout: string;
+  deliveryStatusUnknown?: boolean;
 }
 
 export type DwsCommandRunner = (args: string[]) => Promise<DwsCommandResult>;
 
+export function dingTalkDeliveryReceiptId(delivery: {
+  taskId: string | null;
+  messageId: string | null;
+}): string | null {
+  return delivery.messageId ?? delivery.taskId;
+}
+
 class DwsAcceptanceDeliveryError extends Error {
   constructor(
     readonly code: 'dingtalk_profile_invalid'
+      | 'dingtalk_robot_code_invalid'
       | 'dingtalk_self_resolution_failed'
-      | 'dingtalk_delivery_failed',
+      | 'dingtalk_delivery_failed'
+      | 'dingtalk_delivery_unknown',
     message: string,
   ) {
     super(message);
@@ -39,17 +52,29 @@ function parseJson(stdout: string, code: DwsAcceptanceDeliveryError['code']): Re
 function successfulEnvelope(
   result: DwsCommandResult,
   code: DwsAcceptanceDeliveryError['code'],
+  invalidResultCode: DwsAcceptanceDeliveryError['code'] = code,
 ): Record<string, unknown> {
   if (result.exitCode !== 0) {
-    throw new DwsAcceptanceDeliveryError(code, 'DingTalk command failed');
+    const failureCode = code === 'dingtalk_delivery_failed'
+      && result.deliveryStatusUnknown === true
+      ? 'dingtalk_delivery_unknown'
+      : code;
+    throw new DwsAcceptanceDeliveryError(failureCode, 'DingTalk command failed');
   }
-  const envelope = parseJson(result.stdout, code);
-  if (
-    envelope.success !== true
-    || envelope.complete === false
-    || (Array.isArray(envelope.failures) && envelope.failures.length > 0)
-  ) {
-    throw new DwsAcceptanceDeliveryError(code, 'DingTalk operation was not successful');
+  const envelope = parseJson(result.stdout, invalidResultCode);
+  const legacySuccess = envelope.success === true
+    && envelope.complete !== false
+    && (!Array.isArray(envelope.failures) || envelope.failures.length === 0);
+  const currentSuccess = envelope.ok === true && envelope.outcome === 'success';
+  if (!legacySuccess && !currentSuccess) {
+    const explicitFailure = envelope.success === false
+      || envelope.ok === false
+      || envelope.complete === false
+      || (Array.isArray(envelope.failures) && envelope.failures.length > 0);
+    throw new DwsAcceptanceDeliveryError(
+      explicitFailure ? code : invalidResultCode,
+      'DingTalk operation was not successful',
+    );
   }
   return envelope;
 }
@@ -90,29 +115,26 @@ function parseDeliveryResult(result: DwsCommandResult): {
   taskId: string | null;
   messageId: string | null;
 } {
-  const envelope = successfulEnvelope(result, 'dingtalk_delivery_failed');
-  const rawResult = envelope.result;
-  if (
-    rawResult !== undefined
-    && !Array.isArray(rawResult)
-    && !isRecord(rawResult)
-  ) {
-    throw new DwsAcceptanceDeliveryError(
-      'dingtalk_delivery_failed',
-      'DingTalk delivery result was invalid',
-    );
-  }
-  if (Array.isArray(rawResult) && rawResult.length > 1) {
-    throw new DwsAcceptanceDeliveryError(
-      'dingtalk_delivery_failed',
-      'DingTalk delivery result was ambiguous',
-    );
-  }
-  const entry = Array.isArray(rawResult) && isRecord(rawResult[0])
+  const envelope = successfulEnvelope(
+    result,
+    'dingtalk_delivery_failed',
+    'dingtalk_delivery_unknown',
+  );
+  const rawResult = envelope.result ?? envelope.data;
+  const entry = Array.isArray(rawResult) && rawResult.length === 1 && isRecord(rawResult[0])
     ? rawResult[0]
     : isRecord(rawResult) ? rawResult : {};
   return {
-    taskId: optionalId(entry, ['openTaskId', 'open_taskId', 'taskId', 'task_id']),
+    taskId: optionalId(entry, [
+      'openTaskId',
+      'open_taskId',
+      'taskId',
+      'task_id',
+      // Bot-to-user delivery is asynchronous. DingTalk acknowledges it with
+      // processQueryKey rather than an IM openMessageId.
+      'processQueryKey',
+      'process_query_key',
+    ]),
     messageId: optionalId(entry, [
       'openMessageId',
       'open_messageId',
@@ -127,19 +149,29 @@ export function runDwsCommand(
   options: { executable?: string; timeoutMs?: number } = {},
 ): Promise<DwsCommandResult> {
   return new Promise((resolve) => {
-    execFile(options.executable ?? 'dws', args, {
-      encoding: 'utf8',
-      maxBuffer: 1024 * 1024,
-      timeout: options.timeoutMs ?? 45_000,
-      windowsHide: true,
-    }, (error, stdout) => {
-      resolve({
-        exitCode: error === null
-          ? 0
-          : typeof error.code === 'number' ? error.code : 1,
-        stdout,
-      });
-    });
+    execFile(
+      options.executable ?? process.env.ATL_DWS_EXECUTABLE ?? 'dws',
+      args,
+      {
+        encoding: 'utf8',
+        maxBuffer: 1024 * 1024,
+        timeout: options.timeoutMs ?? 45_000,
+        windowsHide: true,
+      },
+      (error, stdout) => {
+        const errorCode = error?.code;
+        const deliveryStatusUnknown = error !== null
+          && typeof errorCode !== 'number'
+          && !['ENOENT', 'EACCES', 'ENOTDIR'].includes(String(errorCode));
+        resolve({
+          exitCode: error === null
+            ? 0
+            : typeof errorCode === 'number' ? errorCode : 1,
+          stdout,
+          ...(deliveryStatusUnknown ? { deliveryStatusUnknown: true } : {}),
+        });
+      },
+    );
   });
 }
 
@@ -147,16 +179,28 @@ const defaultRunner: DwsCommandRunner = (args) => runDwsCommand(args);
 
 export class DwsSelfAcceptanceDelivery implements AcceptanceDelivery {
   private readonly profile: string;
+  private readonly robotCode: string;
   private readonly runner: DwsCommandRunner;
 
-  constructor(options: { profile: string; runner?: DwsCommandRunner }) {
+  constructor(options: {
+    profile: string;
+    robotCode: string;
+    runner?: DwsCommandRunner;
+  }) {
     if (!isValidDingTalkProfile(options.profile)) {
       throw new DwsAcceptanceDeliveryError(
         'dingtalk_profile_invalid',
         'One explicit DingTalk profile is required',
       );
     }
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{3,127}$/u.test(options.robotCode)) {
+      throw new DwsAcceptanceDeliveryError(
+        'dingtalk_robot_code_invalid',
+        'One explicit DingTalk robot code is required',
+      );
+    }
     this.profile = options.profile;
+    this.robotCode = options.robotCode;
     this.runner = options.runner ?? defaultRunner;
   }
 
@@ -165,19 +209,20 @@ export class DwsSelfAcceptanceDelivery implements AcceptanceDelivery {
     title: string;
     text: string;
   }): Promise<{ taskId: string | null; messageId: string | null }> {
-    const self = resolveSelfUserId(await this.runner([
-      '--profile', this.profile,
-      '--format', 'json',
-      'contact', 'user', 'get-self',
-    ]));
+    const self = embeddedDingTalkUserId(this.profile)
+      ?? resolveSelfUserId(await this.runner([
+        '--profile', this.profile,
+        '--format', 'json',
+        'contact', 'user', 'get-self',
+      ]));
     const result = await this.runner([
       '--profile', this.profile,
       '--format', 'json',
-      'chat', 'message', 'send',
-      '--user', self,
+      'chat', 'message', 'send-by-bot',
+      '--robot-code', this.robotCode,
+      '--users', self,
       '--title', message.title,
       '--text', message.text,
-      '--uuid', message.uuid,
       '--yes',
     ]);
     return parseDeliveryResult(result);

@@ -1,7 +1,27 @@
 import { createHash } from 'node:crypto';
 
 import type { Project } from '../domain/project.js';
+import {
+  buildCandidateUnderstanding,
+  type CandidateUnderstanding,
+} from '../domain/candidate-understanding.js';
 import type { Task, TaskBrief } from '../domain/task.js';
+import {
+  candidateUnderstandingForTask,
+  sourceActionsFor,
+  type CandidateInspectorProjection,
+} from '../services/candidate-inspector-projection.js';
+import {
+  confirmCandidateUnderstanding,
+  type ConfirmCandidateUnderstandingInput,
+} from '../services/confirm-candidate-understanding.js';
+import { readCandidateInspector } from '../services/read-candidate-inspector.js';
+import {
+  openCandidateSource,
+  type CandidateSourceLocator,
+  type OpenCandidateSourceResult,
+} from '../services/open-candidate-source.js';
+import { resolveCandidateSource } from '../services/resolve-candidate-source.js';
 import {
   nextTaskBriefTimestamp,
   saveTaskBrief,
@@ -25,12 +45,17 @@ export interface TaskBriefTask {
   taskId: string;
   title: string;
   body: string;
+  taskType?: Task['taskType'] | undefined;
+  contextRefs?: string[] | undefined;
+  possibleDuplicateIds?: string[] | undefined;
   taskBrief?: TaskBrief | null | undefined;
 }
 
 export interface PreparedTaskBrief {
   task: TaskBriefTask;
   project: Project | null;
+  candidateInspector?: CandidateInspectorProjection | undefined;
+  candidateUnderstanding?: CandidateUnderstanding | undefined;
 }
 
 export interface TaskBriefSaver {
@@ -39,16 +64,80 @@ export interface TaskBriefSaver {
     input: SaveTaskBriefInput,
     expectedTaskBriefUpdatedAt: string | null,
   ): Promise<unknown>;
+  saveCandidate?(
+    taskId: string,
+    input: ConfirmCandidateUnderstandingInput,
+  ): Promise<CandidateInspectorProjection>;
+  openSource?(
+    taskId: string,
+    sourceRefId: string,
+  ): Promise<OpenCandidateSourceResult>;
 }
 
 export class TaskBriefController {
-  constructor(private readonly ctx: ServiceContext) {}
+  constructor(
+    private readonly ctx: ServiceContext,
+    private readonly options: {
+      sourceRoot?: string;
+      locateMoved?: (sourceKey: string) => Promise<string | null>;
+      openResolvedSource?: (locator: CandidateSourceLocator) => Promise<void>;
+    } = {},
+  ) {}
 
   async prepare(taskId: string): Promise<PreparedTaskBrief> {
     const task = await this.ctx.tasks.get(taskId);
-    if (task.projectId === null) return { task, project: null };
-    const project = await this.ctx.projects.get(task.projectId).catch(() => null);
-    return { task, project };
+    const project = task.projectId === null
+      ? null
+      : await this.ctx.projects.get(task.projectId).catch(() => null);
+    const projection = await readCandidateInspector(this.ctx, task, 'obsidian');
+    const understanding = task.candidateUnderstanding === null
+      || task.candidateUnderstanding === undefined
+      ? await this.initialUnderstanding(task)
+      : candidateUnderstandingForTask(task);
+    return {
+      task,
+      project,
+      candidateInspector: {
+        ...projection,
+        suggestions: understanding.suggestions,
+        sourceRefs: understanding.sourceRefs,
+        sourceActions: sourceActionsFor(understanding.sourceRefs),
+        gaps: understanding.gaps,
+      },
+      candidateUnderstanding: understanding,
+    };
+  }
+
+  private async initialUnderstanding(task: Task): Promise<CandidateUnderstanding> {
+    const root = this.options.sourceRoot;
+    const source = root === undefined
+      ? null
+      : await resolveCandidateSource({
+        root,
+        seed: {
+          sourceRefId: `task-source-${task.taskId}`.slice(0, 200),
+          sourceType: task.origin.trim().slice(0, 100) || 'task_source',
+          sourceKey: task.sourceKey,
+          sourceNote: task.sourceNote,
+          quote: task.sourceQuote,
+          capturedAt: task.createdAt,
+        },
+        now: this.ctx.clock(),
+        ...(this.options.locateMoved === undefined
+          ? {}
+          : { locateMoved: this.options.locateMoved }),
+      });
+    return buildCandidateUnderstanding({
+      task,
+      sourceRefs: source === null ? candidateUnderstandingForTask(task).sourceRefs : [source],
+      aiDraft: {
+        objective: task.taskBrief?.objective ?? task.objective ?? '',
+        nextAction: task.taskBrief?.nextAction ?? '',
+        completionCriteria: task.taskBrief?.completionCriteria
+          ?? task.acceptanceCriteria[0]
+          ?? '',
+      },
+    });
   }
 
   async save(
@@ -62,6 +151,45 @@ export class TaskBriefController {
       input,
       expectedTaskBriefUpdatedAt,
     );
+  }
+
+  async saveCandidate(
+    taskId: string,
+    input: ConfirmCandidateUnderstandingInput,
+  ): Promise<CandidateInspectorProjection> {
+    const saved = await confirmCandidateUnderstanding(
+      this.ctx,
+      taskId,
+      input,
+    );
+    return readCandidateInspector(this.ctx, saved, 'obsidian');
+  }
+
+  async openSource(
+    taskId: string,
+    sourceRefId: string,
+  ): Promise<OpenCandidateSourceResult> {
+    const task = await this.ctx.tasks.get(taskId);
+    const understanding = task.candidateUnderstanding === null
+      || task.candidateUnderstanding === undefined
+      ? await this.initialUnderstanding(task)
+      : candidateUnderstandingForTask(task);
+    const source = understanding.sourceRefs.find(
+      (candidate) => candidate.sourceRefId === sourceRefId,
+    );
+    if (source === undefined) throw new TaskNotFoundError(sourceRefId);
+    const result = await openCandidateSource({
+      source,
+      ...(this.options.sourceRoot === undefined ? {} : { root: this.options.sourceRoot }),
+      now: this.ctx.clock(),
+      ...(this.options.locateMoved === undefined
+        ? {}
+        : { locateMoved: this.options.locateMoved }),
+    });
+    if (result.outcome === 'located' && this.options.openResolvedSource !== undefined) {
+      await this.options.openResolvedSource(result.locator);
+    }
+    return result;
   }
 }
 

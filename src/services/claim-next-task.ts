@@ -5,6 +5,7 @@ import {
   automaticClaimSlotAvailable,
   claimTaskWithoutQuotaCheck,
   isClaimEligible,
+  loadKnownProjectIds,
   resolveClaimTaskOptions,
 } from './claim-task.js';
 import type { ServiceContext } from './service-context.js';
@@ -41,8 +42,9 @@ export async function claimNextTask(
   const now = ctx.clock();
 
   const claimFirstEligible = async (): Promise<Task | null> => {
+    const knownProjectIds = await loadKnownProjectIds(ctx);
     const tasks = (await ctx.tasks.list())
-      .filter(isClaimEligible)
+      .filter((task) => isClaimEligible(task, knownProjectIds))
       .sort((left, right) => (
         priorityRank[left.priority] - priorityRank[right.priority]
         || readyTimestamp(left) - readyTimestamp(right)

@@ -244,6 +244,76 @@ describe('notify acceptance', () => {
     expect(uuids[0]).toBe(uuids[1]);
   });
 
+  it('does not resend when delivery succeeded but persisting the sent result failed', async () => {
+    const acceptance = object();
+    const baseLedger = memoryLedger();
+    let rejectSentRecord = true;
+    const ledger: AcceptanceNotificationLedger = {
+      ...baseLedger,
+      async save(record) {
+        if (record.status === 'sent' && rejectSentRecord) {
+          rejectSentRecord = false;
+          throw new Error('synthetic ledger persistence failure');
+        }
+        await baseLedger.save(record);
+      },
+    };
+    const send = vi.fn<AcceptanceDelivery['send']>(async () => ({
+      taskId: 'task-dingtalk-uncertain',
+      messageId: null,
+    }));
+    const context = {
+      ledger,
+      delivery: { send },
+      target: { kind: 'self' as const },
+      listAcceptanceObjects: async () => [acceptance],
+      clock: () => new Date(NOW),
+    };
+
+    await expect(notifyAcceptance(context, acceptance)).rejects.toThrow(
+      'synthetic ledger persistence failure',
+    );
+    await expect(baseLedger.get('artifact:task-artifact-a:2')).resolves.toMatchObject({
+      status: 'unknown',
+      errorCode: 'acceptance_delivery_unknown',
+      taskId: null,
+      messageId: null,
+    });
+
+    await expect(notifyAcceptance(context, acceptance)).resolves.toMatchObject({
+      status: 'unknown',
+      errorCode: 'acceptance_delivery_unknown',
+    });
+    expect(send).toHaveBeenCalledOnce();
+  });
+
+  it('does not resend when the delivery command terminates without a result', async () => {
+    const acceptance = object();
+    const ledger = memoryLedger();
+    const send = vi.fn<AcceptanceDelivery['send']>(async () => {
+      throw Object.assign(new Error('synthetic timeout'), {
+        code: 'dingtalk_delivery_unknown',
+      });
+    });
+    const context = {
+      ledger,
+      delivery: { send },
+      target: { kind: 'self' as const },
+      listAcceptanceObjects: async () => [acceptance],
+      clock: () => new Date(NOW),
+    };
+
+    await expect(notifyAcceptance(context, acceptance)).resolves.toMatchObject({
+      status: 'unknown',
+      errorCode: 'acceptance_delivery_unknown',
+    });
+    await expect(notifyAcceptance(context, acceptance)).resolves.toMatchObject({
+      status: 'unknown',
+      errorCode: 'acceptance_delivery_unknown',
+    });
+    expect(send).toHaveBeenCalledOnce();
+  });
+
   it('retries only retryable failed notifications whose exact version is still pending', async () => {
     const current = object();
     const ledger = memoryLedger();
@@ -294,6 +364,15 @@ describe('notify acceptance', () => {
       errorCode: null,
       taskId: 'task-dingtalk-sent',
     });
+    await ledger.save({
+      ...failed,
+      idempotencyKey: 'artifact:task-artifact-unknown:1',
+      objectId: 'task-artifact-unknown',
+      version: 1,
+      uuid: 'df9ccf49-105b-5731-8539-cc74eb6ec262',
+      status: 'unknown',
+      errorCode: 'acceptance_delivery_unknown',
+    });
     const send = vi.fn<AcceptanceDelivery['send']>(async () => ({
       taskId: 'task-dingtalk-retried',
       messageId: null,
@@ -333,6 +412,9 @@ describe('notify acceptance', () => {
     });
     await expect(ledger.get('weekly:weekly-later:1')).resolves.toMatchObject({
       status: 'failed',
+    });
+    await expect(ledger.get('artifact:task-artifact-unknown:1')).resolves.toMatchObject({
+      status: 'unknown',
     });
   });
 });

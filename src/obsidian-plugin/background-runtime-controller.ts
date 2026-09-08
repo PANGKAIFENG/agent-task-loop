@@ -29,6 +29,7 @@ export interface BackgroundSettings {
   model: string;
   baseUrl: string;
   dingtalkProfile: string;
+  dingtalkRobotCode: string;
 }
 
 export type BackgroundState =
@@ -271,6 +272,9 @@ export class BackgroundRuntimeController {
         ...(settings.dingtalkProfile === ''
           ? {}
           : { ATL_DINGTALK_PROFILE: settings.dingtalkProfile }),
+        ...(settings.dingtalkRobotCode === ''
+          ? {}
+          : { ATL_DINGTALK_ROBOT_CODE: settings.dingtalkRobotCode }),
         ATL_ALLOWED_LOCAL_ROOTS: [meetingNotesRoot, ...allowedLocalRoots].join(delimiter),
       },
     });

@@ -84,6 +84,12 @@ describe('readinessErrors', () => {
     );
   });
 
+  it.each(['', ' ', '\t'])('requires a non-whitespace sourceKey', (sourceKey) => {
+    const task = makeTask({ sourceKey });
+
+    expect(readinessErrors(task)).toContain('sourceKey is required');
+  });
+
   it('accepts a meaningful criterion among blank entries', () => {
     const task = makeTask({
       projectId: 'project-1',

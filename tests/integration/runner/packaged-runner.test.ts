@@ -1,10 +1,13 @@
 import {
   access,
+  copyFile,
   mkdtemp,
+  readFile,
   rm,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { execa } from 'execa';
 import {
@@ -30,6 +33,12 @@ const bridgePath = join(
   'obsidian-plugin',
   'atl-dingtalk-bridge.mjs',
 );
+const streamPath = join(
+  repositoryRoot,
+  'build',
+  'obsidian-plugin',
+  'atl-dingtalk-stream.mjs',
+);
 const temporaryRoots: string[] = [];
 
 beforeAll(async () => {
@@ -47,15 +56,38 @@ describe('packaged ATL runner', () => {
   it('runs as a standalone Node entry and reports the release version', async () => {
     await access(runnerPath);
     await access(bridgePath);
+    await access(streamPath);
 
-    const result = await execa(process.execPath, [runnerPath, '--version']);
+    const packageRoot = await mkdtemp(join(tmpdir(), 'atl-isolated-runner-'));
+    temporaryRoots.push(packageRoot);
+    const packagedRunner = join(packageRoot, 'atl-runner.mjs');
+    await copyFile(runnerPath, packagedRunner);
 
-    expect(result.stdout).toBe('0.9.0');
+    const result = await execa(process.execPath, [packagedRunner, '--version'], {
+      cwd: packageRoot,
+    });
+
+    expect(result.stdout).toBe('0.12.0');
+  });
+
+  it('packages the Node WebSocket implementation for DingTalk Stream', async () => {
+    const streamBundle = await readFile(streamPath, 'utf8');
+
+    expect(streamBundle).not.toContain(
+      'ws does not work in the browser. Browser clients must use the native WebSocket object',
+    );
+    await expect(execa(process.execPath, [
+      '--input-type=module',
+      '--eval',
+      `await import(${JSON.stringify(pathToFileURL(streamPath).href)})`,
+    ])).resolves.toMatchObject({ exitCode: 0 });
   });
 
   it('deduplicates daily and real-time stdin capture in the packaged runner', async () => {
     const root = await mkdtemp(join(tmpdir(), 'atl-packaged-capture-'));
     temporaryRoots.push(root);
+    const packagedRunner = join(root, 'atl-runner.mjs');
+    await copyFile(runnerPath, packagedRunner);
     const common = {
       title: '恢复 Agent 产品情报雷达',
       body: '检查并恢复每日推送。',
@@ -78,7 +110,7 @@ describe('packaged ATL runner', () => {
     ]) {
       const result = await execa(
         process.execPath,
-        [runnerPath, 'task', 'capture', '--stdin-json', '--json'],
+        [packagedRunner, 'task', 'capture', '--stdin-json', '--json'],
         {
           env: { ATL_VAULT_ROOT: root },
           input: JSON.stringify(input),
@@ -89,7 +121,7 @@ describe('packaged ATL runner', () => {
 
     const listed = await execa(
       process.execPath,
-      [runnerPath, 'task', 'list', '--json'],
+      [packagedRunner, 'task', 'list', '--json'],
       { env: { ATL_VAULT_ROOT: root } },
     );
     expect(JSON.parse(listed.stdout) as Task[]).toHaveLength(1);
